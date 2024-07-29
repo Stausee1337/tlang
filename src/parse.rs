@@ -17,10 +17,45 @@ pub struct Module<'ast> {
 
 #[derive(Debug, Copy, Clone)]
 pub enum Statement<'ast> {
+    If(IfBranch<'ast>),
+    Break(Span),
+    Return(Return<'ast>),
+    Continue(Span),
     Import(Import<'ast>),
+    ForLoop(ForLoop<'ast>),
+    WhileLoop(WhileLoop<'ast>),
     Variable(Variable<'ast>),
     Function(Function<'ast>),
     Expression(Expression<'ast>),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct IfBranch<'ast> {
+    pub body: &'ast [&'ast Statement<'ast>],
+    pub condition: Option<&'ast Expression<'ast>>,
+    pub else_branch: Option<&'ast IfBranch<'ast>>,
+    pub span: Span
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct ForLoop<'ast> {
+    pub var: Ident,
+    pub iter: &'ast Expression<'ast>,
+    pub body: &'ast [&'ast Statement<'ast>],
+    pub span: Span
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct WhileLoop<'ast> {
+    pub condition: &'ast Expression<'ast>,
+    pub body: &'ast [&'ast Statement<'ast>],
+    pub span: Span
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Return<'ast> {
+    pub value: Option<&'ast Expression<'ast>>,
+    pub span: Span
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -32,13 +67,14 @@ pub struct Import<'ast> {
 
 #[derive(Debug, Copy, Clone)]
 pub struct Variable<'ast> {
-    pub ident: Option<Ident>,
+    pub name: Ident,
     pub init: Option<&'ast Expression<'ast>>,
     pub span: Span
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct Function<'ast> {
+    pub params: &'ast [&'ast Ident],
     pub body: &'ast [&'ast Statement<'ast>],
     pub span: Span
 }

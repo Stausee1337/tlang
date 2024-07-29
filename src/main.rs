@@ -1,4 +1,4 @@
-use std::{env, fs::File, io::{Read, self}, path::{Path, PathBuf}, process::ExitCode, str::FromStr};
+use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 
 use getopts::{Options, ParsingStyle};
 

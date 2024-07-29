@@ -116,6 +116,8 @@ pub enum TokenKind<'source> {
     Var,
     #[token("export")]
     Export,
+    #[token("import")]
+    Import,
     #[token("def")]
     Def,
     #[token("while")]

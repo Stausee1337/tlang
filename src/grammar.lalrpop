@@ -14,7 +14,7 @@ pub Module: parse::Module<'ast> = {
 
 Body: Vec<&'ast parse::Statement<'ast>> = {
     => vec![],
-    <mut statements:Body> <next:DelimitedStatement> => {
+    <mut statements:Body> <next:DelimitedStatement> ";"? => {
         statements.push(ctx.alloc(next));
         statements
     },
@@ -32,10 +32,79 @@ Body: Vec<&'ast parse::Statement<'ast>> = {
 
 LineStatement: parse::Statement<'ast> = {
     <expr:Expression> => parse::Statement::Expression(expr),
+    <start:@L> "var" <name:Ident> <init:("=" <Expression>)?> <end:@R> => parse::Statement::Variable(parse::Variable {
+        name,
+        init: init.map(|e| ctx.alloc(e)),
+        span: Span { start, end }
+    }),
+    <start:@L> "return" <value:Expression?> <end:@R> => parse::Statement::Return(parse::Return {
+        value: value.map(|e| ctx.alloc(e)),
+        span: Span { start, end }
+    }),
+    <start:@L> "import" <alias:Ident?> <file:string> <end:@R> => parse::Statement::Import(parse::Import {
+        alias, file,
+        span: Span { start, end }
+    }),
+    <start:@L> "break" <end:@R> => parse::Statement::Break(Span { start, end }),
+    <start:@L> "continue" <end:@R> => parse::Statement::Continue(Span { start, end }),
 }
 
 DelimitedStatement: parse::Statement<'ast> = {
+    IfStatement,
+    ForStatement,
+    DefStatement,
+    WhileStatement,
 }
+
+IfStatement: parse::Statement<'ast> = {
+    <b:IfBranch> => parse::Statement::If(b),
+}
+
+IfBranch: parse::IfBranch<'ast> = {
+    <start:@L> "if" "(" <cond:Expression> ")" "{" <body:Body> "}" 
+    <else_branch:("else" <ContinuedIfBranch>)?> <end:@L> => parse::IfBranch {
+        body: ctx.slice(body),
+        condition: Some(ctx.alloc(cond)),
+        else_branch: else_branch.map(|b| ctx.alloc(b)),
+        span: Span {start, end}
+    }
+};
+
+ContinuedIfBranch: parse::IfBranch<'ast> = {
+    <start:@L> "{" <body:Body> "}" <end:@L> => parse::IfBranch {
+        body: ctx.slice(body),
+        condition: None,
+        else_branch: None,
+        span: Span { start, end }
+    },
+    <b:IfBranch> => b
+};
+
+ForStatement: parse::Statement<'ast> = {
+    <start:@L> "for" "(" <var:Ident> "in" <iter:Expression> ")" "{" <body:Body> "}" <end:@R> => parse::Statement::ForLoop(parse::ForLoop {
+        var,
+        body: ctx.slice(body),
+        iter: ctx.alloc(iter),
+        span: Span { start, end }
+    })
+}
+
+WhileStatement: parse::Statement<'ast> = {
+    <start:@L> "while" "(" <condition:Expression> ")" "{" <body:Body> "}" <end:@R> => parse::Statement::WhileLoop(parse::WhileLoop {
+        condition: ctx.alloc(condition),
+        body: ctx.slice(body),
+        span: Span { start, end }
+    })
+}
+
+DefStatement: parse::Statement<'ast> = {
+    <start:@L> "def" <name:Ident> "(" <params:SeperatedList<Ident, ",">> ")" <end:@R> "{" <body:Body> "}" => parse::Statement::Function(parse::Function {
+        params,
+        body: ctx.slice(body),
+        span: Span { start, end }
+    })
+}
+
 
 AssignSuffix: (parse::AssignOp, parse::Expression<'ast>) = {
     <op:AssignOp> <expr:Expression> => (op, expr),
@@ -328,6 +397,7 @@ extern {
         "const" => lexer::TokenKind::Const,
         "var" => lexer::TokenKind::Var,
         "export" => lexer::TokenKind::Export,
+        "import" => lexer::TokenKind::Import,
         "def" => lexer::TokenKind::Def,
         "while" => lexer::TokenKind::While,
         "for" => lexer::TokenKind::For,
