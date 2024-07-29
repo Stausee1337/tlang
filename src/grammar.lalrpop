@@ -1,0 +1,352 @@
+use crate::{
+    lexer::{self, Span}, parse,
+    symbol::Symbol,
+};
+
+grammar<'ast, 'ctx>(ctx: &'ctx mut parse::ParseContext<'ast>);
+
+pub Module: parse::Module<'ast> = {
+    <start:@L> <body:Body> <end:@R> => parse::Module {
+        body: ctx.slice(body),
+        span: Span { start, end } 
+    }
+}
+
+Body: Vec<&'ast parse::Statement<'ast>> = {
+    => vec![],
+    <mut statements:Body> <next:DelimitedStatement> => {
+        statements.push(ctx.alloc(next));
+        statements
+    },
+
+    // Small statements
+    <mut statements:Body> <small:(<LineStatement> ";")*> <last:LineStatement> ";"? "\n" => {
+        statements.extend(small.iter().map(|&i| ctx.alloc(i)));
+        statements.push(ctx.alloc(last));
+        statements
+    },
+
+    // Empty lines
+    <s:Body> "\n" => s,
+};
+
+LineStatement: parse::Statement<'ast> = {
+    <expr:Expression> => parse::Statement::Expression(expr),
+}
+
+DelimitedStatement: parse::Statement<'ast> = {
+}
+
+AssignSuffix: (parse::AssignOp, parse::Expression<'ast>) = {
+    <op:AssignOp> <expr:Expression> => (op, expr),
+};
+
+AssignOp: parse::AssignOp = {
+    "=" => parse::AssignOp::Equal,
+};
+
+Expression: parse::Expression<'ast> = {
+    <start:@L> <expr:OrExpr> <assign:AssignSuffix?> <end:@R> => {
+        if let Some((op, rhs)) = assign {
+            return parse::Expression::Assign(parse::AssignExpr {
+                op,
+                lhs: ctx.alloc(expr),
+                rhs: ctx.alloc(rhs),
+                span: Span { start, end },
+            });
+        }
+        expr
+    }
+};
+
+OrExpr: parse::Expression<'ast> = {
+    <start:@L> <lhs:OrExpr> "||" <rhs:AndExpr> <end:@R> => parse::Expression::BinaryExpr(parse::BinaryExpr {
+        op: parse::BinaryOp::BooleanOr, 
+        lhs: ctx.alloc(lhs),
+        rhs: ctx.alloc(rhs),
+        span: Span { start, end },
+    }), 
+    AndExpr
+};
+
+AndExpr: parse::Expression<'ast> = {
+    <start:@L> <lhs:AndExpr> "&&" <rhs:CompExpr> <end:@R> => parse::Expression::BinaryExpr(parse::BinaryExpr {
+        op: parse::BinaryOp::BooleanAnd, 
+        lhs: ctx.alloc(lhs),
+        rhs: ctx.alloc(rhs),
+        span: Span { start, end },
+    }), 
+    CompExpr
+};
+
+CompExpr: parse::Expression<'ast> = {
+    <start:@L> <lhs:BitOr> <op:CompOp> <rhs:BitOr> <end:@R> => parse::Expression::BinaryExpr(parse::BinaryExpr {
+        op, 
+        lhs: ctx.alloc(lhs),
+        rhs: ctx.alloc(rhs),
+        span: Span { start, end },
+    }), 
+    BitOr 
+};
+
+CompOp: parse::BinaryOp = {
+    "==" => parse::BinaryOp::Equal,
+    "!=" => parse::BinaryOp::NotEqual,
+    ">" => parse::BinaryOp::GreaterThan,
+    ">=" => parse::BinaryOp::GreaterEqual,
+    "<" => parse::BinaryOp::LessThan,
+    "<=" => parse::BinaryOp::LessEqual
+};
+
+BitOr: parse::Expression<'ast> = {
+    <start:@L> <lhs:BitOr> "|" <rhs:BitXor> <end:@R> => parse::Expression::BinaryExpr(parse::BinaryExpr {
+        op: parse::BinaryOp::BitwiseOr, 
+        lhs: ctx.alloc(lhs),
+        rhs: ctx.alloc(rhs),
+        span: Span { start, end },
+    }), 
+    BitXor
+};
+
+BitXor: parse::Expression<'ast> = {
+    <start:@L> <lhs:BitXor> "^" <rhs:BitAnd> <end:@R> => parse::Expression::BinaryExpr(parse::BinaryExpr {
+        op: parse::BinaryOp::BitwiseXor, 
+        lhs: ctx.alloc(lhs),
+        rhs: ctx.alloc(rhs),
+        span: Span { start, end },
+    }), 
+    BitAnd
+};
+
+BitAnd: parse::Expression<'ast> = {
+    <start:@L> <lhs:BitAnd> "&" <rhs:ShiftExpr> <end:@R> => parse::Expression::BinaryExpr(parse::BinaryExpr {
+        op: parse::BinaryOp::BitwiseAnd, 
+        lhs: ctx.alloc(lhs),
+        rhs: ctx.alloc(rhs),
+        span: Span { start, end },
+    }), 
+    ShiftExpr 
+};
+
+ShiftExpr: parse::Expression<'ast> = {
+    <start:@L> <lhs:ShiftExpr> <op:ShiftOp> <rhs:Math1Expr> <end:@R> => parse::Expression::BinaryExpr(parse::BinaryExpr {
+        op, 
+        lhs: ctx.alloc(lhs),
+        rhs: ctx.alloc(rhs),
+        span: Span { start, end },
+    }), 
+    Math1Expr 
+};
+
+ShiftOp: parse::BinaryOp = {
+    "<<" => parse::BinaryOp::ShiftLeft,
+    ">>" => parse::BinaryOp::ShiftRight,
+};
+
+Math1Expr: parse::Expression<'ast> = {
+    <start:@L> <lhs:Math1Expr> <op:Math1Op> <rhs:Math2Expr> <end:@R> => parse::Expression::BinaryExpr(parse::BinaryExpr {
+        op, 
+        lhs: ctx.alloc(lhs),
+        rhs: ctx.alloc(rhs),
+        span: Span { start, end },
+    }), 
+    Math2Expr 
+};
+
+Math1Op: parse::BinaryOp = {
+    "+" => parse::BinaryOp::Plus,
+    "-" => parse::BinaryOp::Minus,
+};
+
+Math2Expr: parse::Expression<'ast> = {
+    <start:@L> <lhs:Math2Expr> <op:Math2Op> <rhs:UnaryExpr> <end:@R> => parse::Expression::BinaryExpr(parse::BinaryExpr {
+        op, 
+        lhs: ctx.alloc(lhs),
+        rhs: ctx.alloc(rhs),
+        span: Span { start, end },
+    }), 
+    UnaryExpr 
+};
+
+Math2Op: parse::BinaryOp = {
+    "*" => parse::BinaryOp::Mul,
+    "/" => parse::BinaryOp::Div,
+    "%" => parse::BinaryOp::Mod,
+};
+
+UnaryExpr: parse::Expression<'ast> = {
+    <start:@L> <op:UnaryOp> <expr:UnaryExpr> <end:@R> => parse::Expression::UnaryExpr(parse::UnaryExpr {
+        op, 
+        base: ctx.alloc(expr),
+        span: Span { start, end },
+    }), 
+    AtomExpr
+};
+
+UnaryOp: parse::UnaryOp = {
+    "-" => parse::UnaryOp::Neg,
+    "!" => parse::UnaryOp::Not,
+    "~" => parse::UnaryOp::Invert,
+};
+
+AtomExpr: parse::Expression<'ast> = {
+    Atom,
+    <start:@L>
+    <callable:AtomExpr> "(" <args:SeperatedList<Expression, ",">> ")" <end:@R> => parse::Expression::CallExpr(parse::CallExpr {
+        callable: ctx.alloc(callable),
+        args: args,
+        span: Span { start, end }
+    }),
+    <start:@L> <base:AtomExpr> "[" <argument:Expression> "]" <end:@R> => parse::Expression::SubscriptExpr(parse::SubscriptExpr {
+        base: ctx.alloc(base),
+        argument: ctx.alloc(argument),
+        span: Span { start, end }
+    }),
+    <start:@L> <base:AtomExpr> "." <attr:Ident> <end:@R> => parse::Expression::AttributeExpr(parse::AttributeExpr {
+        attr,
+        base: ctx.alloc(base),
+        span: Span { start, end }
+    })
+}
+
+Atom: parse::Expression<'ast> = {
+    <start:@L> <kind:LiteralKind> <end:@R> => parse::Expression::Literal(parse::Literal {
+        kind,
+        span: Span { start, end },
+    }),
+    <ident:Ident> => parse::Expression::Ident(ident),
+    <start:@L> "[" <items:SeperatedList<Expression, ",">> "]" <end:@R> => parse::Expression::ListExpr(parse::ListExpr {
+        items,
+        span: Span { start, end }
+    }),
+    <start:@L> "(" <tpl:SeperatedList2<Expression, ",">> ")" <end:@R> => {
+        let (items, has_delim) = tpl;
+        if items.len() == 1 && !has_delim {
+            return items[0].clone();
+        }
+        parse::Expression::TupleExpr(parse::TupleExpr {
+            items,
+            span: Span { start, end }
+        })
+    },
+    <start:@L> "{" <inits:SeperatedList<ObjectInit, ",">> "}" <end:@R> => parse::Expression::ObjectExpr(parse::ObjectExpr {
+        inits,
+        span: Span { start, end }
+    }),
+};
+
+ObjectInit: (parse::Ident, parse::Expression<'ast>) = {
+    <ident:Ident> ":" <expr:Expression> => (ident, expr)
+};
+
+LiteralKind: parse::LiteralKind<'ast> = {
+    "null" => parse::LiteralKind::Null,
+    "true" => parse::LiteralKind::Boolean(true),
+    "false" => parse::LiteralKind::Boolean(false),
+    <i:integer> => parse::LiteralKind::Integer(i),
+    <f:float> => parse::LiteralKind::Float(f),
+    <s:string> => parse::LiteralKind::String(s),
+};
+
+Ident: parse::Ident = {
+    <start:@L> <symbol:name> <end:@R> => parse::Ident {
+        symbol,
+        span: Span { start, end }
+    }
+};
+
+#[inline]
+SeperatedList<T, Sep>: &'ast [&'ast T] = {
+    <mut v:(<T> Sep)*> <last:T?> => {
+        if let Some(element) = last {
+            v.push(element);
+        }
+        let v = v.iter().map(|&i| ctx.alloc(i)).collect();
+        ctx.slice(v)
+    }
+};
+
+#[inline]
+SeperatedList2<T, Sep>: (&'ast [&'ast T], bool) = {
+    <mut v:(<T> Sep)*> <last:T?> => {
+        let delim = last.is_none() && !v.is_empty();
+        if let Some(element) = last {
+            v.push(element);
+        }
+        let v = v.iter().map(|&i| ctx.alloc(i)).collect();
+        (ctx.slice(v), delim)
+    }
+};
+
+extern {
+    type Location = usize;
+
+    enum lexer::TokenKind<'ast> {
+        "." => lexer::TokenKind::Dot,
+        "," => lexer::TokenKind::Comma,
+        ":" => lexer::TokenKind::Colon,
+        ";" => lexer::TokenKind::Semicolon,
+        "[" => lexer::TokenKind::LBracket,
+        "]" => lexer::TokenKind::RBracket,
+        "{" => lexer::TokenKind::LCurly,
+        "}" => lexer::TokenKind::RCurly,
+        "(" => lexer::TokenKind::LParen,
+        ")" => lexer::TokenKind::RParen,
+        "=" => lexer::TokenKind::Assign,
+        ".." => lexer::TokenKind::DotDotDot,
+        "->" => lexer::TokenKind::Arrow,
+        "^" => lexer::TokenKind::Circumflex,
+        "?" => lexer::TokenKind::Question,
+
+        "&" => lexer::TokenKind::Ampersand,
+        "|" => lexer::TokenKind::VBar,
+        "^" => lexer::TokenKind::Circumflex,
+        "~" => lexer::TokenKind::Tilde,
+
+        "+" => lexer::TokenKind::Plus,
+        "-" => lexer::TokenKind::Minus,
+        "*" => lexer::TokenKind::Star,
+        "/" => lexer::TokenKind::Slash,
+        "%" => lexer::TokenKind::Percent,
+
+        "<<" => lexer::TokenKind::LDoubleChevron,
+        ">>" => lexer::TokenKind::RDoubleChevron,
+
+        "<" => lexer::TokenKind::LChevron,
+        "<=" => lexer::TokenKind::LChevronEq,
+        ">" => lexer::TokenKind::RChevron,
+        ">=" => lexer::TokenKind::RChevronEq,
+        "==" => lexer::TokenKind::DoubleEq,
+        "!=" => lexer::TokenKind::BangEq,
+
+        "||" => lexer::TokenKind::DoubleVBar,
+        "&&" => lexer::TokenKind::DoubleAmpersand,
+        "!" => lexer::TokenKind::Bang,
+
+        "\n" => lexer::TokenKind::Newline,
+
+        "const" => lexer::TokenKind::Const,
+        "var" => lexer::TokenKind::Var,
+        "export" => lexer::TokenKind::Export,
+        "def" => lexer::TokenKind::Def,
+        "while" => lexer::TokenKind::While,
+        "for" => lexer::TokenKind::For,
+        "in" => lexer::TokenKind::In,
+        "if" => lexer::TokenKind::If,
+        "else" => lexer::TokenKind::Else,
+        "record" => lexer::TokenKind::Record,
+        "return" => lexer::TokenKind::Return,
+        "break" => lexer::TokenKind::Break,
+        "continue" => lexer::TokenKind::Continue,
+
+        "true" => lexer::TokenKind::True,
+        "false" => lexer::TokenKind::False,
+        "null" => lexer::TokenKind::Null,
+
+        name => lexer::TokenKind::Name(<Symbol>),
+        string => lexer::TokenKind::String(<&'ast str>),
+        integer => lexer::TokenKind::Intnumber(<u64>),
+        float => lexer::TokenKind::Floatnumber(<f64>),
+    }
+}
+
