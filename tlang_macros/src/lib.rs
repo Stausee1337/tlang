@@ -9,3 +9,10 @@ pub fn derive_code_gen(item: TokenStream) -> TokenStream {
         .into()
 }
 
+#[proc_macro]
+pub fn define_instructions(item: TokenStream) -> TokenStream {
+    codegen::generate_instructions(item.into())
+        .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
+        .into()
+}
+
