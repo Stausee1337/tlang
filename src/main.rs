@@ -3,9 +3,13 @@ use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 use getopts::{Options, ParsingStyle};
 use parse::ParseContext;
 
+use crate::bytecode::BytecodeGenerator;
+
 mod lexer;
 mod symbol;
 mod parse;
+mod codegen;
+mod bytecode;
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options] [-c cmd | file] [arg]", program);
@@ -60,8 +64,13 @@ fn main() -> ExitCode {
         };
 
         let tokens = lexer::tokenize(&contents).unwrap();
+
         let ctx = ParseContext::new(tokens);
         let module = ctx.parse().unwrap();
+
+        let mut generator = BytecodeGenerator::new();
+        codegen::generate_module(&mut generator, module).unwrap();
+
         println!("{:#?}", module);
 
         return ExitCode::SUCCESS;

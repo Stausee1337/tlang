@@ -1,9 +1,9 @@
-
 use std::{mem::transmute, fmt::Debug};
 
 use lalrpop_util::ParseError;
 
 use crate::{lexer::{Token, Span, SyntaxError}, symbol::Symbol};
+use tlang_macros::GeneratorNode;
 
 #[derive(Debug, Copy, Clone)]
 pub struct Ident {
@@ -17,12 +17,12 @@ pub struct Module<'ast> {
     pub span: Span,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, GeneratorNode)]
 pub enum Statement<'ast> {
     If(IfBranch<'ast>),
-    Break(Span),
+    Break(Break),
     Return(Return<'ast>),
-    Continue(Span),
+    Continue(Continue),
     Import(Import<'ast>),
     ForLoop(ForLoop<'ast>),
     WhileLoop(WhileLoop<'ast>),
@@ -55,6 +55,12 @@ pub struct WhileLoop<'ast> {
 }
 
 #[derive(Debug, Copy, Clone)]
+pub struct Break(pub Span);
+
+#[derive(Debug, Copy, Clone)]
+pub struct Continue(pub Span);
+
+#[derive(Debug, Copy, Clone)]
 pub struct Return<'ast> {
     pub value: Option<&'ast Expression<'ast>>,
     pub span: Span
@@ -82,7 +88,7 @@ pub struct Function<'ast> {
     pub span: Span
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, GeneratorNode)]
 pub enum Expression<'ast> {
     Assign(AssignExpr<'ast>),
     Literal(Literal<'ast>),

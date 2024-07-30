@@ -543,6 +543,16 @@ dependencies = [
  "lalrpop-util",
  "logos",
  "snailquote",
+ "tlang_macros",
+]
+
+[[package]]
+name = "tlang_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
