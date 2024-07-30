@@ -1,4 +1,7 @@
 
+const test = () => {
+    return 12;
+};
 
 def urlparse(url, scheme, allow_fragments) {
     (url, scheme, _coerce_result) = _coerce_args(url, scheme)

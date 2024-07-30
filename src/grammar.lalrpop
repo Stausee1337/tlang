@@ -30,10 +30,16 @@ Body: Vec<&'ast parse::Statement<'ast>> = {
     <s:Body> "\n" => s,
 };
 
+VarKind: bool = {
+    "var" => false,
+    "const" => true,
+};
+
 LineStatement: parse::Statement<'ast> = {
     <expr:Expression> => parse::Statement::Expression(expr),
-    <start:@L> "var" <name:Ident> <init:("=" <Expression>)?> <end:@R> => parse::Statement::Variable(parse::Variable {
+    <start:@L> <cnst:VarKind> <name:Ident> <init:("=" <Expression>)?> <end:@R> => parse::Statement::Variable(parse::Variable {
         name,
+        constant: cnst, 
         init: init.map(|e| ctx.alloc(e)),
         span: Span { start, end }
     }),
@@ -288,15 +294,25 @@ Atom: parse::Expression<'ast> = {
         items,
         span: Span { start, end }
     }),
-    <start:@L> "(" <tpl:SeperatedList2<Expression, ",">> ")" <end:@R> => {
+    <start:@L> "(" <tpl:SeperatedList2<Expression, ",">> ")" <lambda:("=>" <LambdaBody>)?> <end:@R> =>? {
         let (items, has_delim) = tpl;
-        if items.len() == 1 && !has_delim {
-            return items[0].clone();
+        if items.len() == 1 && !has_delim && lambda.is_none() {
+            return Ok(items[0].clone());
         }
-        parse::Expression::TupleExpr(parse::TupleExpr {
+        if let Some(mut lambda) = lambda {
+            let Some(params) = ctx.to_params(items) else {
+                return Err(lalrpop_util::ParseError::UnrecognizedToken {
+                    token: (lambda.span.start, lexer::TokenKind::Arrow, lambda.span.start + 2),
+                    expected: vec![]
+                });
+            };
+            lambda.params = params;
+            return Ok(parse::Expression::Lambda(lambda));
+        }
+        Ok(parse::Expression::TupleExpr(parse::TupleExpr {
             items,
             span: Span { start, end }
-        })
+        }))
     },
     <start:@L> "{" <inits:SeperatedList<ObjectInit, ",">> "}" <end:@R> => parse::Expression::ObjectExpr(parse::ObjectExpr {
         inits,
@@ -306,6 +322,14 @@ Atom: parse::Expression<'ast> = {
 
 ObjectInit: (parse::Ident, parse::Expression<'ast>) = {
     <ident:Ident> ":" <expr:Expression> => (ident, expr)
+};
+
+LambdaBody: parse::Lambda<'ast> = {
+    <start:@L> "{" <body:Body> "}" <end:@R> => parse::Lambda {
+        params: &[],
+        body: ctx.slice(body),
+        span: Span { start, end }
+    },
 };
 
 LiteralKind: parse::LiteralKind<'ast> = {
@@ -363,7 +387,7 @@ extern {
         ")" => lexer::TokenKind::RParen,
         "=" => lexer::TokenKind::Assign,
         ".." => lexer::TokenKind::DotDotDot,
-        "->" => lexer::TokenKind::Arrow,
+        "=>" => lexer::TokenKind::Arrow,
         "^" => lexer::TokenKind::Circumflex,
         "?" => lexer::TokenKind::Question,
 

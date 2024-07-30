@@ -70,6 +70,7 @@ pub struct Import<'ast> {
 #[derive(Debug, Copy, Clone)]
 pub struct Variable<'ast> {
     pub name: Ident,
+    pub constant: bool,
     pub init: Option<&'ast Expression<'ast>>,
     pub span: Span
 }
@@ -94,6 +95,7 @@ pub enum Expression<'ast> {
     ListExpr(ListExpr<'ast>),
     ObjectExpr(ObjectExpr<'ast>),
     TupleExpr(TupleExpr<'ast>),
+    Lambda(Lambda<'ast>),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -192,6 +194,13 @@ pub struct TupleExpr<'ast> {
     pub span: Span
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct Lambda<'ast> {
+    pub body: &'ast [&'ast Statement<'ast>],
+    pub params: &'ast [&'ast Ident],
+    pub span: Span
+}
+
 pub struct ParseContext<'ast> {
     nodes: bumpalo::Bump,
     tokens: Box<[Token<'ast>]>
@@ -223,6 +232,19 @@ impl<'ast> ParseContext<'ast> {
         let slice = vec.into_boxed_slice();
         self.alloc(slice)
     }
+
+    pub fn to_params(&self, exprs: &'ast [&'ast Expression]) -> Option<&'ast [&'ast Ident]> {
+        let mut idents = Vec::new();
+        for expr in exprs {
+            match expr {
+                Expression::Ident(ident) =>
+                    idents.push(ident),
+                _ => return None
+            }
+        }
+
+        Some(self.slice(idents))
+    }
 }
 
 fn as_span<T: Debug, E: Debug>(error: ParseError<usize, T, E>) -> Span {
@@ -242,6 +264,7 @@ fn as_span<T: Debug, E: Debug>(error: ParseError<usize, T, E>) -> Span {
             unreachable!()
     }
 }
+
 
 mod internal {
     include!(concat!(env!("OUT_DIR"), "/grammar.rs"));
