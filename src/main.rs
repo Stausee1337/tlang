@@ -10,6 +10,7 @@ mod symbol;
 mod parse;
 mod codegen;
 mod bytecode;
+mod tvalue;
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options] [-c cmd | file] [arg]", program);

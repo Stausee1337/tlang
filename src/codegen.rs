@@ -24,6 +24,21 @@ pub fn generate_module<'ast>(generator: &mut BytecodeGenerator, module: Module<'
 
 pub fn generate_body<'ast>(generator: &mut BytecodeGenerator, body: &'ast [&'ast Statement]) -> CodegenResult {
     for stmt in body {
+        match stmt {
+            Statement::Variable(ref var) =>
+                generator.register_variable(var.name, var.constant)
+                .map_err(|()| CodegenErr::SyntaxError {
+                    span: var.span,
+                    message: Some(format!("identifier `{}` has already been declared", var.name.symbol.get()))
+                })?,
+            Statement::If(..) |
+            Statement::ForLoop(..) | Statement::WhileLoop(..) =>
+                break,
+            _ => ()
+        }
+    }
+
+    for stmt in body {
         stmt.generate_bytecode(generator)?;
     }
     Ok(None)
@@ -95,6 +110,18 @@ impl<'ast> GeneratorNode for AssignExpr<'ast> {
 
 impl<'ast> GeneratorNode for Literal<'ast> {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        Ok(Some(match self.kind {
+            LiteralKind::Null => ImmValue::Null,
+            LiteralKind::Integer(int) => generator.make_int(int),
+            LiteralKind::Float(float) => generator.make_float(float),
+            LiteralKind::Boolean(bool) => ImmValue::Bool(bool),
+            LiteralKind::String(str) => 
+                generator.make_string_literal(str)
+                .map_err(|err| CodegenErr::SyntaxError {
+                    message: Some(err.to_string()),
+                    span: self.span
+                })?,
+        }))
     }
 }
 
