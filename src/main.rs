@@ -1,6 +1,7 @@
 use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 
 use getopts::{Options, ParsingStyle};
+use parse::ParseContext;
 
 mod lexer;
 mod symbol;
@@ -59,7 +60,8 @@ fn main() -> ExitCode {
         };
 
         let tokens = lexer::tokenize(&contents).unwrap();
-        let module = parse::parse(tokens);
+        let ctx = ParseContext::new(tokens);
+        let module = ctx.parse().unwrap();
         println!("{:#?}", module);
 
         return ExitCode::SUCCESS;

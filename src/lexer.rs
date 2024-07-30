@@ -151,9 +151,9 @@ pub enum TokenKind<'source> {
 pub struct Token<'source>(pub TokenKind<'source>, pub Span);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LexError(pub Span);
+pub struct SyntaxError(pub Span);
 
-pub fn tokenize<'source>(source: &'source str) -> Result<Box<[Token<'source>]>, LexError> {
+pub fn tokenize<'source>(source: &'source str) -> Result<Box<[Token<'source>]>, SyntaxError> {
     let mut lexer = TokenKind::lexer(source);
     let mut tokens = Vec::new();
     let mut prev_ignored = true;
@@ -164,7 +164,7 @@ pub fn tokenize<'source>(source: &'source str) -> Result<Box<[Token<'source>]>, 
         };
         let span = lexer.span().into();
         let Ok(mut token) = token else {
-            return Err(LexError(span));
+            return Err(SyntaxError(span));
         };
         match &mut token {
             TokenKind::Comment => {
@@ -180,7 +180,7 @@ pub fn tokenize<'source>(source: &'source str) -> Result<Box<[Token<'source>]>, 
             }
             TokenKind::String(s) => {
                 snailquote::unescape(s)
-                    .map_err(|_| LexError(span))?;
+                    .map_err(|_| SyntaxError(span))?;
                 prev_ignored = false;
             }
             _ => {

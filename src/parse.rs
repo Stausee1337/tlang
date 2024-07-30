@@ -1,7 +1,9 @@
 
-use std::{marker::PhantomData, mem::transmute};
+use std::{mem::transmute, fmt::Debug};
 
-use crate::{lexer::{Token, Span}, symbol::Symbol};
+use lalrpop_util::ParseError;
+
+use crate::{lexer::{Token, Span, SyntaxError}, symbol::Symbol};
 
 #[derive(Debug, Copy, Clone)]
 pub struct Ident {
@@ -192,15 +194,23 @@ pub struct TupleExpr<'ast> {
 
 pub struct ParseContext<'ast> {
     nodes: bumpalo::Bump,
-    _phantom: PhantomData<&'ast ()>
+    tokens: Box<[Token<'ast>]>
 }
 
 impl<'ast> ParseContext<'ast> {
-    fn new() -> Self {
+    pub fn new(tokens: Box<[Token<'ast>]>) -> Self {
         Self {
+            tokens,
             nodes: bumpalo::Bump::new(),
-            _phantom: PhantomData::default()
         }
+    }
+
+    pub fn parse(&self) -> Result<Module<'ast>, SyntaxError> {
+        internal::ModuleParser::new()
+            .parse(self, self.tokens
+                .into_iter()
+                .map(|tok| (tok.1.start, tok.0, tok.1.end)))
+            .map_err(|err| SyntaxError(as_span(err)))
     }
 
     pub fn alloc<T>(&self, node: T) -> &'ast T {
@@ -215,15 +225,23 @@ impl<'ast> ParseContext<'ast> {
     }
 }
 
-pub fn parse<'source>(tokens: Box<[Token<'source>]>) -> Module<'source> {
-    let mut ctx = ParseContext::new();
-    internal::ModuleParser::new()
-        .parse(&mut ctx, tokens
-            .into_iter()
-            .map(|tok| (tok.1.start, tok.0, tok.1.end)))
-    .unwrap()
+fn as_span<T: Debug, E: Debug>(error: ParseError<usize, T, E>) -> Span {
+    if cfg!(debug_assertions) {
+        eprintln!("Syntax Error Information: {error:?}");
+    }
+    match error {
+        ParseError::ExtraToken { token: (start, _, end) } =>
+            Span { start, end },
+        ParseError::InvalidToken { location } =>
+            Span { start: location, end: location },
+        ParseError::UnrecognizedEof { location, .. } =>
+            Span { start: location, end: location },
+        ParseError::UnrecognizedToken { token: (start, _, end), .. } => 
+            Span { start, end },
+        ParseError::User { .. } =>
+            unreachable!()
+    }
 }
-
 
 mod internal {
     include!(concat!(env!("OUT_DIR"), "/grammar.rs"));

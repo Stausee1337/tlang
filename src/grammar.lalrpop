@@ -3,7 +3,7 @@ use crate::{
     symbol::Symbol,
 };
 
-grammar<'ast, 'ctx>(ctx: &'ctx mut parse::ParseContext<'ast>);
+grammar<'ast, 'ctx>(ctx: &'ctx parse::ParseContext<'ast>);
 
 pub Module: parse::Module<'ast> = {
     <start:@L> <body:Body> <end:@R> => parse::Module {
