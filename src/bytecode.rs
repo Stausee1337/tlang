@@ -5,18 +5,19 @@ use ahash::HashMap;
 use tlang_macros::define_instructions;
 
 use crate::{tvalue::TValue, symbol::Symbol, parse::Ident, interpreter::CodeStream};
+use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum CGKind {
+pub enum OperandKind {
     Null,
     Bool(bool),
-    Register(u32),
+    Register(Register),
     Descriptor(u32),
     Int32(i32),
 }
 
 #[derive(Clone, Copy)]
-pub struct CGValue(u32);
+pub struct Operand(u32);
 
 macro_rules! slice {
     ($($expr:expr),*) => {
@@ -24,7 +25,7 @@ macro_rules! slice {
     };
 }
 
-impl CGValue {
+impl Operand {
     pub const CG_MAX_U32: u32 = 1 << 30;
 
     const NULL_TAG:  u32 = 0x0 << 29;
@@ -37,70 +38,94 @@ impl CGValue {
     const TAG_MASK:   u32 = 0xe0000000;
 
     pub const fn null() -> Self {
-        CGValue(Self::NULL_TAG)
+        Operand(Self::NULL_TAG)
     }
 
     pub const fn bool(bool: bool) -> Self {
         let bool = bool as u32;
-        CGValue((bool & Self::VALUE_MASK) | Self::BOOL_TAG)
+        Operand((bool & Self::VALUE_MASK) | Self::BOOL_TAG)
     }
 
-    pub const fn register(idx: u32) -> Self {
-        debug_assert!(idx < Self::CG_MAX_U32);
-        CGValue((idx & Self::VALUE_MASK) | Self::REG_TAG)
+    pub const fn register(reg: Register) -> Self {
+        let reg = reg._raw;
+        debug_assert!(reg < Self::CG_MAX_U32);
+        Operand((reg & Self::VALUE_MASK) | Self::REG_TAG)
     }
 
     pub const fn descriptor(desc: u32) -> Self {
         debug_assert!(desc < Self::CG_MAX_U32);
-        CGValue((desc & Self::VALUE_MASK) | Self::DESC_TAG)
+        Operand((desc & Self::VALUE_MASK) | Self::DESC_TAG)
     }
 
     pub const fn int32(int: i32) -> Self {
         let int = int as u32;
         debug_assert!(int < Self::CG_MAX_U32);
-        CGValue((int & Self::VALUE_MASK) | Self::INT32_TAG)
+        Operand((int & Self::VALUE_MASK) | Self::INT32_TAG)
     }
 
-    pub fn to_rust(self) -> CGKind {
+    pub fn to_rust(self) -> OperandKind {
         match self.0 & Self::TAG_MASK {
-            Self::NULL_TAG => CGKind::Null,
-            Self::BOOL_TAG => CGKind::Bool((self.0 & Self::VALUE_MASK) != 0),
-            Self::REG_TAG => CGKind::Register(self.0 & Self::VALUE_MASK),
-            Self::DESC_TAG => CGKind::Descriptor(self.0 & Self::VALUE_MASK),
-            Self::INT32_TAG => CGKind::Int32((self.0 & Self::VALUE_MASK) as i32),
+            Self::NULL_TAG => OperandKind::Null,
+            Self::BOOL_TAG => OperandKind::Bool((self.0 & Self::VALUE_MASK) != 0),
+            Self::REG_TAG => OperandKind::Register(Register::from_raw(self.0 & Self::VALUE_MASK)),
+            Self::DESC_TAG => OperandKind::Descriptor(self.0 & Self::VALUE_MASK),
+            Self::INT32_TAG => OperandKind::Int32((self.0 & Self::VALUE_MASK) as i32),
             _ => unreachable!()
         }
     }
 }
 
-impl std::fmt::Debug for CGValue {
+impl std::fmt::Debug for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.to_rust() {
-            CGKind::Null => f.write_str("Null"),
-            CGKind::Bool(bool) => write!(f, "Bool({bool})"),
-            CGKind::Register(reg) => write!(f, "Register({reg})"),
-            CGKind::Descriptor(desc) => write!(f, "Descriptor({desc})"),
-            CGKind::Int32(int) => write!(f, "Int32({int})"),
+            OperandKind::Null => f.write_str("Null"),
+            OperandKind::Bool(bool) => write!(f, "Bool({bool})"),
+            OperandKind::Register(reg) => write!(f, "Register({:?})", reg._raw),
+            OperandKind::Descriptor(desc) => write!(f, "Descriptor({desc})"),
+            OperandKind::Int32(int) => write!(f, "Int32({int})"),
         }
     }
 }
 
-struct Local {
-    constant: bool,
-    declared: bool,
+define_index_type! {
+    pub struct Register = u32;
+}
+
+struct RegisterAllocator(u32);
+
+impl RegisterAllocator {
+    fn prefill(amount: u32) -> Self {
+        RegisterAllocator(amount)
+    }
+
+    fn next(&mut self) -> Register {
+        let reg = Register::from_raw(self.0);
+        self.0 += 1;
+        reg
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Local {
+    pub constant: bool,
+    pub declared: bool,
+}
+
+define_index_type! {
+    pub struct CodeLabel = u32;
 }
 
 struct BasicBlock {
-    id: usize,
-    parent: Option<usize>,
+    label: CodeLabel,
+    parent: Option<CodeLabel>,
     data: Vec<u8>,
     locals: HashMap<Symbol, Local>
-}
+} 
 
 impl BasicBlock {
-    fn new(id: usize, parent: Option<usize>) -> Self {
+    fn new(parent: Option<CodeLabel>) -> Self {
         Self {
-            id,
+            label: CodeLabel::from_raw(0),
             parent,
             data: vec![],
             locals: Default::default()
@@ -112,52 +137,108 @@ impl BasicBlock {
 pub enum Scope {
     Module,
     Function,
-    Closure
 }
 
 pub struct CGFunction {
     scope: Scope,
     descriptor_table: Vec<TValue>,
-    blocks: Vec<BasicBlock>,
-    current_block: usize
+    blocks: IndexVec<CodeLabel, BasicBlock>,
+    current_block: CodeLabel,
+    register_allocator: RegisterAllocator,
+    local2reg: HashMap<(CodeLabel, Symbol), Register>
 }
 
 impl CGFunction {
-    fn new(kind: Scope) -> Self {
+    fn create() -> Self {
         Self {
-            scope: kind,
+            scope: Scope::Module,
             descriptor_table: Default::default(),
-            blocks: vec![BasicBlock::new(0, None)],
-            current_block: 0
+            blocks: vec![BasicBlock::new(None)].into(),
+            current_block: CodeLabel::from_raw(0),
+            register_allocator: RegisterAllocator::prefill(0),
+            local2reg: Default::default() 
         }
     }
 
-    fn current_block(&mut self) -> &mut BasicBlock {
+    fn module() -> Self {
+        Self::create()
+    }
+
+    fn function(params: &[Symbol]) -> Self {
+        let rv = Self {
+            scope: Scope::Function,
+            register_allocator: RegisterAllocator::prefill(params.len() as u32),
+            ..Self::create()
+        };
+
+        rv
+    }
+
+    fn current_block_mut(&mut self) -> &mut BasicBlock {
         &mut self.blocks[self.current_block]
     }
 
-    fn fork_block(&mut self) -> usize {
-        let new_block = BasicBlock::new(self.blocks.len(), Some(self.current_block));
-        let id = new_block.id;
-        self.blocks.push(new_block);
-        id
+    pub fn find_local(&self, symbol: Symbol) -> Option<Local> {
+        let mut block = &self.blocks[self.current_block];
+        loop {
+            if let Some(local) = block.locals.get(&symbol) {
+                if local.declared {
+                    return Some(*local);
+                }
+            }
+            let Some(parent) = block.parent else {
+                return None;
+            };
+            block = &self.blocks[parent];
+        }
     }
 
-    fn register_variable(&mut self, symbol: Symbol, constant: bool) -> Result<(), ()> {
+    fn fork_block(&mut self, inherit: bool) -> CodeLabel {
+        let prev_block = self.current_block;
+
+        let new_block = BasicBlock::new(
+            if inherit { Some(self.current_block) } else { None });
+        let label = self.blocks.push(new_block);
+        self.blocks[label].label = label;
+
+        self.current_block = label;
+
+        prev_block
+    }
+
+    fn register_local(&mut self, symbol: Symbol, constant: bool) -> Result<(), ()> {
         let local = Local {
             constant,
             declared: false
         };
-        if let Some(..) = self.current_block().locals.insert(symbol, local) {
+        if let Some(..) = self.current_block_mut().locals.insert(symbol, local) {
             return Err(());
         }
         Ok(())
     }
 
-    fn descriptor(&mut self, tvalue: TValue) -> CGValue {
+    fn declare_local(&mut self, symbol: Symbol) -> Operand {
+        let local = self.current_block_mut().locals.get_mut(&symbol)
+            .expect("register local before declare");
+        debug_assert!(!local.declared);
+        local.declared = true;
+
+        let reg = self.register_allocator.next();
+        let result = self.local2reg.insert((self.current_block, symbol), reg);
+        debug_assert!(result.is_none());
+        Operand::register(reg)
+    }
+
+    pub fn get_local_reg(&self, symbol: Symbol) -> Operand {
+        let reg = *self.local2reg.get(&(self.current_block, symbol))
+            .expect("symbol corresponds to actual local");
+        Operand::register(reg)
+    }
+
+    fn descriptor(&mut self, tvalue: TValue) -> Operand {
         let idx = self.descriptor_table.len();
         self.descriptor_table.push(tvalue);
-        CGValue::descriptor(idx as u32)
+        Operand::descriptor(idx as u32)
     }
 }
 
@@ -168,34 +249,64 @@ pub struct BytecodeGenerator {
 impl BytecodeGenerator {
     pub fn new() -> Self {
         Self {
-            current_fn: CGFunction::new(Scope::Module)
+            current_fn: CGFunction::module()
         }
     }
 
-    pub fn current_fn(&mut self) -> &mut CGFunction {
+    pub fn current_fn(&self) -> &CGFunction {
+        return &self.current_fn;
+    }
+
+    pub fn current_fn_mut(&mut self) -> &mut CGFunction {
         return &mut self.current_fn;
     }
 
-    pub fn register_variable(&mut self, ident: Ident, constant: bool) -> Result<(), ()> {
-        self.current_fn()
-            .register_variable(ident.symbol, constant)
+    fn fork_block(&mut self, inherit: bool) -> CodeLabel {
+        self.current_fn_mut()
+            .fork_block(inherit)
     }
 
-    pub fn make_string_literal(&mut self, literal: &str) -> Result<CGValue, snailquote::UnescapeError> {
+    pub fn register_local(&mut self, ident: Ident, constant: bool) -> Result<(), ()> {
+        self.current_fn_mut()
+            .register_local(ident.symbol, constant)
+    }
+
+    pub fn find_local(&self, symbol: Symbol) -> Option<Local> {
+        self.current_fn().find_local(symbol)
+    }
+
+    pub fn allocate_reg(&mut self) -> Operand {
+        let reg = self.current_fn_mut()
+            .register_allocator
+            .next();
+        Operand::register(reg)
+    }
+
+    fn declare_local(&mut self, symbol: Symbol) -> Operand {
+        self.current_fn_mut()
+            .declare_local(symbol)
+    }
+
+    pub fn get_local_reg(&self, symbol: Symbol) -> Operand {
+        self.current_fn()
+            .get_local_reg(symbol)
+    }
+
+    pub fn make_string_literal(&mut self, literal: &str) -> Result<Operand, snailquote::UnescapeError> {
         let string = snailquote::unescape(literal)?;
         let tvalue = TValue::string(&string);
-        Ok(self.current_fn().descriptor(tvalue))
+        Ok(self.current_fn_mut().descriptor(tvalue))
     }
 
-    pub fn make_int(&mut self, int: u64) -> CGValue {
+    pub fn make_int(&mut self, int: u64) -> Operand {
         if let Ok(int) = i32::try_from(int) {
-            return CGValue::int32(int);
+            return Operand::int32(int);
         }
-        self.current_fn().descriptor(TValue::bigint(&int.to_le_bytes()))
+        self.current_fn_mut().descriptor(TValue::bigint(&int.to_le_bytes()))
     }
 
-    pub fn make_float(&mut self, float: f64) -> CGValue {
-        self.current_fn().descriptor(TValue::float(float))
+    pub fn make_float(&mut self, float: f64) -> Operand {
+        self.current_fn_mut().descriptor(TValue::float(float))
     }
 }
 
@@ -250,7 +361,7 @@ impl InstructionSerializer<instructions::Call> for CallSerializer {
 
     #[inline(always)]
     fn deserialize(data: &[u8]) -> Option<instructions::Call> {
-        const VAL_SIZE: usize = std::mem::size_of::<CGValue>();
+        const VAL_SIZE: usize = std::mem::size_of::<Operand>();
 
         let callee = BitSerializer::deserialize(data)?;
         let arguments = DynamicArray::deserialize(&data[VAL_SIZE..])?;
@@ -319,15 +430,43 @@ impl<T: Copy> Deref for DynamicArray<T> {
     }
 }
 
+
 define_instructions! {
+    Mov {
+        src: Operand,
+        dst: Operand,
+    },
     Add {
-        lhs: CGValue,
-        rhs: CGValue,
-    } = 0x00,
+        lhs: Operand,
+        rhs: Operand,
+    },
+    GetGlobal {
+        symbol: Symbol,
+        dst: Operand,
+    },
+    SetGlobal {
+        src: Operand,
+        symbol: Symbol
+    },
+    SetAttribute {
+        src: Operand,
+        base: Operand,
+        attribute: Symbol,
+    },
+    SetSubscript {
+        src: Operand,
+        base: Operand,
+        index: Operand
+    },
+
+    #[terminator(true)]
+    Return { value: Operand },
+
     #[serializer(CallSerializer)]
     Call {
-        callee: CGValue,
-        arguments: DynamicArray<CGValue>
+        callee: Operand,
+        arguments: DynamicArray<Operand>
     },
+    Error,
     Noop = 0x80
 }
