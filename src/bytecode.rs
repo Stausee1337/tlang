@@ -1,19 +1,88 @@
 
-use std::{marker::PhantomData, ops::Deref, array::TryFromSliceError, slice::SliceIndex};
+use std::{marker::PhantomData, ops::Deref};
 
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
 use crate::{tvalue::TValue, symbol::Symbol, parse::Ident, interpreter::CodeStream};
 
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub enum CGValue {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CGKind {
     Null,
     Bool(bool),
-    Int32(i32),
     Register(u32),
     Descriptor(u32),
+    Int32(i32),
+}
+
+#[derive(Clone, Copy)]
+pub struct CGValue(u32);
+
+macro_rules! slice {
+    ($($expr:expr),*) => {
+         &[$($expr),*] as &[_]
+    };
+}
+
+impl CGValue {
+    pub const CG_MAX_U32: u32 = 1 << 30;
+
+    const NULL_TAG:  u32 = 0x0 << 29;
+    const BOOL_TAG:  u32 = 0x1 << 29;
+    const REG_TAG:   u32 = 0x2 << 29;
+    const DESC_TAG:  u32 = 0x3 << 29;
+    const INT32_TAG: u32 = 0x4 << 29;
+
+    const VALUE_MASK: u32 = 0x1fffffff;
+    const TAG_MASK:   u32 = 0xe0000000;
+
+    pub const fn null() -> Self {
+        CGValue(Self::NULL_TAG)
+    }
+
+    pub const fn bool(bool: bool) -> Self {
+        let bool = bool as u32;
+        CGValue((bool & Self::VALUE_MASK) | Self::BOOL_TAG)
+    }
+
+    pub const fn register(idx: u32) -> Self {
+        debug_assert!(idx < Self::CG_MAX_U32);
+        CGValue((idx & Self::VALUE_MASK) | Self::REG_TAG)
+    }
+
+    pub const fn descriptor(desc: u32) -> Self {
+        debug_assert!(desc < Self::CG_MAX_U32);
+        CGValue((desc & Self::VALUE_MASK) | Self::DESC_TAG)
+    }
+
+    pub const fn int32(int: i32) -> Self {
+        let int = int as u32;
+        debug_assert!(int < Self::CG_MAX_U32);
+        CGValue((int & Self::VALUE_MASK) | Self::INT32_TAG)
+    }
+
+    pub fn to_rust(self) -> CGKind {
+        match self.0 & Self::TAG_MASK {
+            Self::NULL_TAG => CGKind::Null,
+            Self::BOOL_TAG => CGKind::Bool((self.0 & Self::VALUE_MASK) != 0),
+            Self::REG_TAG => CGKind::Register(self.0 & Self::VALUE_MASK),
+            Self::DESC_TAG => CGKind::Descriptor(self.0 & Self::VALUE_MASK),
+            Self::INT32_TAG => CGKind::Int32((self.0 & Self::VALUE_MASK) as i32),
+            _ => unreachable!()
+        }
+    }
+}
+
+impl std::fmt::Debug for CGValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.to_rust() {
+            CGKind::Null => f.write_str("Null"),
+            CGKind::Bool(bool) => write!(f, "Bool({bool})"),
+            CGKind::Register(reg) => write!(f, "Register({reg})"),
+            CGKind::Descriptor(desc) => write!(f, "Descriptor({desc})"),
+            CGKind::Int32(int) => write!(f, "Int32({int})"),
+        }
+    }
 }
 
 struct Local {
@@ -88,7 +157,7 @@ impl CGFunction {
     fn descriptor(&mut self, tvalue: TValue) -> CGValue {
         let idx = self.descriptor_table.len();
         self.descriptor_table.push(tvalue);
-        CGValue::Descriptor(idx as u32)
+        CGValue::descriptor(idx as u32)
     }
 }
 
@@ -120,7 +189,7 @@ impl BytecodeGenerator {
 
     pub fn make_int(&mut self, int: u64) -> CGValue {
         if let Ok(int) = i32::try_from(int) {
-            return CGValue::Int32(int);
+            return CGValue::int32(int);
         }
         self.current_fn().descriptor(TValue::bigint(&int.to_le_bytes()))
     }
@@ -233,10 +302,10 @@ impl<T: Copy> DynamicArray<T> {
     }
 }
 
-impl<T: Copy, const SIZE: usize> From<[T; SIZE]> for DynamicArray<T> {
-    fn from(value: [T; SIZE]) -> Self {
+impl<T: Copy> From<&[T]> for DynamicArray<T> {
+    fn from(value: &[T]) -> Self {
         DynamicArray {
-            length: SIZE,
+            length: value.len(),
             data: value.as_ptr()
         }
     }

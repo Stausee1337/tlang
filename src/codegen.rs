@@ -111,10 +111,10 @@ impl<'ast> GeneratorNode for AssignExpr<'ast> {
 impl<'ast> GeneratorNode for Literal<'ast> {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
         Ok(Some(match self.kind {
-            LiteralKind::Null => CGValue::Null,
+            LiteralKind::Null => CGValue::null(),
             LiteralKind::Integer(int) => generator.make_int(int),
             LiteralKind::Float(float) => generator.make_float(float),
-            LiteralKind::Boolean(bool) => CGValue::Bool(bool),
+            LiteralKind::Boolean(bool) => CGValue::bool(bool),
             LiteralKind::String(str) => 
                 generator.make_string_literal(str)
                 .map_err(|err| CodegenErr::SyntaxError {
