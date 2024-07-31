@@ -1,7 +1,7 @@
 use convert_case::{Casing, Case};
 use proc_macro2::{TokenStream, Ident, Span};
 use quote::quote;
-use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter,};
+use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool,};
 
 pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
     let node: ItemEnum = syn::parse2(token_stream)?;
@@ -42,6 +42,7 @@ pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Erro
 
 pub struct Instruction {
     serializer: Option<TokenStream>,
+    terminator: bool,
     ident: Ident,
     fields: Option<FieldsNamed>,
     discriminant: Option<(Token![=], Expr)>,
@@ -61,6 +62,7 @@ impl Parse for Instruction {
         } else { None };
 
         let mut serializer = None;
+        let mut terminator = false;
         for attr in attrs {
             let Meta::List(list) = attr.meta else {
                 continue;
@@ -68,19 +70,37 @@ impl Parse for Instruction {
             let Some(ident) = list.path.get_ident() else {
                 continue;
             };
-            if !ident.to_string().eq("serializer") {
-                continue;
+            match ident.to_string().as_ref() {
+                "serializer" => {
+                    let MacroDelimiter::Paren(..) = list.delimiter else {
+                        return Err(
+                            syn::Error::new(
+                                list.delimiter.span().span(),
+                                "expected parens `(...)` for #[serializer(...)]")
+                        );
+                    };
+                    serializer = Some(list.tokens);
+                    continue;
+                }
+                "terminator" => {
+                    let MacroDelimiter::Paren(..) = list.delimiter else {
+                        return Err(
+                            syn::Error::new(
+                                list.delimiter.span().span(),
+                                "expected parens `(...)` for #[terminator(...)]")
+                        );
+                    };
+                    let parser = LitBool::parse;
+                    let lit_bool = parser.parse2(list.tokens)?;
+                    terminator = lit_bool.value;
+                }
+                _ => continue,
             }
-            let MacroDelimiter::Paren(..) = list.delimiter else {
-                return Err(syn::Error::new(list.delimiter.span().span(), "expected parens `(...)` for #[serializer(...)]"));
-            };
-
-            serializer = Some(list.tokens);
-            break;
         }
 
         Ok(Self {
             serializer,
+            terminator,
             ident,
             fields,
             discriminant
@@ -119,10 +139,13 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
             .map(|x| x.clone())
             .unwrap_or(quote!(BitSerializer<Self>));
 
+        let terminator = inst.terminator;
+
         structures.extend(quote!(#[derive(Clone, Copy)] #[repr(packed)] pub struct #ident #fields));
         structures.extend(quote! {
             impl Instruction for #ident {
                 const CODE: OpCode = OpCode::#ident;
+                const IS_TERMINATOR: bool = #terminator;
                 type Serializer = #serializer;
             }
         });
@@ -159,8 +182,8 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
 
         codegen_impls.extend(quote! {
             pub fn #snake_case_ident<#gparams>(&mut self, #params) {
-                let func = self.current_fn();
-                let block = func.current_block();
+                let func = self.current_fn_mut();
+                let block = func.current_block_mut();
                 block.#snake_case_ident(#fargs);
             }
         });
@@ -175,6 +198,7 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
 
         pub trait Instruction: Sized + Copy {
             const CODE: OpCode;
+            const IS_TERMINATOR: bool;
             type Serializer: InstructionSerializer<Self>;
 
             #[inline(always)]
