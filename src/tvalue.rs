@@ -6,6 +6,10 @@ impl TValue {
         todo!()
     }
 
+    pub fn float(_flt: f64) -> Self {
+        todo!()
+    }
+
     pub fn string<'a>(str: &'a str) -> Self {
         todo!()
     }

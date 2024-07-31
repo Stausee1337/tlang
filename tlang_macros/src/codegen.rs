@@ -1,7 +1,7 @@
 use convert_case::{Casing, Case};
 use proc_macro2::{TokenStream, Ident, Span};
 use quote::quote;
-use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace,};
+use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter,};
 
 pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
     let node: ItemEnum = syn::parse2(token_stream)?;
@@ -41,6 +41,7 @@ pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Erro
 }
 
 pub struct Instruction {
+    serializer: Option<TokenStream>,
     ident: Ident,
     fields: Option<FieldsNamed>,
     discriminant: Option<(Token![=], Expr)>,
@@ -48,6 +49,7 @@ pub struct Instruction {
 
 impl Parse for Instruction {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let attrs = Attribute::parse_outer(input)?;
         let ident: Ident = input.parse()?;
         let fields: Option<FieldsNamed> = if input.peek(Brace) {
             Some(input.parse()?)
@@ -58,7 +60,27 @@ impl Parse for Instruction {
             Some((tok, input.parse()?))
         } else { None };
 
+        let mut serializer = None;
+        for attr in attrs {
+            let Meta::List(list) = attr.meta else {
+                continue;
+            };
+            let Some(ident) = list.path.get_ident() else {
+                continue;
+            };
+            if !ident.to_string().eq("serializer") {
+                continue;
+            }
+            let MacroDelimiter::Paren(..) = list.delimiter else {
+                return Err(syn::Error::new(list.delimiter.span().span(), "expected parens `(...)` for #[serializer(...)]"));
+            };
+
+            serializer = Some(list.tokens);
+            break;
+        }
+
         Ok(Self {
+            serializer,
             ident,
             fields,
             discriminant
@@ -92,54 +114,87 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
             quote!({})
         };
 
-        structures.extend(quote!(#[derive(Clone, Copy)] #[repr(C)] pub struct #ident #fields));
+        let serializer = inst.serializer
+            .as_ref()
+            .map(|x| x.clone())
+            .unwrap_or(quote!(BitSerializer<Self>));
+
+        structures.extend(quote!(#[derive(Clone, Copy)] #[repr(packed)] pub struct #ident #fields));
         structures.extend(quote! {
             impl Instruction for #ident {
                 const CODE: OpCode = OpCode::#ident;
+                type Serializer = #serializer;
             }
         });
         
         let snake_case_name = format!("emit_{}", ident.to_string().to_case(Case::Snake));
         let snake_case_ident = Ident::new(&snake_case_name, Span::call_site());
         
-        let mut names = Punctuated::<Ident, Token![,]>::new();
-        let mut arguments = TokenStream::new();
+        let mut sargs = TokenStream::new();
+        let mut fargs = Punctuated::<Ident, Token![,]>::new();
+        let mut params = TokenStream::new();
+        let mut gparams = TokenStream::new();
         if let Some(fields) = &inst.fields {
-            for field in &fields.named {
+            for (idx, field) in fields.named.iter().enumerate() { 
                 let ident = field.ident.as_ref().unwrap();
                 let ty = &field.ty;
-                names.push(ident.clone());
-                arguments.extend(quote!(#ident: #ty,));
+
+                let gident = Ident::new(&format!("__T{idx}"), Span::call_site());
+
+                fargs.push(ident.clone());
+                sargs.extend(quote!(#ident: #ident.into(),));
+                params.extend(quote!(#ident: #gident,));
+                gparams.extend(quote!(#gident: Into<#ty>,));
             }
         }
 
         block_impls.extend(quote! {
-            pub fn #snake_case_ident(&mut self, #arguments) {
+            pub fn #snake_case_ident<#gparams>(&mut self, #params) {
                 let instruction = crate::bytecode::instructions::#ident {
-                    #names
+                    #sargs
                 };
-                Instruction::serialize(&instruction, &mut self.data)
+                Instruction::serialize(instruction, &mut self.data)
             }
         });
 
         codegen_impls.extend(quote! {
-            pub fn #snake_case_ident(&mut self, #arguments) {
-                let scope = self.current_scope();
-                let block = scope.current_block();
-                block.#snake_case_ident(#names);
+            pub fn #snake_case_ident<#gparams>(&mut self, #params) {
+                let func = self.current_fn();
+                let block = func.current_block();
+                block.#snake_case_ident(#fargs);
             }
         });
     }
 
     let module = quote! {
-        pub mod instructions {
-            use super::*;
+        #[repr(u8)]
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        pub enum OpCode {
+            #opcodes
+        }
 
-            #[repr(u32)]
-            pub enum OpCode {
-                #opcodes
+        pub trait Instruction: Sized + Copy {
+            const CODE: OpCode;
+            type Serializer: InstructionSerializer<Self>;
+
+            #[inline(always)]
+            fn serialize(self, vec: &mut Vec<u8>) {
+                vec.push(Self::CODE as u8);
+                Self::Serializer::serialize(self, vec);
             }
 
+            #[inline(always)]
+            fn deserialize(stream: &mut CodeStream) -> Option<Self> {
+                if stream.current() != Self::CODE as u8 {
+                    return None;
+                }
+                stream.bump(1);
+                Self::Serializer::deserialize(stream.code())
+            }
+        }
+
+        pub mod instructions {
+            use super::*;
             #structures
         }
     };
