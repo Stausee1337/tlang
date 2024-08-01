@@ -3,7 +3,7 @@ use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 use getopts::{Options, ParsingStyle};
 use parse::ParseContext;
 
-use crate::bytecode::BytecodeGenerator;
+use crate::bytecode::{BytecodeGenerator, FunctionDisassembler};
 
 mod lexer;
 mod symbol;
@@ -73,7 +73,13 @@ fn main() -> ExitCode {
         let mut generator = BytecodeGenerator::new();
         codegen::generate_module(&mut generator, module).unwrap();
 
-        println!("{:#?}", module);
+        let mut string = String::new();
+        let function = generator.current_fn();
+
+        FunctionDisassembler::dissassemble(function, &mut string)
+            .unwrap();
+
+        println!("{}", string);
 
         return ExitCode::SUCCESS;
     }

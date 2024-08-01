@@ -13,6 +13,11 @@ impl CodeStream {
     }
 
     #[inline(always)]
+    pub fn eos(&self) -> bool {
+        self.code().len() == 0
+    }
+
+    #[inline(always)]
     pub fn data(&self) -> &[u8] {
         unsafe { &*self.code }
     }
@@ -24,12 +29,12 @@ impl CodeStream {
 
     #[inline(always)]
     pub fn current(&self) -> u8 {
-        self.code()[self.position]
+        self.data()[self.position]
     }
 
     #[inline(always)]
     pub fn bump(&mut self, amount: usize) {
-        debug_assert!(amount > 0);
+        // debug_assert!(amount > 0);
         self.position += amount;
     }
 }

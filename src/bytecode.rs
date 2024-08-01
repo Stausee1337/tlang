@@ -1,5 +1,5 @@
 
-use std::{marker::PhantomData, ops::Deref};
+use std::{marker::PhantomData, ops::Deref, fmt::{Write, Result as FmtResult}};
 
 use ahash::HashMap;
 use tlang_macros::define_instructions;
@@ -76,7 +76,7 @@ impl Operand {
 }
 
 impl std::fmt::Debug for Operand {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtResult {
         match self.to_rust() {
             OperandKind::Null => f.write_str("Null"),
             OperandKind::Bool(bool) => write!(f, "Bool({bool})"),
@@ -113,6 +113,8 @@ pub struct Local {
 
 define_index_type! {
     pub struct CodeLabel = u32;
+
+    DEBUG_FORMAT = "bb{}";
 }
 
 struct BasicBlock {
@@ -135,14 +137,93 @@ impl BasicBlock {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Module,
     Function,
 }
 
+pub struct FunctionDisassembler<'f> {
+    function: &'f CGFunction,
+    stream: &'f mut dyn Write,
+    indentation: usize,
+    last_indent_pending: bool
+}
+
+impl<'f> FunctionDisassembler<'f> {
+    pub fn dissassemble(function: &'f CGFunction, stream: &'f mut dyn Write) -> FmtResult {
+        let mut disasm = Self {
+            function,
+            stream,
+            indentation: 0,
+            last_indent_pending: false
+        };
+        disasm.function_head()?;
+
+        for block in &disasm.function.blocks {
+            disasm.basic_block(block)?;
+        }
+
+        disasm.dedent();
+        write!(disasm, "}}")
+    }
+
+    fn indent(&mut self) {
+        self.indentation += 1;
+    }
+
+    fn dedent(&mut self) {
+        self.indentation -= 1;
+    }
+
+    fn basic_block(&mut self, block: &'f BasicBlock) -> FmtResult {
+        writeln!(self, "bb{} {{", block.label._raw)?;
+        self.indent();
+
+        let mut stream = CodeStream::new(&block.data);
+        while !stream.eos() {
+            let op = OpCode::decode(stream.current());
+            let instruction = op.deserialize_for_debug(&mut stream);
+            writeln!(self, "{instruction:?}")?;
+        }
+
+        self.dedent();
+        writeln!(self, "}}")
+    }
+
+    fn function_head(&mut self) -> FmtResult {
+        writeln!(self, "function \"\" ({}) {{", self.function.num_params)?;
+        self.indent();
+        writeln!(self, ".locals {}", self.function.local2reg.len())?;
+        writeln!(self, ".registers {}", self.function.register_allocator.0 - 1)?;
+
+        Ok(())
+    }
+}
+
+impl<'f> Write for FunctionDisassembler<'f> {
+    fn write_str(&mut self, mut s: &str) -> FmtResult {
+        if self.last_indent_pending {
+            self.stream.write_str(&"    ".repeat(self.indentation))?;
+            self.last_indent_pending = false;
+        }
+
+        while let Some(idx) = s.find("\n") {
+            self.stream.write_str(&s[..idx + 1])?;
+            s = &s[idx + 1..];
+            if !s.is_empty() {
+                self.stream.write_str(&"    ".repeat(self.indentation))?;
+            } else {
+                self.last_indent_pending = true;
+            }
+        }
+        self.stream.write_str(s)
+    }
+}
+
 pub struct CGFunction {
     scope: Scope,
+    num_params: u32,
     descriptor_table: Vec<TValue>,
     blocks: IndexVec<CodeLabel, BasicBlock>,
     current_block: CodeLabel,
@@ -153,6 +234,7 @@ pub struct CGFunction {
 impl CGFunction {
     fn create() -> Self {
         Self {
+            num_params: 0,
             scope: Scope::Module,
             descriptor_table: Default::default(),
             blocks: vec![BasicBlock::new(None)].into(),
@@ -167,11 +249,17 @@ impl CGFunction {
     }
 
     fn function(params: &[Symbol]) -> Self {
-        let rv = Self {
+        let mut rv = Self {
+            num_params: params.len() as u32,
             scope: Scope::Function,
             register_allocator: RegisterAllocator::prefill(params.len() as u32),
             ..Self::create()
         };
+
+        for param in params {
+            rv.register_local(*param, false).expect("no locals before arguments");
+            rv.declare_local(*param);
+        }
 
         rv
     }
@@ -216,6 +304,8 @@ impl CGFunction {
     }
 
     pub fn register_local(&mut self, symbol: Symbol, constant: bool) -> Result<(), ()> {
+        assert!(self.scope != Scope::Module);
+
         let local = Local {
             constant,
             declared: false
@@ -227,6 +317,8 @@ impl CGFunction {
     }
 
     fn declare_local(&mut self, symbol: Symbol) -> Operand {
+        assert!(self.scope != Scope::Module);
+
         let local = self.current_block_mut().locals.get_mut(&symbol)
             .expect("register local before declare");
         debug_assert!(!local.declared);
@@ -441,6 +533,13 @@ impl<T: Copy> Deref for DynamicArray<T> {
 
     fn deref(&self) -> &Self::Target {
         unsafe { std::slice::from_raw_parts(self.data, self.length) }
+    }
+}
+
+impl<T: Copy + std::fmt::Debug> std::fmt::Debug for DynamicArray<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtResult {
+        let x = Deref::deref(&self);
+        write!(f, "{:?}", x)
     }
 }
 

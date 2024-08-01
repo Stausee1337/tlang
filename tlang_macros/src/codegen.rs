@@ -116,6 +116,7 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
     let mut structures = TokenStream::new();
     let mut codegen_impls = TokenStream::new();
     let mut block_impls = TokenStream::new();
+    let mut debug_deserialize = TokenStream::new();
     for inst in &mut instructions {
         let ident = &inst.ident;
 
@@ -141,7 +142,7 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
 
         let terminator = inst.terminator;
 
-        structures.extend(quote!(#[derive(Clone, Copy)] #[repr(packed)] pub struct #ident #fields));
+        structures.extend(quote!(#[derive(Clone, Copy, Debug)] #[repr(packed)] pub struct #ident #fields));
         structures.extend(quote! {
             impl Instruction for #ident {
                 const CODE: OpCode = OpCode::#ident;
@@ -194,6 +195,11 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
                 block.#snake_case_ident(#fargs);
             }
         });
+
+        debug_deserialize.extend(quote! {
+            OpCode::#ident =>
+                Box::new(crate::bytecode::instructions::#ident::deserialize(stream).unwrap()),
+        });
     }
 
     let module = quote! {
@@ -201,6 +207,18 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
         #[derive(Clone, Copy, PartialEq, Eq)]
         pub enum OpCode {
             #opcodes
+        }
+
+        impl OpCode {
+            pub fn decode(op: u8) -> Self {
+                unsafe { std::mem::transmute(op) }
+            }
+
+            pub fn deserialize_for_debug(self, stream: &mut CodeStream) -> Box<dyn std::fmt::Debug> {
+                match self {
+                    #debug_deserialize
+                }
+            }
         }
 
         pub trait Instruction: Sized + Copy {
