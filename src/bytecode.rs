@@ -80,7 +80,7 @@ impl std::fmt::Debug for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtResult {
         match self.to_rust() {
             OperandKind::Null => f.write_str("Null"),
-            OperandKind::Bool(bool) => write!(f, "{bool}"),
+            OperandKind::Bool(bool) => write!(f, "Bool({bool})"),
             OperandKind::Register(reg) => write!(f, "{:?}", reg),
             OperandKind::Descriptor(desc) => write!(f, "{desc:?}"),
             OperandKind::Int32(int) => write!(f, "Int32({int})"),
@@ -200,8 +200,15 @@ impl<'f> FunctionDisassembler<'f> {
     fn function_head(&mut self) -> FmtResult {
         writeln!(self, "function \"\" ({}) {{", self.function.num_params)?;
         self.indent();
+        
+        let mut code_size = 0;
+        for block in &self.function.blocks {
+            code_size += block.data.len();
+        }
+
         writeln!(self, ".locals {}", self.function.local2reg.len())?;
         writeln!(self, ".registers {}", self.function.register_allocator.0)?;
+        writeln!(self, ".codeSize {}", code_size)?;
 
         Ok(())
     }
