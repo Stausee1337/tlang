@@ -12,7 +12,7 @@ pub enum OperandKind {
     Null,
     Bool(bool),
     Register(Register),
-    Descriptor(u32),
+    Descriptor(Descriptor),
     Int32(i32),
 }
 
@@ -52,7 +52,8 @@ impl Operand {
         Operand((reg & Self::VALUE_MASK) | Self::REG_TAG)
     }
 
-    pub const fn descriptor(desc: u32) -> Self {
+    pub const fn descriptor(desc: Descriptor) -> Self {
+        let desc = desc._raw;
         debug_assert!(desc < Self::CG_MAX_U32);
         Operand((desc & Self::VALUE_MASK) | Self::DESC_TAG)
     }
@@ -68,7 +69,7 @@ impl Operand {
             Self::NULL_TAG => OperandKind::Null,
             Self::BOOL_TAG => OperandKind::Bool((self.0 & Self::VALUE_MASK) != 0),
             Self::REG_TAG => OperandKind::Register(Register::from_raw(self.0 & Self::VALUE_MASK)),
-            Self::DESC_TAG => OperandKind::Descriptor(self.0 & Self::VALUE_MASK),
+            Self::DESC_TAG => OperandKind::Descriptor(Descriptor::from_raw(self.0 & Self::VALUE_MASK)),
             Self::INT32_TAG => OperandKind::Int32((self.0 & Self::VALUE_MASK) as i32),
             _ => unreachable!()
         }
@@ -79,9 +80,9 @@ impl std::fmt::Debug for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtResult {
         match self.to_rust() {
             OperandKind::Null => f.write_str("Null"),
-            OperandKind::Bool(bool) => write!(f, "Bool({bool})"),
-            OperandKind::Register(reg) => write!(f, "Register({:?})", reg._raw),
-            OperandKind::Descriptor(desc) => write!(f, "Descriptor({desc})"),
+            OperandKind::Bool(bool) => write!(f, "{bool}"),
+            OperandKind::Register(reg) => write!(f, "{:?}", reg),
+            OperandKind::Descriptor(desc) => write!(f, "{desc:?}"),
             OperandKind::Int32(int) => write!(f, "Int32({int})"),
         }
     }
@@ -89,6 +90,12 @@ impl std::fmt::Debug for Operand {
 
 define_index_type! {
     pub struct Register = u32;
+    DEBUG_FORMAT = "reg{}";
+}
+
+define_index_type! {
+    pub struct Descriptor = u32;
+    DEBUG_FORMAT = "${}";
 }
 
 struct RegisterAllocator(u32);
@@ -113,7 +120,6 @@ pub struct Local {
 
 define_index_type! {
     pub struct CodeLabel = u32;
-
     DEBUG_FORMAT = "bb{}";
 }
 
@@ -195,7 +201,7 @@ impl<'f> FunctionDisassembler<'f> {
         writeln!(self, "function \"\" ({}) {{", self.function.num_params)?;
         self.indent();
         writeln!(self, ".locals {}", self.function.local2reg.len())?;
-        writeln!(self, ".registers {}", self.function.register_allocator.0 - 1)?;
+        writeln!(self, ".registers {}", self.function.register_allocator.0)?;
 
         Ok(())
     }
@@ -224,7 +230,7 @@ impl<'f> Write for FunctionDisassembler<'f> {
 pub struct CGFunction {
     scope: Scope,
     num_params: u32,
-    descriptor_table: Vec<TValue>,
+    descriptor_table: IndexVec<Descriptor, TValue>,
     blocks: IndexVec<CodeLabel, BasicBlock>,
     current_block: CodeLabel,
     register_allocator: RegisterAllocator,
@@ -337,9 +343,9 @@ impl CGFunction {
     }
 
     fn descriptor(&mut self, tvalue: TValue) -> Operand {
-        let idx = self.descriptor_table.len();
+        let idx = self.descriptor_table.len_idx();
         self.descriptor_table.push(tvalue);
-        Operand::descriptor(idx as u32)
+        Operand::descriptor(idx)
     }
 }
 
@@ -460,8 +466,9 @@ pub struct CallSerializer;
 
 impl InstructionSerializer<instructions::Call> for CallSerializer {
     #[inline(always)]
-    fn serialize(instructions::Call { callee, arguments }: instructions::Call, vec: &mut Vec<u8>) {
+    fn serialize(instructions::Call { callee, arguments, dst }: instructions::Call, vec: &mut Vec<u8>) {
         BitSerializer::serialize(callee, vec);
+        BitSerializer::serialize(dst, vec);
         arguments.serialize(vec);
     }
 
@@ -470,12 +477,14 @@ impl InstructionSerializer<instructions::Call> for CallSerializer {
         const VAL_SIZE: usize = std::mem::size_of::<Operand>();
 
         let callee = BitSerializer::deserialize(data)?;
-        let (arguments, size) = DynamicArray::deserialize(&data[VAL_SIZE..])?;
+        let dst = BitSerializer::deserialize(&data[VAL_SIZE..])?;
+        let (arguments, size) = DynamicArray::deserialize(&data[VAL_SIZE * 2..])?;
 
         Some((instructions::Call {
             callee,
-            arguments
-        }, VAL_SIZE + size))
+            arguments,
+            dst
+        }, VAL_SIZE * 2 + size))
     }
 }
 
@@ -538,7 +547,7 @@ impl<T: Copy> Deref for DynamicArray<T> {
 
 impl<T: Copy + std::fmt::Debug> std::fmt::Debug for DynamicArray<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtResult {
-        let x = Deref::deref(&self);
+        let x: &[_] = Deref::deref(&self);
         write!(f, "{:?}", x)
     }
 }
@@ -546,50 +555,50 @@ impl<T: Copy + std::fmt::Debug> std::fmt::Debug for DynamicArray<T> {
 
 define_instructions! {
     Mov {
-        src: Operand,
         dst: Operand,
+        src: Operand,
     },
 
-    Add { lhs: Operand, rhs: Operand, dst: Operand },
-    Sub { lhs: Operand, rhs: Operand, dst: Operand },
-    Mul { lhs: Operand, rhs: Operand, dst: Operand },
-    Div { lhs: Operand, rhs: Operand, dst: Operand },
-    Mod { lhs: Operand, rhs: Operand, dst: Operand },
+    Add { dst: Operand, lhs: Operand, rhs: Operand },
+    Sub { dst: Operand, lhs: Operand, rhs: Operand },
+    Mul { dst: Operand, lhs: Operand, rhs: Operand },
+    Div { dst: Operand, lhs: Operand, rhs: Operand },
+    Mod { dst: Operand, lhs: Operand, rhs: Operand },
 
-    LeftShift { lhs: Operand, rhs: Operand, dst: Operand },
-    RightShift { lhs: Operand, rhs: Operand, dst: Operand },
+    LeftShift { dst: Operand, lhs: Operand, rhs: Operand },
+    RightShift { dst: Operand, lhs: Operand, rhs: Operand },
 
-    BitwiseAnd { lhs: Operand, rhs: Operand, dst: Operand },
-    BitwiseOr { lhs: Operand, rhs: Operand, dst: Operand },
-    BitwiseXor { lhs: Operand, rhs: Operand, dst: Operand },
+    BitwiseAnd { dst: Operand, lhs: Operand, rhs: Operand },
+    BitwiseOr { dst: Operand, lhs: Operand, rhs: Operand },
+    BitwiseXor { dst: Operand, lhs: Operand, rhs: Operand },
 
-    Neg { src: Operand, dst: Operand },
-    Not { src: Operand, dst: Operand },
-    Invert { src: Operand, dst: Operand },
+    Neg { dst: Operand, src: Operand },
+    Not { dst: Operand, src: Operand },
+    Invert { dst: Operand, src: Operand },
 
-    GetGlobal { symbol: Symbol, dst: Operand, },
-    SetGlobal { src: Operand, symbol: Symbol },
+    GetGlobal { dst: Operand, symbol: Symbol  },
+    SetGlobal { symbol: Symbol, src: Operand, },
 
     GetAttribute {
+        dst: Operand,
         base: Operand,
         attribute: Symbol,
-        dst: Operand,
     },
     SetAttribute {
-        src: Operand,
         base: Operand,
         attribute: Symbol,
+        src: Operand,
     },
 
     GetSubscript {
+        dst: Operand,
         base: Operand,
         index: Operand,
-        dst: Operand,
     },
     SetSubscript {
-        src: Operand,
         base: Operand,
-        index: Operand
+        index: Operand,
+        src: Operand,
     },
 
     #[terminator(true)]
@@ -639,8 +648,9 @@ define_instructions! {
 
     #[serializer(CallSerializer)]
     Call {
+        dst: Operand,
         callee: Operand,
-        arguments: DynamicArray<Operand>
+        arguments: DynamicArray<Operand>,
     },
     Error,
     Noop = 0x80

@@ -204,7 +204,7 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
 
     let module = quote! {
         #[repr(u8)]
-        #[derive(Clone, Copy, PartialEq, Eq)]
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
         pub enum OpCode {
             #opcodes
         }
@@ -240,6 +240,7 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
                 stream.bump(1);
 
                 let Some((inst, size)) = Self::Serializer::deserialize(stream.code()) else {
+                    println!("{:?}", Self::CODE);
                     return None;
                 };
                 stream.bump(size);

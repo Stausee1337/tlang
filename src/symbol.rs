@@ -51,7 +51,7 @@ pub struct Symbol(u32);
 
 impl Debug for Symbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Symbol({})", self.get())
+        write!(f, "`{}`", self.get())
     }
 }
 

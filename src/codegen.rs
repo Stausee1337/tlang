@@ -114,11 +114,11 @@ impl<'ast> GeneratorNode for AssignExpr<'ast> {
                         return Ok(Some(Operand::null()));
                     }
 
-                    generator.emit_mov(src, generator.get_local_reg(ident.symbol));
+                    generator.emit_mov(generator.get_local_reg(ident.symbol), src);
                     return Ok(Some(src));
                 }
 
-                generator.emit_set_global(src, ident.symbol);
+                generator.emit_set_global(ident.symbol, src);
 
                 Ok(Some(src))
             }
@@ -126,7 +126,7 @@ impl<'ast> GeneratorNode for AssignExpr<'ast> {
                 let src = self.rhs.generate_bytecode(generator)?.unwrap();
                 let base = attr.base.generate_bytecode(generator)?.unwrap();
 
-                generator.emit_set_attribute(src, base, attr.attr.symbol);
+                generator.emit_set_attribute(base, attr.attr.symbol, src);
 
                 Ok(Some(src))
             }
@@ -135,7 +135,7 @@ impl<'ast> GeneratorNode for AssignExpr<'ast> {
                 let base = subs.base.generate_bytecode(generator)?.unwrap();
                 let index = subs.argument.generate_bytecode(generator)?.unwrap();
 
-                generator.emit_set_subscript(src, base, index);
+                generator.emit_set_subscript(base, index, src);
 
                 Ok(Some(src))
             }
@@ -171,7 +171,7 @@ impl<'ast> GeneratorNode for Ident {
         }
 
         let dst = generator.allocate_reg();
-        generator.emit_get_global(self.symbol, dst);
+        generator.emit_get_global(dst, self.symbol);
         Ok(Some(dst))
     }
 }
@@ -294,11 +294,11 @@ impl<'ast> GeneratorNode for BinaryExpr<'ast> {
                 self.generate_as_jump(true_target, false_target, generator)?;
 
                 generator.set_current_block(false_target);
-                generator.emit_mov(Operand::bool(false), dst);
+                generator.emit_mov(dst, Operand::bool(false));
                 generator.emit_branch(end_block);
 
                 generator.set_current_block(true_target);
-                generator.emit_mov(Operand::bool(true), dst);
+                generator.emit_mov(dst, Operand::bool(true));
                 generator.emit_fallthrough();
 
                 generator.set_current_block(end_block);
@@ -308,10 +308,10 @@ impl<'ast> GeneratorNode for BinaryExpr<'ast> {
         };
 
         let lhs = self.lhs.generate_bytecode(generator)?.unwrap();
-        let rhs = self.lhs.generate_bytecode(generator)?.unwrap();
+        let rhs = self.rhs.generate_bytecode(generator)?.unwrap();
 
         let dst = generator.allocate_reg();
-        emit(generator, lhs, rhs, dst);
+        emit(generator, dst, lhs, rhs);
 
         Ok(Some(dst))
     }
@@ -328,15 +328,25 @@ impl<'ast> GeneratorNode for UnaryExpr<'ast> {
         let src = self.base.generate_bytecode(generator)?.unwrap();
         let dst = generator.allocate_reg();
 
-        emit(generator, src, dst);
+        emit(generator, dst, src);
 
         Ok(Some(dst))
     }
 }
 
 impl<'ast> GeneratorNode for CallExpr<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let callee = self.callable.generate_bytecode(generator)?.unwrap();
+
+        let mut arguments = vec![];
+        for arg in self.args {
+            let arg = arg.generate_bytecode(generator)?.unwrap();
+            arguments.push(arg);
+        }
+
+        let dst = generator.allocate_reg();
+        generator.emit_call(dst, callee, &arguments as &[_]);
+        Ok(Some(dst))
     }
 }
 
@@ -345,7 +355,7 @@ impl<'ast> GeneratorNode for AttributeExpr<'ast> {
         let base = self.base.generate_bytecode(generator)?.unwrap();
         let dst = generator.allocate_reg();
 
-        generator.emit_get_attribute(base, self.attr.symbol, dst);
+        generator.emit_get_attribute(dst, base, self.attr.symbol);
 
         Ok(Some(dst))
     }
@@ -357,7 +367,7 @@ impl<'ast> GeneratorNode for SubscriptExpr<'ast> {
         let index = self.argument.generate_bytecode(generator)?.unwrap();
         let dst = generator.allocate_reg();
 
-        generator.emit_get_subscript(base, index, dst);
+        generator.emit_get_subscript(dst, base, index);
 
         Ok(Some(dst))
     }

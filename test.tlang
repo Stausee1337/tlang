@@ -1,4 +1,6 @@
 
-11 == 12;
+hello = 11;
+world = 12;
+print(12 + 1, hello == world);
 
 
