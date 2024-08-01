@@ -171,8 +171,15 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
             }
         }
 
+        let terminator_code = if !inst.terminator {
+            quote!(debug_assert!(!self.terminated);)
+        } else {
+            quote!(self.terminated = true;)
+        };
+
         block_impls.extend(quote! {
             pub fn #snake_case_ident<#gparams>(&mut self, #params) {
+                #terminator_code
                 let instruction = crate::bytecode::instructions::#ident {
                     #sargs
                 };
@@ -213,7 +220,13 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
                     return None;
                 }
                 stream.bump(1);
-                Self::Serializer::deserialize(stream.code())
+
+                let Some((inst, size)) = Self::Serializer::deserialize(stream.code()) else {
+                    return None;
+                };
+                stream.bump(size);
+
+                Some(inst)
             }
         }
 

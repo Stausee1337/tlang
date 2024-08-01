@@ -119,7 +119,8 @@ struct BasicBlock {
     label: CodeLabel,
     parent: Option<CodeLabel>,
     data: Vec<u8>,
-    locals: HashMap<Symbol, Local>
+    locals: HashMap<Symbol, Local>,
+    terminated: bool
 } 
 
 impl BasicBlock {
@@ -128,7 +129,8 @@ impl BasicBlock {
             label: CodeLabel::from_raw(0),
             parent,
             data: vec![],
-            locals: Default::default()
+            locals: Default::default(),
+            terminated: false
         }
     }
 }
@@ -178,6 +180,13 @@ impl CGFunction {
         &mut self.blocks[self.current_block]
     }
 
+    pub fn set_current_block(&mut self, label: CodeLabel) -> CodeLabel {
+        let prev_block = self.current_block;
+        debug_assert!(label < self.blocks.len_idx());
+        self.current_block = label;
+        prev_block
+    }
+
     pub fn find_local(&self, symbol: Symbol) -> Option<Local> {
         let mut block = &self.blocks[self.current_block];
         loop {
@@ -193,7 +202,7 @@ impl CGFunction {
         }
     }
 
-    fn fork_block(&mut self, inherit: bool) -> CodeLabel {
+    pub fn fork_block(&mut self, inherit: bool) -> CodeLabel {
         let prev_block = self.current_block;
 
         let new_block = BasicBlock::new(
@@ -206,7 +215,7 @@ impl CGFunction {
         prev_block
     }
 
-    fn register_local(&mut self, symbol: Symbol, constant: bool) -> Result<(), ()> {
+    pub fn register_local(&mut self, symbol: Symbol, constant: bool) -> Result<(), ()> {
         let local = Local {
             constant,
             declared: false
@@ -261,9 +270,14 @@ impl BytecodeGenerator {
         return &mut self.current_fn;
     }
 
-    fn fork_block(&mut self, inherit: bool) -> CodeLabel {
+    pub fn fork_block(&mut self, inherit: bool) -> CodeLabel {
         self.current_fn_mut()
             .fork_block(inherit)
+    }
+
+    pub fn set_current_block(&mut self, label: CodeLabel) -> CodeLabel {
+        self.current_fn_mut()
+            .set_current_block(label)
     }
 
     pub fn register_local(&mut self, ident: Ident, constant: bool) -> Result<(), ()> {
@@ -312,7 +326,7 @@ impl BytecodeGenerator {
 
 pub trait InstructionSerializer<I: Instruction> {
     fn serialize(inst: I, vec: &mut Vec<u8>);
-    fn deserialize(data: &[u8]) -> Option<I>;
+    fn deserialize(data: &[u8]) -> Option<(I, usize)>;
 }
 
 pub struct BitSerializer<I>(PhantomData<I>);
@@ -345,8 +359,8 @@ impl<I: Instruction> InstructionSerializer<I> for BitSerializer<I> {
     }
 
     #[inline(always)]
-    fn deserialize(data: &[u8]) -> Option<I> {
-        BitSerializer::deserialize(data)
+    fn deserialize(data: &[u8]) -> Option<(I, usize)> {
+        BitSerializer::deserialize(data).map(|i| (i, std::mem::size_of::<I>()))
     }
 }
 
@@ -360,16 +374,16 @@ impl InstructionSerializer<instructions::Call> for CallSerializer {
     }
 
     #[inline(always)]
-    fn deserialize(data: &[u8]) -> Option<instructions::Call> {
+    fn deserialize(data: &[u8]) -> Option<(instructions::Call, usize)> {
         const VAL_SIZE: usize = std::mem::size_of::<Operand>();
 
         let callee = BitSerializer::deserialize(data)?;
-        let arguments = DynamicArray::deserialize(&data[VAL_SIZE..])?;
+        let (arguments, size) = DynamicArray::deserialize(&data[VAL_SIZE..])?;
 
-        Some(instructions::Call {
+        Some((instructions::Call {
             callee,
             arguments
-        })
+        }, VAL_SIZE + size))
     }
 }
 
@@ -389,7 +403,7 @@ impl<T: Copy> DynamicArray<T> {
         vec.extend(bytes);
     }
 
-    fn deserialize(data: &[u8]) -> Option<Self> {
+    fn deserialize(data: &[u8]) -> Option<(Self, usize)> {
         let item_size = std::mem::size_of::<T>();
         let header_size = std::mem::size_of::<usize>();
 
@@ -406,10 +420,10 @@ impl<T: Copy> DynamicArray<T> {
         }
 
         let length = size / item_size;
-        Some(Self {
+        Some((Self {
             length,
             data: data[header_size..].as_ptr() as *const T
-        })
+        }, header_size + size))
     }
 }
 
@@ -436,22 +450,42 @@ define_instructions! {
         src: Operand,
         dst: Operand,
     },
-    Add {
-        lhs: Operand,
-        rhs: Operand,
-    },
-    GetGlobal {
-        symbol: Symbol,
+
+    Add { lhs: Operand, rhs: Operand, dst: Operand },
+    Sub { lhs: Operand, rhs: Operand, dst: Operand },
+    Mul { lhs: Operand, rhs: Operand, dst: Operand },
+    Div { lhs: Operand, rhs: Operand, dst: Operand },
+    Mod { lhs: Operand, rhs: Operand, dst: Operand },
+
+    LeftShift { lhs: Operand, rhs: Operand, dst: Operand },
+    RightShift { lhs: Operand, rhs: Operand, dst: Operand },
+
+    BitwiseAnd { lhs: Operand, rhs: Operand, dst: Operand },
+    BitwiseOr { lhs: Operand, rhs: Operand, dst: Operand },
+    BitwiseXor { lhs: Operand, rhs: Operand, dst: Operand },
+
+    Neg { src: Operand, dst: Operand },
+    Not { src: Operand, dst: Operand },
+    Invert { src: Operand, dst: Operand },
+
+    GetGlobal { symbol: Symbol, dst: Operand, },
+    SetGlobal { src: Operand, symbol: Symbol },
+
+    GetAttribute {
+        base: Operand,
+        attribute: Symbol,
         dst: Operand,
-    },
-    SetGlobal {
-        src: Operand,
-        symbol: Symbol
     },
     SetAttribute {
         src: Operand,
         base: Operand,
         attribute: Symbol,
+    },
+
+    GetSubscript {
+        base: Operand,
+        index: Operand,
+        dst: Operand,
     },
     SetSubscript {
         src: Operand,
@@ -460,7 +494,49 @@ define_instructions! {
     },
 
     #[terminator(true)]
+    Branch { target: CodeLabel },
+ 
+    #[terminator(true)]
+    BranchIf {
+        condition: Operand,
+        true_target: CodeLabel,
+        false_target: CodeLabel
+    },
+    #[terminator(true)]
+    BranchEq {
+        lhs: Operand, rhs: Operand,
+        true_target: CodeLabel, false_target: CodeLabel
+    },
+    #[terminator(true)]
+    BranchNe {
+        lhs: Operand, rhs: Operand,
+        true_target: CodeLabel, false_target: CodeLabel
+    },
+    #[terminator(true)]
+    BranchGt {
+        lhs: Operand, rhs: Operand,
+        true_target: CodeLabel, false_target: CodeLabel
+    },
+    #[terminator(true)]
+    BranchGe {
+        lhs: Operand, rhs: Operand,
+        true_target: CodeLabel, false_target: CodeLabel
+    },
+    #[terminator(true)]
+    BranchLt {
+        lhs: Operand, rhs: Operand,
+        true_target: CodeLabel, false_target: CodeLabel
+    },
+    #[terminator(true)]
+    BranchLe {
+        lhs: Operand, rhs: Operand,
+        true_target: CodeLabel, false_target: CodeLabel
+    },
+
+    #[terminator(true)]
     Return { value: Operand },
+    #[terminator(true)]
+    Fallthrough,
 
     #[serializer(CallSerializer)]
     Call {

@@ -1,6 +1,6 @@
 
 use crate::lexer::Span;
-use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop, Variable, Function, AssignExpr, Literal, Ident, BinaryExpr, UnaryExpr, CallExpr, AttributeExpr, SubscriptExpr, ListExpr, ObjectExpr, TupleExpr, Lambda, Module, Statement, LiteralKind, Expression};
+use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop, Variable, Function, AssignExpr, Literal, Ident, BinaryExpr, UnaryExpr, CallExpr, AttributeExpr, SubscriptExpr, ListExpr, ObjectExpr, TupleExpr, Lambda, Module, Statement, LiteralKind, Expression, BinaryOp, UnaryOp};
 
 use crate::bytecode::{Operand, BytecodeGenerator, CodeLabel};
 
@@ -183,21 +183,154 @@ impl<'ast> BinaryExpr<'ast> {
         false_target: CodeLabel,
         generator: &mut BytecodeGenerator
     ) -> CodegenResult {
-        todo!()
+        let emit = match self.op {
+            BinaryOp::Equal => BytecodeGenerator::emit_branch_eq::<Operand, Operand, CodeLabel, CodeLabel>,
+            BinaryOp::NotEqual => BytecodeGenerator::emit_branch_ne,
+            BinaryOp::GreaterThan => BytecodeGenerator::emit_branch_gt,
+            BinaryOp::GreaterEqual => BytecodeGenerator::emit_branch_ge,
+            BinaryOp::LessThan => BytecodeGenerator::emit_branch_lt,
+            BinaryOp::LessEqual => BytecodeGenerator::emit_branch_le,
+
+            BinaryOp::BooleanOr => {
+                let start_block = generator.fork_block(true);
+                let intm_target = generator.set_current_block(start_block);
+
+                if let Some(result) = self.lhs.can_generate_as_jump(true_target, intm_target, generator) {
+                    result?.unwrap();
+                } else {
+                    let condition = self.lhs.generate_bytecode(generator)?.unwrap();
+                    generator.emit_branch_if(condition, true_target, intm_target)
+                }
+
+                generator.set_current_block(intm_target);
+                if let Some(result) = self.rhs.can_generate_as_jump(true_target, false_target, generator) {
+                    result?.unwrap();
+                } else {
+                    let condition = self.rhs.generate_bytecode(generator)?.unwrap();
+                    generator.emit_branch_if(condition, true_target, false_target)
+                }
+
+                return Ok(None);
+            }
+            BinaryOp::BooleanAnd => {
+                let start_block = generator.fork_block(true);
+                let intm_target = generator.set_current_block(start_block);
+
+                if let Some(result) = self.lhs.can_generate_as_jump(intm_target, false_target, generator) {
+                    result?.unwrap();
+                } else {
+                    let condition = self.lhs.generate_bytecode(generator)?.unwrap();
+                    generator.emit_branch_if(condition, intm_target, false_target)
+                }
+
+                generator.set_current_block(intm_target);
+                if let Some(result) = self.rhs.can_generate_as_jump(true_target, false_target, generator) {
+                    result?.unwrap();
+                } else {
+                    let condition = self.rhs.generate_bytecode(generator)?.unwrap();
+                    generator.emit_branch_if(condition, true_target, false_target)
+                }
+
+                return Ok(None);
+            }
+            _ => unreachable!(),
+        };
+
+        let lhs = self.lhs.generate_bytecode(generator)?.unwrap();
+        let rhs = self.rhs.generate_bytecode(generator)?.unwrap();
+
+        emit(generator, lhs, rhs, true_target, false_target);
+
+        Ok(None)
+    }
+}
+
+impl<'ast> Expression<'ast> {
+    fn can_generate_as_jump(
+        &self,
+        true_target: CodeLabel,
+        false_target: CodeLabel,
+        generator: &mut BytecodeGenerator
+    ) -> Option<CodegenResult> {
+        use BinaryOp::*;
+        let Self::BinaryExpr(binary) = self else {
+            return None;
+        };
+
+        match binary.op {
+            Equal | NotEqual | GreaterThan |
+            GreaterEqual | LessThan | LessEqual |
+            BooleanOr | BooleanAnd => Some(binary.generate_as_jump(true_target, false_target, generator)),
+            _ => None,
+        }
     }
 }
 
 impl<'ast> GeneratorNode for BinaryExpr<'ast> {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
-        let result = generator.allocate_reg();
+        let emit = match self.op {
+            BinaryOp::Plus => BytecodeGenerator::emit_add::<Operand, Operand, Operand>,
+            BinaryOp::Minus => BytecodeGenerator::emit_sub,
+            BinaryOp::Mul => BytecodeGenerator::emit_mul,
+            BinaryOp::Div => BytecodeGenerator::emit_div,
+            BinaryOp::Mod => BytecodeGenerator::emit_mod,
 
-        Ok(Some(result))
+            BinaryOp::ShiftLeft => BytecodeGenerator::emit_left_shift,
+            BinaryOp::ShiftRight => BytecodeGenerator::emit_right_shift,
+
+            BinaryOp::BitwiseAnd => BytecodeGenerator::emit_bitwise_and,
+            BinaryOp::BitwiseOr => BytecodeGenerator::emit_bitwise_or,
+            BinaryOp::BitwiseXor => BytecodeGenerator::emit_bitwise_xor,
+
+            _ => {
+                let dst = generator.allocate_reg();
+
+                let start_block = generator.fork_block(false);
+                let false_target = generator.set_current_block(start_block);
+                generator.fork_block(true);
+                let true_target  = generator.fork_block(true);
+                let end_block = generator.set_current_block(start_block);
+
+                self.generate_as_jump(true_target, false_target, generator)?;
+
+                generator.set_current_block(false_target);
+                generator.emit_mov(Operand::bool(false), dst);
+                generator.emit_branch(end_block);
+
+                generator.set_current_block(true_target);
+                generator.emit_mov(Operand::bool(true), dst);
+                generator.emit_fallthrough();
+
+                generator.set_current_block(end_block);
+
+                return Ok(Some(dst));
+            }
+        };
+
+        let lhs = self.lhs.generate_bytecode(generator)?.unwrap();
+        let rhs = self.lhs.generate_bytecode(generator)?.unwrap();
+
+        let dst = generator.allocate_reg();
+        emit(generator, lhs, rhs, dst);
+
+        Ok(Some(dst))
     }
 }
 
 impl<'ast> GeneratorNode for UnaryExpr<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let emit = match self.op {
+            UnaryOp::Neg => BytecodeGenerator::emit_neg::<Operand, Operand>,
+            UnaryOp::Not => BytecodeGenerator::emit_not,
+            UnaryOp::Invert => BytecodeGenerator::emit_invert,
+        };
+
+        let src = self.base.generate_bytecode(generator)?.unwrap();
+        let dst = generator.allocate_reg();
+
+        emit(generator, src, dst);
+
+        Ok(Some(dst))
     }
 }
 
@@ -208,14 +341,25 @@ impl<'ast> GeneratorNode for CallExpr<'ast> {
 }
 
 impl<'ast> GeneratorNode for AttributeExpr<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let base = self.base.generate_bytecode(generator)?.unwrap();
+        let dst = generator.allocate_reg();
+
+        generator.emit_get_attribute(base, self.attr.symbol, dst);
+
+        Ok(Some(dst))
     }
 }
 
 impl<'ast> GeneratorNode for SubscriptExpr<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let base = self.base.generate_bytecode(generator)?.unwrap();
+        let index = self.argument.generate_bytecode(generator)?.unwrap();
+        let dst = generator.allocate_reg();
+
+        generator.emit_get_subscript(base, index, dst);
+
+        Ok(Some(dst))
     }
 }
 
