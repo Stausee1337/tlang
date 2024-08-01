@@ -176,13 +176,40 @@ impl<'ast> GeneratorNode for Ident {
     }
 }
 
-impl<'ast> BinaryExpr<'ast> {
+impl<'ast> Expression<'ast> {
     fn generate_as_jump(
         &self,
         true_target: CodeLabel,
         false_target: CodeLabel,
         generator: &mut BytecodeGenerator
     ) -> CodegenResult {
+        let Self::BinaryExpr(binary) = self else {
+            let condition = self.generate_bytecode(generator)?.unwrap();
+            generator.emit_branch_if(condition, true_target, false_target);
+            return Ok(None);
+        };
+
+        match binary.op {
+            BinaryOp::Equal | BinaryOp::NotEqual | BinaryOp::GreaterThan |
+            BinaryOp::GreaterEqual | BinaryOp::LessThan | BinaryOp::LessEqual |
+            BinaryOp::BooleanOr | BinaryOp::BooleanAnd =>
+                binary.generate_bool(true_target, false_target, generator).map(|_| None),
+            _ => {
+                let condition = self.generate_bytecode(generator)?.unwrap();
+                generator.emit_branch_if(condition, true_target, false_target);
+                Ok(None)
+            }
+        }
+    }
+}
+
+impl<'ast> BinaryExpr<'ast> {
+    fn generate_bool(
+        &self,
+        true_target: CodeLabel,
+        false_target: CodeLabel,
+        generator: &mut BytecodeGenerator
+    ) -> Result<(), CodegenErr> {
         let emit = match self.op {
             BinaryOp::Equal => BytecodeGenerator::emit_branch_eq::<Operand, Operand, CodeLabel, CodeLabel>,
             BinaryOp::NotEqual => BytecodeGenerator::emit_branch_ne,
@@ -195,45 +222,25 @@ impl<'ast> BinaryExpr<'ast> {
                 let start_block = generator.fork_block(true);
                 let intm_target = generator.set_current_block(start_block);
 
-                if let Some(result) = self.lhs.can_generate_as_jump(true_target, intm_target, generator) {
-                    result?.unwrap();
-                } else {
-                    let condition = self.lhs.generate_bytecode(generator)?.unwrap();
-                    generator.emit_branch_if(condition, true_target, intm_target)
-                }
+                self.lhs.generate_as_jump(true_target, intm_target, generator)?;
 
                 generator.set_current_block(intm_target);
-                if let Some(result) = self.rhs.can_generate_as_jump(true_target, false_target, generator) {
-                    result?.unwrap();
-                } else {
-                    let condition = self.rhs.generate_bytecode(generator)?.unwrap();
-                    generator.emit_branch_if(condition, true_target, false_target)
-                }
+                self.rhs.generate_as_jump(true_target, false_target, generator)?;
 
-                return Ok(None);
+                return Ok(());
             }
             BinaryOp::BooleanAnd => {
                 let start_block = generator.fork_block(true);
                 let intm_target = generator.set_current_block(start_block);
 
-                if let Some(result) = self.lhs.can_generate_as_jump(intm_target, false_target, generator) {
-                    result?.unwrap();
-                } else {
-                    let condition = self.lhs.generate_bytecode(generator)?.unwrap();
-                    generator.emit_branch_if(condition, intm_target, false_target)
-                }
+                self.lhs.generate_as_jump(intm_target, false_target, generator)?;
 
                 generator.set_current_block(intm_target);
-                if let Some(result) = self.rhs.can_generate_as_jump(true_target, false_target, generator) {
-                    result?.unwrap();
-                } else {
-                    let condition = self.rhs.generate_bytecode(generator)?.unwrap();
-                    generator.emit_branch_if(condition, true_target, false_target)
-                }
+                self.rhs.generate_as_jump(true_target, false_target, generator)?;
 
-                return Ok(None);
+                return Ok(());
             }
-            _ => unreachable!(),
+            _ => panic!("non-bool operator in generate_bool"),
         };
 
         let lhs = self.lhs.generate_bytecode(generator)?.unwrap();
@@ -241,33 +248,10 @@ impl<'ast> BinaryExpr<'ast> {
 
         emit(generator, lhs, rhs, true_target, false_target);
 
-        Ok(None)
+        Ok(())
     }
-}
 
-impl<'ast> Expression<'ast> {
-    fn can_generate_as_jump(
-        &self,
-        true_target: CodeLabel,
-        false_target: CodeLabel,
-        generator: &mut BytecodeGenerator
-    ) -> Option<CodegenResult> {
-        use BinaryOp::*;
-        let Self::BinaryExpr(binary) = self else {
-            return None;
-        };
-
-        match binary.op {
-            Equal | NotEqual | GreaterThan |
-            GreaterEqual | LessThan | LessEqual |
-            BooleanOr | BooleanAnd => Some(binary.generate_as_jump(true_target, false_target, generator)),
-            _ => None,
-        }
-    }
-}
-
-impl<'ast> GeneratorNode for BinaryExpr<'ast> {
-    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+    fn generate_nobool(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
         let emit = match self.op {
             BinaryOp::Plus => BytecodeGenerator::emit_add::<Operand, Operand, Operand>,
             BinaryOp::Minus => BytecodeGenerator::emit_sub,
@@ -282,6 +266,26 @@ impl<'ast> GeneratorNode for BinaryExpr<'ast> {
             BinaryOp::BitwiseOr => BytecodeGenerator::emit_bitwise_or,
             BinaryOp::BitwiseXor => BytecodeGenerator::emit_bitwise_xor,
 
+            _ => panic!("bool operator in generate_nobool")
+        };
+
+        let lhs = self.lhs.generate_bytecode(generator)?.unwrap();
+        let rhs = self.rhs.generate_bytecode(generator)?.unwrap();
+
+        let dst = generator.allocate_reg();
+        emit(generator, dst, lhs, rhs);
+
+        Ok(Some(dst))
+    }
+}
+
+impl<'ast> GeneratorNode for BinaryExpr<'ast> {
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        match self.op {
+            BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul |
+            BinaryOp::Div | BinaryOp::Mod | BinaryOp::ShiftLeft |
+            BinaryOp::ShiftRight | BinaryOp::BitwiseAnd | 
+            BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => self.generate_nobool(generator),
             _ => {
                 let dst = generator.allocate_reg();
 
@@ -291,7 +295,7 @@ impl<'ast> GeneratorNode for BinaryExpr<'ast> {
                 let true_target  = generator.fork_block(true);
                 let end_block = generator.set_current_block(start_block);
 
-                self.generate_as_jump(true_target, false_target, generator)?;
+                self.generate_bool(true_target, false_target, generator)?;
 
                 generator.set_current_block(false_target);
                 generator.emit_mov(dst, Operand::bool(false));
@@ -305,15 +309,7 @@ impl<'ast> GeneratorNode for BinaryExpr<'ast> {
 
                 return Ok(Some(dst));
             }
-        };
-
-        let lhs = self.lhs.generate_bytecode(generator)?.unwrap();
-        let rhs = self.rhs.generate_bytecode(generator)?.unwrap();
-
-        let dst = generator.allocate_reg();
-        emit(generator, dst, lhs, rhs);
-
-        Ok(Some(dst))
+        }
     }
 }
 
