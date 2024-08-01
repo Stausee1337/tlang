@@ -71,7 +71,7 @@ fn main() -> ExitCode {
         let module = ctx.parse().unwrap();
 
         let mut generator = BytecodeGenerator::new();
-        codegen::generate_module(&mut generator, module).unwrap();
+        codegen::generate_module(module, &mut generator).unwrap();
 
         let mut string = String::new();
         let function = generator.current_fn();

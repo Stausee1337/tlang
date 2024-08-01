@@ -172,14 +172,13 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
             }
         }
 
-        let terminator_code = if !inst.terminator {
-            quote!(debug_assert!(!self.terminated);)
-        } else {
-            quote!(self.terminated = true;)
-        };
+        let terminator_code = if inst.terminator {
+            Some(quote!(self.terminated = true;))
+        } else { None };
 
         block_impls.extend(quote! {
             pub fn #snake_case_ident<#gparams>(&mut self, #params) {
+                debug_assert!(!self.terminated);
                 #terminator_code
                 let instruction = crate::bytecode::instructions::#ident {
                     #sargs

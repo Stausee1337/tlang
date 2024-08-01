@@ -270,6 +270,10 @@ impl CGFunction {
         rv
     }
 
+    fn current_block(&self) -> &BasicBlock {
+        &self.blocks[self.current_block]
+    }
+
     fn current_block_mut(&mut self) -> &mut BasicBlock {
         &mut self.blocks[self.current_block]
     }
@@ -309,9 +313,11 @@ impl CGFunction {
         prev_block
     }
 
-    pub fn register_local(&mut self, symbol: Symbol, constant: bool) -> Result<(), ()> {
-        assert!(self.scope != Scope::Module);
+    pub fn is_block_terminated(&self) -> bool {
+        self.current_block().terminated
+    }
 
+    pub fn register_local(&mut self, symbol: Symbol, constant: bool) -> Result<(), ()> {
         let local = Local {
             constant,
             declared: false
@@ -323,8 +329,6 @@ impl CGFunction {
     }
 
     fn declare_local(&mut self, symbol: Symbol) -> Operand {
-        assert!(self.scope != Scope::Module);
-
         let local = self.current_block_mut().locals.get_mut(&symbol)
             .expect("register local before declare");
         debug_assert!(!local.declared);
@@ -371,6 +375,11 @@ impl BytecodeGenerator {
     pub fn fork_block(&mut self, inherit: bool) -> CodeLabel {
         self.current_fn_mut()
             .fork_block(inherit)
+    }
+
+    pub fn is_terminated(&self) -> bool {
+        self.current_fn()
+            .is_block_terminated()
     }
 
     pub fn set_current_block(&mut self, label: CodeLabel) -> CodeLabel {

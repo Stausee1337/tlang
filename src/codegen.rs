@@ -18,11 +18,11 @@ pub trait GeneratorNode {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult;
 }
 
-pub fn generate_module<'ast>(generator: &mut BytecodeGenerator, module: Module<'ast>) -> CodegenResult {
-    generate_body(generator, module.body) 
+pub fn generate_module<'ast>(module: Module<'ast>, generator: &mut BytecodeGenerator, ) -> CodegenResult {
+    generate_body(module.body, generator) 
 }
 
-pub fn generate_body<'ast>(generator: &mut BytecodeGenerator, body: &'ast [&'ast Statement]) -> CodegenResult {
+pub fn generate_body<'ast>(body: &'ast [&'ast Statement], generator: &mut BytecodeGenerator) -> CodegenResult {
     for stmt in body {
         match stmt {
             Statement::Variable(ref var) =>
@@ -44,11 +44,64 @@ pub fn generate_body<'ast>(generator: &mut BytecodeGenerator, body: &'ast [&'ast
     Ok(None)
 }
 
+fn generate_small_branch(src: CodeLabel, dst: CodeLabel, generator: &mut BytecodeGenerator) {
+    if src == dst - 1 {
+        generator.emit_fallthrough();
+    } else {
+        generator.emit_branch(dst);
+    }
+
+}
+
 /// STATEMENTS
 
 impl<'ast> GeneratorNode for IfBranch<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let Some(condition) = self.condition else { // handle an else { ... } branch
+            debug_assert!(self.else_branch.is_none());
+
+            return generate_body(self.body, generator);
+        };
+
+        let start_block = generator.fork_block(true);
+        let true_target = generator.set_current_block(start_block);
+        generator.fork_block(true);
+        let false_target = generator.set_current_block(start_block);
+
+        condition.generate_as_jump(true_target, false_target, generator)?;
+
+        generator.set_current_block(true_target);
+        generate_body(self.body, generator)?;
+        generator.set_current_block(true_target);
+        let true_terminated = generator.is_terminated();
+
+        generator.set_current_block(false_target);
+        let mut false_terminated = true;
+        if let Some(else_branch) = self.else_branch {
+            else_branch.generate_bytecode(generator)?;
+            let end_block = generator.set_current_block(false_target);
+            false_terminated = generator.is_terminated();
+            generator.set_current_block(end_block);
+        }
+
+        if !false_terminated {
+            let mut end_block = generator.set_current_block(false_target);
+            if end_block == false_target {
+                generator.set_current_block(start_block);
+                generator.fork_block(true);
+                end_block = generator.set_current_block(false_target);
+            }
+            generate_small_branch(false_target, end_block, generator);
+            generator.set_current_block(end_block);
+        }
+
+        if !true_terminated {
+            let end_block = generator.set_current_block(true_target);
+            generate_small_branch(true_target, end_block, generator);
+            generator.set_current_block(end_block);
+        }
+
+        Ok(None)
     }
 }
 

@@ -1,6 +1,11 @@
 
-hello = 11;
-world = 12;
-print(12 + 1, hello == world);
+if (11 == 12) {
+    print(null);
+} else if (11 < 12) {
+    print(12);
+} else {
+    print(13);
+}
 
+print(false);
 
