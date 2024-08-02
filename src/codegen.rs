@@ -19,7 +19,9 @@ pub trait GeneratorNode {
 }
 
 pub fn generate_module<'ast>(module: Module<'ast>, generator: &mut BytecodeGenerator, ) -> CodegenResult {
-    generate_body(module.body, generator) 
+    generate_body(module.body, generator)?;
+    generator.emit_return(Operand::null());
+    Ok(None)
 }
 
 pub fn generate_body<'ast>(body: &'ast [&'ast Statement], generator: &mut BytecodeGenerator) -> CodegenResult {
@@ -103,8 +105,14 @@ impl<'ast> GeneratorNode for IfBranch<'ast> {
 }
 
 impl<'ast> GeneratorNode for Return<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let value = if let Some(value) = self.value {
+            value.generate_bytecode(generator)?.unwrap()
+        } else { Operand::null() };
+
+        generator.emit_return(value);
+
+        Ok(None)
     }
 }
 
@@ -226,8 +234,15 @@ impl<'ast> GeneratorNode for Variable<'ast> {
 }
 
 impl<'ast> GeneratorNode for Function<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let _ = generator.with_function(self.name, self.params, |generator| {
+            generate_body(self.body, generator)?;
+            if !generator.is_terminated() {
+                generator.emit_return(Operand::null());
+            }
+            Ok(())
+        })?;
+        Ok(None)
     }
 }
 

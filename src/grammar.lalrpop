@@ -105,6 +105,7 @@ WhileStatement: parse::Statement<'ast> = {
 
 DefStatement: parse::Statement<'ast> = {
     <start:@L> "def" <name:Ident> "(" <params:SeperatedList<Ident, ",">> ")" <end:@R> "{" <body:Body> "}" => parse::Statement::Function(parse::Function {
+        name,
         params,
         body: ctx.slice(body),
         span: Span { start, end }

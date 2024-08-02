@@ -4,7 +4,7 @@ use std::{marker::PhantomData, ops::{Deref, IndexMut}, fmt::{Write, Result as Fm
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::TValue, symbol::Symbol, parse::Ident, interpreter::CodeStream};
+use crate::{tvalue::TValue, symbol::Symbol, parse::Ident, interpreter::CodeStream, codegen};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -101,8 +101,8 @@ define_index_type! {
 struct RegisterAllocator(u32);
 
 impl RegisterAllocator {
-    fn prefill(amount: u32) -> Self {
-        RegisterAllocator(amount)
+    fn new() -> Self {
+        RegisterAllocator(0)
     }
 
     fn next(&mut self) -> Register {
@@ -162,7 +162,7 @@ impl<'f> FunctionDisassembler<'f> {
     }
 
     fn function_head(&mut self) -> FmtResult {
-        writeln!(self, "function \"\" ({}) {{", self.function.num_params)?;
+        writeln!(self, "function {:?} ({}) {{", self.function.name, self.function.num_params)?;
         self.indent();
         
         let mut code_size = 0;
@@ -255,6 +255,7 @@ impl Rib {
 }
 
 pub struct CGFunction {
+    name: Symbol,
     num_params: u32,
     num_locals: u32,
     descriptor_table: IndexVec<Descriptor, TValue>,
@@ -265,37 +266,35 @@ pub struct CGFunction {
 }
 
 impl CGFunction {
-    fn create() -> Self {
+
+    fn module() -> Self {
         Self {
+            name: Symbol::intern("$module"),
             ribs: vec![Rib::new(RibKind::Module)],
             num_params: 0,
             num_locals: 0,
             descriptor_table: Default::default(),
             blocks: vec![BasicBlock::new()].into(),
             current_block: CodeLabel::from_raw(0),
-            register_allocator: RegisterAllocator::prefill(0),
+            register_allocator: RegisterAllocator::new(),
         }
     }
 
-    fn module() -> Self {
-        Self::create()
-    }
-
-    fn function(params: &[Symbol]) -> Self {
+    fn function(name: Symbol, _closure: bool, params: &[&Ident]) -> Result<Self, Ident> {
         let mut rv = Self {
+            name,
             num_params: params.len() as u32,
             ribs: vec![Rib::new(RibKind::Function)],
-            register_allocator: RegisterAllocator::prefill(params.len() as u32),
-            ..Self::create()
+            register_allocator: RegisterAllocator::new(),
+            ..Self::module()
         };
-        rv.num_locals = rv.num_params;
 
         for param in params {
-            rv.register_local(*param, false).expect("no locals before arguments");
-            rv.declare_local(*param);
+            rv.register_local(param.symbol, false).map_err(|_| **param)?;
+            rv.declare_local(param.symbol);
         }
 
-        rv
+        Ok(rv)
     }
 
     fn current_block(&self) -> &BasicBlock {
@@ -406,22 +405,46 @@ impl CGFunction {
 }
 
 pub struct BytecodeGenerator {
-    current_fn: CGFunction
+    root_fn: CGFunction,
+    function_stack: Vec<CGFunction>
 }
+
+pub struct ClosureScope;
 
 impl BytecodeGenerator {
     pub fn new() -> Self {
         Self {
-            current_fn: CGFunction::module()
+            root_fn: CGFunction::module(),
+            function_stack: Default::default()
         }
     }
 
     pub fn current_fn(&self) -> &CGFunction {
-        return &self.current_fn;
+        return self.function_stack.last().unwrap_or_else(|| &self.root_fn);
     }
 
     pub fn current_fn_mut(&mut self) -> &mut CGFunction {
-        return &mut self.current_fn;
+        return self.function_stack.last_mut().unwrap_or_else(|| &mut self.root_fn);
+    }
+
+    pub fn with_function<F: FnOnce(&mut Self) -> Result<(), codegen::CodegenErr>>(
+        &mut self, name: Ident, params: &[&Ident], do_work: F) -> Result<Option<ClosureScope>, codegen::CodegenErr> {
+        if self.current_fn().current_rib().kind != RibKind::Module {
+            todo!("closures")
+        }
+        let func = CGFunction::function(name.symbol, false, params)
+            .map_err(|param| codegen::CodegenErr::SyntaxError {
+                message: Some(format!("param {:?} has already been declared", param.symbol)),
+                span: param.span
+            })?;
+        self.function_stack.push(func);
+        do_work(self)?;
+        let func = self.function_stack.pop().unwrap();
+
+        let mut string = String::new();
+        FunctionDisassembler::dissassemble(&func, &mut string).unwrap();
+        println!("{string}");
+        Ok(None)
     }
 
     pub fn with_rib<F: FnOnce(&mut Self) -> R, R>(&mut self, kind: RibKind, do_work: F) -> R {

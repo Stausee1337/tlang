@@ -83,6 +83,7 @@ pub struct Variable<'ast> {
 
 #[derive(Debug, Copy, Clone)]
 pub struct Function<'ast> {
+    pub name: Ident,
     pub params: &'ast [&'ast Ident],
     pub body: &'ast [&'ast Statement<'ast>],
     pub span: Span
