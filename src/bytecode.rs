@@ -112,42 +112,6 @@ impl RegisterAllocator {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct Local {
-    pub constant: bool,
-    pub declared: bool,
-}
-
-define_index_type! {
-    pub struct CodeLabel = u32;
-    DEBUG_FORMAT = "bb{}";
-}
-
-struct BasicBlock {
-    label: CodeLabel,
-    parent: Option<CodeLabel>,
-    data: Vec<u8>,
-    locals: HashMap<Symbol, Local>,
-    terminated: bool
-} 
-
-impl BasicBlock {
-    fn new(parent: Option<CodeLabel>) -> Self {
-        Self {
-            label: CodeLabel::from_raw(0),
-            parent,
-            data: vec![],
-            locals: Default::default(),
-            terminated: false
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Scope {
-    Module,
-    Function,
-}
 
 pub struct FunctionDisassembler<'f> {
     function: &'f CGFunction,
@@ -206,7 +170,7 @@ impl<'f> FunctionDisassembler<'f> {
             code_size += block.data.len();
         }
 
-        writeln!(self, ".locals {}", self.function.local2reg.len())?;
+        writeln!(self, ".locals {}", self.function.num_locals)?;
         writeln!(self, ".registers {}", self.function.register_allocator.0)?;
         writeln!(self, ".codeSize {}", code_size)?;
 
@@ -234,26 +198,75 @@ impl<'f> Write for FunctionDisassembler<'f> {
     }
 }
 
+define_index_type! {
+    pub struct CodeLabel = u32;
+    DEBUG_FORMAT = "bb{}";
+}
+
+#[derive(Clone, Copy)]
+pub struct Local {
+    pub constant: bool,
+    pub register: Option<Register>,
+}
+
+struct BasicBlock {
+    label: CodeLabel,
+    data: Vec<u8>,
+    terminated: bool
+} 
+
+impl BasicBlock {
+    fn new() -> Self {
+        Self {
+            label: CodeLabel::from_raw(0),
+            data: vec![],
+            terminated: false
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RibKind {
+    Module,
+    Function,
+    If,
+    Loop,
+}
+
+pub struct Rib {
+    kind: RibKind,
+    locals: HashMap<Symbol, Local>
+}
+
+impl Rib {
+    fn new(kind: RibKind) -> Self {
+        Self {
+            kind,
+            locals: Default::default()
+        }
+    }
+}
+
 pub struct CGFunction {
-    scope: Scope,
     num_params: u32,
+    num_locals: u32,
     descriptor_table: IndexVec<Descriptor, TValue>,
     blocks: IndexVec<CodeLabel, BasicBlock>,
     current_block: CodeLabel,
     register_allocator: RegisterAllocator,
-    local2reg: HashMap<(CodeLabel, Symbol), Register>
+    ribs: Vec<Rib>,
 }
 
 impl CGFunction {
     fn create() -> Self {
         Self {
+            ribs: vec![Rib::new(RibKind::Module)],
             num_params: 0,
-            scope: Scope::Module,
+            num_locals: 0,
             descriptor_table: Default::default(),
-            blocks: vec![BasicBlock::new(None)].into(),
+            blocks: vec![BasicBlock::new()].into(),
             current_block: CodeLabel::from_raw(0),
             register_allocator: RegisterAllocator::prefill(0),
-            local2reg: Default::default() 
         }
     }
 
@@ -264,10 +277,11 @@ impl CGFunction {
     fn function(params: &[Symbol]) -> Self {
         let mut rv = Self {
             num_params: params.len() as u32,
-            scope: Scope::Function,
+            ribs: vec![Rib::new(RibKind::Function)],
             register_allocator: RegisterAllocator::prefill(params.len() as u32),
             ..Self::create()
         };
+        rv.num_locals = rv.num_params;
 
         for param in params {
             rv.register_local(*param, false).expect("no locals before arguments");
@@ -285,6 +299,14 @@ impl CGFunction {
         &mut self.blocks[self.current_block]
     }
 
+    fn current_rib(&self) -> &Rib {
+        self.ribs.last().expect("at least one root rib")
+    }
+
+    fn current_rib_mut(&mut self) -> &mut Rib {
+        self.ribs.last_mut().expect("at least one root rib")
+    }
+
     pub fn set_current_block(&mut self, label: CodeLabel) -> CodeLabel {
         let prev_block = self.current_block;
         debug_assert!(label < self.blocks.len_idx());
@@ -292,27 +314,26 @@ impl CGFunction {
         prev_block
     }
 
+
+    pub fn find_rib(&mut self, kind: RibKind, depth: i32) -> Option<&mut Rib> {
+        todo!()
+    }
+
     pub fn find_local(&self, symbol: Symbol) -> Option<Local> {
-        let mut block = &self.blocks[self.current_block];
-        loop {
-            if let Some(local) = block.locals.get(&symbol) {
-                if local.declared {
+        for rib in self.ribs.iter().rev() {
+            if let Some(local) = rib.locals.get(&symbol) {
+                if local.register.is_some() {
                     return Some(*local);
                 }
             }
-            let Some(parent) = block.parent else {
-                return None;
-            };
-            block = &self.blocks[parent];
         }
+        None
     }
 
-    pub fn fork_block(&mut self, inherit: bool) -> CodeLabel {
+    pub fn make_block(&mut self) -> CodeLabel {
         let prev_block = self.current_block;
 
-        let new_block = BasicBlock::new(
-            if inherit { Some(self.current_block) } else { None });
-        let label = self.blocks.push(new_block);
+        let label = self.blocks.push(BasicBlock::new());
         self.blocks[label].label = label;
 
         self.current_block = label;
@@ -327,30 +348,27 @@ impl CGFunction {
     pub fn register_local(&mut self, symbol: Symbol, constant: bool) -> Result<(), ()> {
         let local = Local {
             constant,
-            declared: false
+            register: None
         };
-        if let Some(..) = self.current_block_mut().locals.insert(symbol, local) {
+        if let Some(..) = self.current_rib_mut().locals.insert(symbol, local) {
             return Err(());
         }
         Ok(())
     }
 
     fn declare_local(&mut self, symbol: Symbol) -> Operand {
-        let local = self.current_block_mut().locals.get_mut(&symbol)
-            .expect("register local before declare");
-        debug_assert!(!local.declared);
-        local.declared = true;
-
+        self.num_locals += 1;
         let reg = self.register_allocator.next();
-        let result = self.local2reg.insert((self.current_block, symbol), reg);
-        debug_assert!(result.is_none());
+        let local = self.current_rib_mut().locals.get_mut(&symbol)
+            .expect("register local before declare");
+        debug_assert!(local.register.is_none());
+        local.register = Some(reg);
         Operand::register(reg)
     }
 
     pub fn get_local_reg(&self, symbol: Symbol) -> Operand {
-        let reg = *self.local2reg.get(&(self.current_block, symbol))
-            .expect("symbol corresponds to actual local");
-        Operand::register(reg)
+        let reg = self.find_local(symbol).expect("symbol corresponds to actual local");
+        Operand::register(reg.register.expect("find_local finds declared locals"))
     }
 
     fn descriptor(&mut self, tvalue: TValue) -> Operand {
@@ -371,6 +389,7 @@ impl BytecodeGenerator {
         }
     }
 
+
     pub fn current_fn(&self) -> &CGFunction {
         return &self.current_fn;
     }
@@ -379,9 +398,22 @@ impl BytecodeGenerator {
         return &mut self.current_fn;
     }
 
-    pub fn fork_block(&mut self, inherit: bool) -> CodeLabel {
+    pub fn with_rib<F: FnOnce(&mut Self) -> R, R>(&mut self, kind: RibKind, do_work: F) -> R {
+        debug_assert!(kind != RibKind::Module);
+        self.current_fn_mut().ribs.push(Rib::new(kind));
+        let rv = do_work(self);
+        self.current_fn_mut().ribs.pop();
+        rv
+    }
+
+    pub fn find_rib(&self, kind: RibKind, depth: i32) -> Option<RibKind> {
+        self.current_fn()
+            .find_rib(kind, depth)
+    }
+
+    pub fn make_block(&mut self) -> CodeLabel {
         self.current_fn_mut()
-            .fork_block(inherit)
+            .make_block()
     }
 
     pub fn is_terminated(&self) -> bool {

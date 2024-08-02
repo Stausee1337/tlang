@@ -2,7 +2,7 @@
 use crate::lexer::Span;
 use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop, Variable, Function, AssignExpr, Literal, Ident, BinaryExpr, UnaryExpr, CallExpr, AttributeExpr, SubscriptExpr, ListExpr, ObjectExpr, TupleExpr, Lambda, Module, Statement, LiteralKind, Expression, BinaryOp, UnaryOp};
 
-use crate::bytecode::{Operand, BytecodeGenerator, CodeLabel};
+use crate::bytecode::{Operand, BytecodeGenerator, CodeLabel, RibKind};
 
 #[derive(Debug)]
 pub enum CodegenErr {
@@ -60,18 +60,17 @@ impl<'ast> GeneratorNode for IfBranch<'ast> {
         let Some(condition) = self.condition else { // handle an else { ... } branch
             debug_assert!(self.else_branch.is_none());
 
-            return generate_body(self.body, generator);
+            return generator.with_rib(RibKind::If, |generator| generate_body(self.body, generator));
         };
 
-        let start_block = generator.fork_block(true);
-        let true_target = generator.set_current_block(start_block);
-        generator.fork_block(true);
+        let start_block = generator.make_block();
+        let true_target = generator.make_block();
         let false_target = generator.set_current_block(start_block);
 
         condition.generate_as_jump(true_target, false_target, generator)?;
 
         generator.set_current_block(true_target);
-        generate_body(self.body, generator)?;
+        generator.with_rib(RibKind::If, |generator| generate_body(self.body, generator))?;
         generator.set_current_block(true_target);
         let true_terminated = generator.is_terminated();
 
@@ -87,8 +86,7 @@ impl<'ast> GeneratorNode for IfBranch<'ast> {
         if !false_terminated {
             let mut end_block = generator.set_current_block(false_target);
             if end_block == false_target {
-                generator.set_current_block(start_block);
-                generator.fork_block(true);
+                generator.make_block();
                 end_block = generator.set_current_block(false_target);
             }
             generate_small_branch(false_target, end_block, generator);
@@ -272,7 +270,7 @@ impl<'ast> BinaryExpr<'ast> {
             BinaryOp::LessEqual => BytecodeGenerator::emit_branch_le,
 
             BinaryOp::BooleanOr => {
-                let start_block = generator.fork_block(true);
+                let start_block = generator.make_block();
                 let intm_target = generator.set_current_block(start_block);
 
                 self.lhs.generate_as_jump(true_target, intm_target, generator)?;
@@ -283,7 +281,7 @@ impl<'ast> BinaryExpr<'ast> {
                 return Ok(());
             }
             BinaryOp::BooleanAnd => {
-                let start_block = generator.fork_block(true);
+                let start_block = generator.make_block();
                 let intm_target = generator.set_current_block(start_block);
 
                 self.lhs.generate_as_jump(intm_target, false_target, generator)?;
@@ -342,10 +340,9 @@ impl<'ast> GeneratorNode for BinaryExpr<'ast> {
             _ => {
                 let dst = generator.allocate_reg();
 
-                let start_block = generator.fork_block(false);
-                let false_target = generator.set_current_block(start_block);
-                generator.fork_block(true);
-                let true_target  = generator.fork_block(true);
+                let start_block = generator.make_block();
+                let false_target = generator.make_block();
+                let true_target  = generator.make_block();
                 let end_block = generator.set_current_block(start_block);
 
                 self.generate_bool(true_target, false_target, generator)?;
