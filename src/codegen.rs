@@ -25,7 +25,7 @@ pub fn generate_module<'ast>(module: Module<'ast>, generator: &mut BytecodeGener
 pub fn generate_body<'ast>(body: &'ast [&'ast Statement], generator: &mut BytecodeGenerator) -> CodegenResult {
     for stmt in body {
         match stmt {
-            Statement::Variable(ref var) =>
+            Statement::Variable(ref var) if generator.find_rib(RibKind::Module, 1).is_none() =>
                 generator.register_local(var.name, var.constant)
                 .map_err(|()| CodegenErr::SyntaxError {
                     span: var.span,
@@ -50,7 +50,6 @@ fn generate_small_branch(src: CodeLabel, dst: CodeLabel, generator: &mut Bytecod
     } else {
         generator.emit_branch(dst);
     }
-
 }
 
 /// STATEMENTS
@@ -103,12 +102,6 @@ impl<'ast> GeneratorNode for IfBranch<'ast> {
     }
 }
 
-impl<'ast> GeneratorNode for Break {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
-    }
-}
-
 impl<'ast> GeneratorNode for Return<'ast> {
     fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
         todo!()
@@ -116,8 +109,32 @@ impl<'ast> GeneratorNode for Return<'ast> {
 }
 
 impl<'ast> GeneratorNode for Continue {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let Some(loop_rib) = generator.find_rib(RibKind::Loop, -1) else {
+            return Err(CodegenErr::SyntaxError {
+                message: Some("`continue` outside of loop".to_string()),
+                span: self.0
+            })
+        };
+        let (_continue, _break) = loop_rib.loop_ctx();
+        generator.emit_branch(_continue);
+
+        Ok(None)
+    }
+}
+
+impl<'ast> GeneratorNode for Break {
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let Some(loop_rib) = generator.find_rib(RibKind::Loop, -1) else {
+            return Err(CodegenErr::SyntaxError {
+                message: Some("`break` outside of loop".to_string()),
+                span: self.0
+            })
+        };
+        let (_continue, _break) = loop_rib.loop_ctx();
+        generator.emit_branch(_break);
+
+        Ok(None)
     }
 }
 
@@ -128,20 +145,83 @@ impl<'ast> GeneratorNode for Import<'ast> {
 }
 
 impl<'ast> GeneratorNode for ForLoop<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let start_block = generator.make_block();
+        let forward_block = generator.make_block();
+        let loop_body = generator.make_block();
+        let end_block = generator.set_current_block(start_block);
+
+        let iterable = self.iter.generate_bytecode(generator)?.unwrap();
+        let iterator = generator.allocate_reg();
+        generator.emit_get_iterator(iterator, iterable);
+
+        // TODO: optimize while (true) { ... } loop not to have a condition block
+        generate_small_branch(start_block, forward_block, generator);
+        generator.set_current_block(forward_block);
+        generator.emit_next_iterator(iterator, loop_body, end_block);
+
+        generator.set_current_block(loop_body);
+        generator.with_rib(RibKind::Loop, |generator| {
+            generator.set_loop_ctx(forward_block, end_block);
+            generate_body(self.body, generator)?;
+            generator.emit_branch(forward_block);
+            Ok(())
+        })?;
+
+        generator.set_current_block(end_block);
+
+        Ok(None)
     }
 }
 
 impl<'ast> GeneratorNode for WhileLoop<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let start_block = generator.make_block();
+        let condition_block = generator.make_block();
+        let loop_body = generator.make_block();
+        let end_block = generator.set_current_block(start_block);
+
+        // TODO: optimize while (true) { ... } loop not to have a condition block
+        generate_small_branch(start_block, condition_block, generator);
+        generator.set_current_block(condition_block);
+        self.condition.generate_as_jump(loop_body, end_block, generator)?;
+
+        generator.set_current_block(loop_body);
+        generator.with_rib(RibKind::Loop, |generator| {
+            generator.set_loop_ctx(condition_block, end_block);
+            generate_body(self.body, generator)?;
+            generator.emit_branch(condition_block);
+            Ok(())
+        })?;
+
+        generator.set_current_block(end_block);
+
+        Ok(None)
     }
 }
 
 impl<'ast> GeneratorNode for Variable<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let init = if let Some(init) = self.init {
+            init.generate_bytecode(generator)?.unwrap()
+        } else if self.constant {
+            return Err(CodegenErr::SyntaxError {
+                message: Some("missing const initializer".to_string()),
+                span: self.name.span
+            });
+        } else {
+            Operand::null()
+        };
+
+        if generator.find_rib(RibKind::Module, 1).is_some() { // declare (and init) global
+            generator.emit_declare_global(self.name.symbol, init, self.constant);
+            return Ok(None);
+        }
+
+        let dst = generator.declare_local(self.name.symbol);
+        generator.emit_mov(dst, init);
+
+        Ok(None)
     }
 }
 

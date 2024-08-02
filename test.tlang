@@ -1,11 +1,5 @@
 
-if (11 == 12) {
-    print(null);
-} else if (11 < 12) {
-    print(12);
-} else {
-    print(13);
+for (i in range(0, 10)) {
+    print(i);
 }
-
-print(false);
 

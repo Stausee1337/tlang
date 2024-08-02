@@ -1,5 +1,5 @@
 
-use std::{marker::PhantomData, ops::Deref, fmt::{Write, Result as FmtResult}};
+use std::{marker::PhantomData, ops::{Deref, IndexMut}, fmt::{Write, Result as FmtResult}, usize, cell::OnceCell};
 
 use ahash::HashMap;
 use tlang_macros::define_instructions;
@@ -225,7 +225,7 @@ impl BasicBlock {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RibKind {
     Module,
     Function,
@@ -235,15 +235,22 @@ pub enum RibKind {
 
 pub struct Rib {
     kind: RibKind,
-    locals: HashMap<Symbol, Local>
+    locals: HashMap<Symbol, Local>,
+    loop_ctx: OnceCell<(CodeLabel, CodeLabel)>
 }
 
 impl Rib {
     fn new(kind: RibKind) -> Self {
         Self {
             kind,
-            locals: Default::default()
+            locals: Default::default(),
+            loop_ctx: OnceCell::new()
         }
+    }
+
+    pub fn loop_ctx(&self) -> (CodeLabel, CodeLabel) {
+        debug_assert!(self.kind == RibKind::Loop);
+        *self.loop_ctx.get().expect("loop_ctx set in loop")
     }
 }
 
@@ -316,7 +323,27 @@ impl CGFunction {
 
 
     pub fn find_rib(&mut self, kind: RibKind, depth: i32) -> Option<&mut Rib> {
-        todo!()
+        let size = self.ribs.len() as i32;
+        let mut iteration = 0;
+        while iteration != depth {
+            let idx = size - (iteration + 1);
+            if idx < 0 {
+                return None;
+            }
+            let rib_kind = self.ribs[idx as usize].kind;
+            if kind == rib_kind {
+                let rib = self.ribs.index_mut(idx as usize);
+                return Some(rib);
+            }
+
+            iteration += 1;
+        }
+        None
+    }
+
+    pub fn set_loop_ctx(&mut self, continue_target: CodeLabel, break_target: CodeLabel) {
+        let loop_rib = self.find_rib(RibKind::Loop, 1).expect("set_loop_ctxt with loop rib");
+        loop_rib.loop_ctx.set((continue_target, break_target)).expect("loop_ctx not set");
     }
 
     pub fn find_local(&self, symbol: Symbol) -> Option<Local> {
@@ -356,7 +383,7 @@ impl CGFunction {
         Ok(())
     }
 
-    fn declare_local(&mut self, symbol: Symbol) -> Operand {
+    pub fn declare_local(&mut self, symbol: Symbol) -> Operand {
         self.num_locals += 1;
         let reg = self.register_allocator.next();
         let local = self.current_rib_mut().locals.get_mut(&symbol)
@@ -389,7 +416,6 @@ impl BytecodeGenerator {
         }
     }
 
-
     pub fn current_fn(&self) -> &CGFunction {
         return &self.current_fn;
     }
@@ -409,6 +435,11 @@ impl BytecodeGenerator {
     pub fn find_rib(&mut self, kind: RibKind, depth: i32) -> Option<&mut Rib> {
         self.current_fn_mut()
             .find_rib(kind, depth)
+    }
+
+    pub fn set_loop_ctx(&mut self, continue_target: CodeLabel, break_target: CodeLabel) {
+        self.current_fn_mut()
+            .set_loop_ctx(continue_target, break_target)
     }
 
     pub fn make_block(&mut self) -> CodeLabel {
@@ -442,7 +473,7 @@ impl BytecodeGenerator {
         Operand::register(reg)
     }
 
-    fn declare_local(&mut self, symbol: Symbol) -> Operand {
+    pub fn declare_local(&mut self, symbol: Symbol) -> Operand {
         self.current_fn_mut()
             .declare_local(symbol)
     }
@@ -624,6 +655,8 @@ define_instructions! {
     Not { dst: Operand, src: Operand },
     Invert { dst: Operand, src: Operand },
 
+    DeclareGlobal { symbol: Symbol, init: Operand, constant: bool },
+
     GetGlobal { dst: Operand, symbol: Symbol  },
     SetGlobal { symbol: Symbol, src: Operand, },
 
@@ -700,6 +733,14 @@ define_instructions! {
         callee: Operand,
         arguments: DynamicArray<Operand>,
     },
+
+    GetIterator { dst: Operand, iterable: Operand },
+    NextIterator {
+        iterator: Operand,
+        loop_target: CodeLabel,
+        end_target: CodeLabel
+    },
+
     Error,
     Noop = 0x80
 }
