@@ -234,23 +234,20 @@ impl<'ast> Expression<'ast> {
         false_target: CodeLabel,
         generator: &mut BytecodeGenerator
     ) -> CodegenResult {
-        let Self::BinaryExpr(binary) = self else {
-            let condition = self.generate_bytecode(generator)?.unwrap();
-            generator.emit_branch_if(condition, true_target, false_target);
-            return Ok(None);
-        };
-
-        match binary.op {
-            BinaryOp::Equal | BinaryOp::NotEqual | BinaryOp::GreaterThan |
-            BinaryOp::GreaterEqual | BinaryOp::LessThan | BinaryOp::LessEqual |
-            BinaryOp::BooleanOr | BinaryOp::BooleanAnd =>
+        match self {
+            Self::BinaryExpr(binary) if matches!(binary.op, BinaryOp::Equal | BinaryOp::NotEqual | 
+                                                 BinaryOp::GreaterThan | BinaryOp::GreaterEqual | 
+                                                 BinaryOp::LessThan | BinaryOp::LessEqual |
+                                                 BinaryOp::BooleanOr | BinaryOp::BooleanAnd) =>
                 binary.generate_bool(true_target, false_target, generator).map(|_| None),
+            Self::UnaryExpr(unary) if unary.op == UnaryOp::Not =>
+                unary.base.generate_as_jump(false_target, true_target, generator),
             _ => {
                 let condition = self.generate_bytecode(generator)?.unwrap();
                 generator.emit_branch_if(condition, true_target, false_target);
                 Ok(None)
             }
-        }
+        }  
     }
 }
 

@@ -406,8 +406,8 @@ impl BytecodeGenerator {
         rv
     }
 
-    pub fn find_rib(&self, kind: RibKind, depth: i32) -> Option<RibKind> {
-        self.current_fn()
+    pub fn find_rib(&mut self, kind: RibKind, depth: i32) -> Option<&mut Rib> {
+        self.current_fn_mut()
             .find_rib(kind, depth)
     }
 

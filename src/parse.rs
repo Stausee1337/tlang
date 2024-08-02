@@ -132,7 +132,7 @@ pub enum LiteralKind<'ast> {
     String(&'ast str),
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum BinaryOp {
     Plus, Minus, Mul, Div, Mod,
     ShiftLeft, ShiftRight,
@@ -149,7 +149,7 @@ pub struct BinaryExpr<'ast> {
     pub span: Span,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum UnaryOp {
     Invert, Not, Neg
 }
