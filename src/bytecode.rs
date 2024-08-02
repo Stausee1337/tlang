@@ -4,7 +4,7 @@ use std::{marker::PhantomData, ops::{Deref, IndexMut}, fmt::{Write, Result as Fm
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::TValue, symbol::Symbol, parse::Ident, interpreter::CodeStream, codegen};
+use crate::{tvalue, symbol::Symbol, parse::Ident, interpreter::CodeStream, codegen};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -150,7 +150,7 @@ impl<'f> FunctionDisassembler<'f> {
         writeln!(self, "bb{} {{", block.label._raw)?;
         self.indent();
 
-        let mut stream = CodeStream::new(&block.data);
+        let mut stream = CodeStream::debug_from_data(&block.data);
         while !stream.eos() {
             let op = OpCode::decode(stream.current());
             let instruction = op.deserialize_for_debug(&mut stream);
@@ -258,7 +258,7 @@ pub struct CGFunction {
     name: Symbol,
     num_params: u32,
     num_locals: u32,
-    descriptor_table: IndexVec<Descriptor, TValue>,
+    descriptor_table: IndexVec<Descriptor, tvalue::TValue>,
     blocks: IndexVec<CodeLabel, BasicBlock>,
     current_block: CodeLabel,
     register_allocator: RegisterAllocator,
@@ -397,9 +397,9 @@ impl CGFunction {
         Operand::register(reg.register.expect("find_local finds declared locals"))
     }
 
-    fn descriptor(&mut self, tvalue: TValue) -> Operand {
+    fn descriptor<T: Into<tvalue::TValue>>(&mut self, tvalue: T) -> Operand {
         let idx = self.descriptor_table.len_idx();
-        self.descriptor_table.push(tvalue);
+        self.descriptor_table.push(tvalue.into());
         Operand::descriptor(idx)
     }
 }
@@ -508,19 +508,19 @@ impl BytecodeGenerator {
 
     pub fn make_string_literal(&mut self, literal: &str) -> Result<Operand, snailquote::UnescapeError> {
         let string = snailquote::unescape(literal)?;
-        let tvalue = TValue::string(&string);
-        Ok(self.current_fn_mut().descriptor(tvalue))
+        let tstring = tvalue::TString::from_slice(&string);
+        Ok(self.current_fn_mut().descriptor(tstring))
     }
 
     pub fn make_int(&mut self, int: u64) -> Operand {
         if let Ok(int) = i32::try_from(int) {
             return Operand::int32(int);
         }
-        self.current_fn_mut().descriptor(TValue::bigint(&int.to_le_bytes()))
+        self.current_fn_mut().descriptor(tvalue::TInteger::from_bytes(&int.to_le_bytes()))
     }
 
     pub fn make_float(&mut self, float: f64) -> Operand {
-        self.current_fn_mut().descriptor(TValue::float(float))
+        self.current_fn_mut().descriptor(tvalue::TFloat::from_float(float))
     }
 }
 

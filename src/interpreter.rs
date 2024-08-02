@@ -5,7 +5,7 @@ pub struct CodeStream {
 }
 
 impl CodeStream {
-    pub fn new(code: &[u8])  -> Self {
+    pub fn debug_from_data(code: &[u8])  -> Self {
         Self {
             code,
             position: 0,
@@ -34,7 +34,7 @@ impl CodeStream {
 
     #[inline(always)]
     pub fn bump(&mut self, amount: usize) {
-        // debug_assert!(amount > 0);
         self.position += amount;
     }
 }
+
