@@ -4,7 +4,7 @@ use std::{marker::PhantomData, ops::{Deref, IndexMut}, fmt::{Write, Result as Fm
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue, symbol::Symbol, parse::Ident, interpreter::CodeStream, codegen};
+use crate::{tvalue, symbol::Symbol, parse::Ident, codegen};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -97,6 +97,46 @@ define_index_type! {
     pub struct Descriptor = u32;
     DEBUG_FORMAT = "${}";
 }
+
+pub struct CodeStream {
+    position: usize,
+    code: *const [u8]
+}
+
+impl CodeStream {
+    fn debug_from_data(code: &[u8])  -> Self {
+        Self {
+            code,
+            position: 0,
+        }
+    }
+
+    #[inline(always)]
+    pub fn eos(&self) -> bool {
+        self.code().len() == 0
+    }
+
+    #[inline(always)]
+    pub fn data(&self) -> &[u8] {
+        unsafe { &*self.code }
+    }
+
+    #[inline(always)]
+    pub fn code(&self) -> &[u8] {
+        &self.data()[self.position..]
+    }
+
+    #[inline(always)]
+    pub fn current(&self) -> u8 {
+        self.data()[self.position]
+    }
+
+    #[inline(always)]
+    pub fn bump(&mut self, amount: usize) {
+        self.position += amount;
+    }
+}
+
 
 struct RegisterAllocator(u32);
 

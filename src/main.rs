@@ -1,7 +1,10 @@
 use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 
+use allocator_api2::alloc::Allocator;
 use getopts::{Options, ParsingStyle};
+use memory::BlockAllocator;
 use parse::ParseContext;
+use tvalue::TType;
 
 use crate::bytecode::{BytecodeGenerator, FunctionDisassembler};
 
@@ -26,6 +29,11 @@ fn read_entire_file(filename: &Path) -> Result<String, io::Error> {
     Ok(result)
 }
 
+#[repr(align(32))]
+struct AlignedStruct {
+    data: [u8; 64],
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let program = args[0].clone();
@@ -47,6 +55,15 @@ fn main() -> ExitCode {
         print_usage(&program, opts);
         return ExitCode::SUCCESS;
     }
+
+    let interp = interpreter::make_interpreter();
+    let result = allocator_api2::boxed::Box::<AlignedStruct, &BlockAllocator>::new_in(
+        AlignedStruct {
+            data: [0x55; 64]
+        },
+        &interp.block_allocator);
+
+    // println!("{:?}", result);
 
     let input = if !matches.free.is_empty() {
         matches.free

@@ -1,7 +1,9 @@
-use std::mem::transmute;
+use std::{mem::{transmute, MaybeUninit}, hash::{BuildHasher, Hash, Hasher}};
 
 
-use crate::memory;
+use hashbrown::raw::RawTable;
+
+use crate::{memory, symbol::Symbol};
 
 #[repr(u64)]
 #[derive(Debug)]
@@ -47,12 +49,13 @@ impl TValue {
         return TValue(unsafe { transmute(float) });
     }
 
-    const fn object_tagged<T>(object: memory::GCRef<T>, kind: TValueKind) -> Self {
+    const fn object_tagged<T: memory::Atom>(object: memory::GCRef<T>, kind: TValueKind) -> Self {
         let object: u64 = unsafe { transmute(object) };
+        assert!(object & (!Self::NAN_VALUE_MASK) == 0);
         TValue(Self::FLOAT_NAN_TAG | kind as u64 | object)
     }
 
-    const fn string(string: TString) -> Self {
+    const fn string(string: memory::GCRef<TString>) -> Self {
         Self::object_tagged(string, TValueKind::String)
     }
 
@@ -78,27 +81,27 @@ impl TValue {
         unsafe { transmute(self.0) }
     }
 
-    const fn as_object<T>(&self) -> memory::GCRef<T> {
+    const fn as_object<T: memory::Atom>(&self) -> memory::GCRef<T> {
         memory::GCRef::from_raw((self.0 & Self::NAN_VALUE_MASK) as *mut T)
     }
 
-    fn ttype(&self) -> TType {
-        todo!()
-    }
 }
 
-pub type TType = memory::GCRef<raw_objects::TType>;
-pub type TString = memory::GCRef<raw_objects::TString>;
-pub type TInteger = raw_objects::TInteger;
-pub type TFloat = raw_objects::TFloat;
-pub type TBool = raw_objects::TBool;
+pub struct TType {
+
+}
+
+impl memory::Atom for TType {}
+
+#[derive(Clone, Copy)]
+pub struct TInteger(TValue);
 
 impl TInteger {
     pub fn as_usize(self) -> Option<usize> {
         match self.0.kind() {
             TValueKind::Int32 => usize::try_from(self.0.as_int32()).ok(),
             TValueKind::Object => {
-                debug_assert!(self.0.ttype() == Self::ttype());
+                // debug_assert!(self.0.type() == Self::type());
                 todo!()
             },
             _ => unreachable!()
@@ -106,16 +109,18 @@ impl TInteger {
     }
 
     pub const fn from_int32(int: i32) -> Self {
-        raw_objects::TInteger(TValue::int32(int))
+        TInteger(TValue::int32(int))
     }
 
+    /// Converts a sequence of signed little endian bytes
+    /// into a TInteger representation
     pub const fn from_bytes(bytes: &[u8]) -> Self {
+        /*if bytes.len() <= std::mem::size_of::<i32>() {
+
+        }*/
         todo!()
     }
 
-    pub fn ttype() -> TType {
-        todo!()
-    }
 }
 
 impl Into<TValue> for TInteger {
@@ -124,18 +129,18 @@ impl Into<TValue> for TInteger {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct TFloat(pub(super) f64);
+
 impl TFloat {
     pub const fn as_float(self) -> f64 {
         self.0
     }
 
     pub const fn from_float(float: f64) -> Self {
-        raw_objects::TFloat(float)
+        TFloat(float)
     }
 
-    pub fn ttype() -> TType {
-        todo!()
-    }
 }
 
 impl Into<TValue> for TFloat {
@@ -144,18 +149,18 @@ impl Into<TValue> for TFloat {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct TBool(pub(super) bool);
+
 impl TBool {
     pub const fn as_bool(self) -> bool {
         self.0
     }
 
     pub const fn from_bool(bool: bool) -> Self {
-        raw_objects::TBool(bool)
+        TBool(bool)
     }
 
-    pub fn ttype() -> TType {
-        todo!()
-    }
 }
 
 impl Into<TValue> for TBool {
@@ -164,20 +169,64 @@ impl Into<TValue> for TBool {
     }
 }
 
+#[repr(C)]
+pub struct TString {
+    pub size: TInteger,
+    pub data: [u8; 1]
+}
+impl memory::Atom for TString {}
+
 impl TString {
     pub fn as_slice(self) -> &'static str {
         let size = self.size.as_usize().expect("TString sensible size");
-        todo!()
+        unsafe {
+            let bytes = std::slice::from_raw_parts(self.data.as_ptr(), size);
+            let str = std::str::from_utf8_unchecked(bytes);
+            str
+        }
     }
 
     pub fn from_slice(slice: &str) -> Self {
+        let size = (slice.len() as isize).to_le_bytes();
+        let size = TInteger::from_bytes(&size);
         todo!()
     }
 }
 
-impl Into<TValue> for TString {
+impl Into<TValue> for memory::GCRef<TString> {
     fn into(self) -> TValue {
         TValue::string(self)
+    }
+}
+
+#[repr(C)]
+struct TObjectHead {
+    ttype: TType,
+    descriptor: RawTable<Symbol, memory::BlockAllocator>,
+    data: [u8; 1]
+}
+
+impl TObjectHead {
+    fn getattr(&self, attribute: Symbol) -> Option<TValue> {
+        let builder = ahash::RandomState::new();
+        let mut hasher = builder.build_hasher();
+        attribute.get().hash(&mut hasher);
+        let hash = hasher.finish();
+
+        let bucket = self.descriptor.find(hash, |key| attribute == *key);
+        let Some(bucket) = bucket else {
+            return None;
+        };
+
+        unsafe {
+            let size = self.descriptor.len() * std::mem::size_of::<TValue>();
+            let values = std::slice::from_raw_parts(
+                self.data.as_ptr() as *const TValue,
+                size
+            );
+            let idx = self.descriptor.bucket_index(&bucket);
+            Some(values[idx])
+        }
     }
 }
 
@@ -188,24 +237,5 @@ impl Into<TValue> for TString {
 // TString
 // TFunction
 // TObject
-
-mod raw_objects {
-    pub struct TType {
-        pub name: super::TString,
-    } 
-
-    #[derive(Clone, Copy)]
-    pub struct TBool(pub(super) bool);
-
-    #[derive(Clone, Copy)]
-    pub struct TInteger(pub(super) super::TValue);
-
-    #[derive(Clone, Copy)]
-    pub struct TFloat(pub(super) f64);
-
-    pub struct TString {
-        pub size: super::TInteger,
-        pub data: [u8; 1]
-    }
-}
+// TType (TType as a subtype of TObject makes sense)
 

@@ -1,40 +1,30 @@
+use std::mem::MaybeUninit;
 
-pub struct CodeStream {
-    position: usize,
-    code: *const [u8]
+use crate::memory::BlockAllocator;
+
+static mut INTERPTETER: Wrapper = Wrapper(false, MaybeUninit::uninit());
+
+struct Wrapper(bool, MaybeUninit<TlInterpreter>);
+
+pub struct TlInterpreter {
+    pub block_allocator: BlockAllocator
 }
 
-impl CodeStream {
-    pub fn debug_from_data(code: &[u8])  -> Self {
-        Self {
-            code,
-            position: 0,
-        }
+pub fn make_interpreter() -> &'static TlInterpreter {
+    let interpreter = TlInterpreter {
+        block_allocator: BlockAllocator::init()
+    };
+    unsafe {
+        INTERPTETER = Wrapper(
+            true,
+            MaybeUninit::new(interpreter)
+        );
     }
+    get_interpeter()
+}
 
-    #[inline(always)]
-    pub fn eos(&self) -> bool {
-        self.code().len() == 0
-    }
-
-    #[inline(always)]
-    pub fn data(&self) -> &[u8] {
-        unsafe { &*self.code }
-    }
-
-    #[inline(always)]
-    pub fn code(&self) -> &[u8] {
-        &self.data()[self.position..]
-    }
-
-    #[inline(always)]
-    pub fn current(&self) -> u8 {
-        self.data()[self.position]
-    }
-
-    #[inline(always)]
-    pub fn bump(&mut self, amount: usize) {
-        self.position += amount;
-    }
+pub fn get_interpeter() -> &'static TlInterpreter {
+    unsafe { assert!(INTERPTETER.0, "Interpreter initialized") };
+    unsafe { INTERPTETER.1.assume_init_ref() }
 }
 
