@@ -14,25 +14,23 @@ pub Module: parse::Module<'ast> = {
 
 Body: Vec<&'ast parse::Statement<'ast>> = {
     => vec![],
-    <mut statements:Body> <next:DelimitedStatement> ";"? => {
-        statements.push(ctx.alloc(next));
+    <mut statements:Body> <next:Statement> => {
+        statements.push(next);
         statements
     },
 
-    // Small statements
-    <mut statements:Body> <small:(<LineStatement> ";")*> <last:LineStatement> ";"? "\n" => {
-        statements.extend(small.iter().map(|&i| ctx.alloc(i)));
-        statements.push(ctx.alloc(last));
-        statements
-    },
-
-    // Empty lines
-    <s:Body> "\n" => s,
+    <s:Body> ";" => s,
 };
 
 VarKind: bool = {
     "var" => false,
     "const" => true,
+};
+
+Statement: &'ast parse::Statement<'ast> = {
+    <stmt:DelimitedStatement> => ctx.alloc(stmt),
+    <stmt:LineStatement> ";" => ctx.alloc(stmt),
+    ! => panic!()
 };
 
 LineStatement: parse::Statement<'ast> = {
@@ -416,8 +414,6 @@ extern {
         "||" => lexer::TokenKind::DoubleVBar,
         "&&" => lexer::TokenKind::DoubleAmpersand,
         "!" => lexer::TokenKind::Bang,
-
-        "\n" => lexer::TokenKind::Newline,
 
         "const" => lexer::TokenKind::Const,
         "var" => lexer::TokenKind::Var,

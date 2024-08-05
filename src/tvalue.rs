@@ -186,7 +186,7 @@ impl TString {
         }
     }
 
-    pub fn from_slice(slice: &str) -> Self {
+    pub fn from_slice(slice: &str) -> memory::GCRef<Self> {
         let size = (slice.len() as isize).to_le_bytes();
         let size = TInteger::from_bytes(&size);
         todo!()

@@ -20,12 +20,10 @@ impl From<Range<usize>> for Span {
 }
 
 #[derive(Logos, Clone, Copy, Debug)]
-#[logos(skip r"[ \t\f]+")]
+#[logos(skip r"[ \n\t\f]+")]
 pub enum TokenKind<'source> { 
     #[regex(r"//[^\n]*")]
     Comment,
-    #[regex(r"\n")]
-    Newline,
 
     #[token(".")]
     Dot,
@@ -156,7 +154,6 @@ pub struct SyntaxError(pub Span);
 pub fn tokenize<'source>(source: &'source str) -> Result<Box<[Token<'source>]>, SyntaxError> {
     let mut lexer = TokenKind::lexer(source);
     let mut tokens = Vec::new();
-    let mut prev_ignored = true;
 
     loop {
         let Some(token) = lexer.next() else {
@@ -167,25 +164,13 @@ pub fn tokenize<'source>(source: &'source str) -> Result<Box<[Token<'source>]>, 
             return Err(SyntaxError(span));
         };
         match &mut token {
-            TokenKind::Comment => {
-                prev_ignored = true;
-                continue;
-            }
-            TokenKind::Newline => {
-                if prev_ignored {
-                    prev_ignored = true;
-                    continue;
-                }
-                prev_ignored = true;
-            }
+            TokenKind::Comment =>
+                continue,
             TokenKind::String(s) => {
                 snailquote::unescape(s)
                     .map_err(|_| SyntaxError(span))?;
-                prev_ignored = false;
             }
-            _ => {
-                prev_ignored = false;
-            }
+            _ => ()
         }
         tokens.push(Token(token, span));
     }
