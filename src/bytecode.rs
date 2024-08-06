@@ -4,7 +4,7 @@ use std::{marker::PhantomData, ops::{Deref, IndexMut}, fmt::{Write, Result as Fm
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::{self, TFunction}, symbol::Symbol, parse::Ident, codegen, memory::GCRef};
+use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, interpreter::get_interpeter};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -18,12 +18,6 @@ pub enum OperandKind {
 
 #[derive(Clone, Copy)]
 pub struct Operand(u32);
-
-macro_rules! slice {
-    ($($expr:expr),*) => {
-         &[$($expr),*] as &[_]
-    };
-}
 
 impl Operand {
     pub const CG_MAX_U32: u32 = 1 << 30;
@@ -98,16 +92,18 @@ define_index_type! {
     DEBUG_FORMAT = "${}";
 }
 
-pub struct CodeStream {
+pub struct CodeStream<'l> {
     position: usize,
-    code: *const [u8]
+    code: &'l [u8],
+    blocks: &'l [u32],
 }
 
-impl CodeStream {
+impl<'l> CodeStream<'l> {
     fn debug_from_data(code: &[u8])  -> Self {
         Self {
             code,
             position: 0,
+            blocks: &[]
         }
     }
 
@@ -118,7 +114,7 @@ impl CodeStream {
 
     #[inline(always)]
     pub fn data(&self) -> &[u8] {
-        unsafe { &*self.code }
+        unsafe { self.code }
     }
 
     #[inline(always)]
@@ -129,6 +125,10 @@ impl CodeStream {
     #[inline(always)]
     pub fn current(&self) -> u8 {
         self.data()[self.position]
+    }
+
+    pub fn jump(&mut self, to: CodeLabel) {
+        self.position = self.blocks[to.index()] as usize;
     }
 
     #[inline(always)]
@@ -298,7 +298,7 @@ pub struct CGFunction {
     name: Symbol,
     num_params: u32,
     num_locals: u32,
-    descriptor_table: IndexVec<Descriptor, tvalue::TValue>,
+    descriptor_table: IndexVec<Descriptor, TValue>,
     blocks: IndexVec<CodeLabel, BasicBlock>,
     current_block: CodeLabel,
     register_allocator: RegisterAllocator,
@@ -437,7 +437,7 @@ impl CGFunction {
         Operand::register(reg.register.expect("find_local finds declared locals"))
     }
 
-    fn descriptor<T: Into<tvalue::TValue>>(&mut self, tvalue: T) -> Operand {
+    fn descriptor<T: Into<TValue>>(&mut self, tvalue: T) -> Operand {
         let idx = self.descriptor_table.len_idx();
         self.descriptor_table.push(tvalue.into());
         Operand::descriptor(idx)
@@ -551,7 +551,7 @@ impl BytecodeGenerator {
 
     pub fn make_string_literal(&mut self, literal: &str) -> Result<Operand, snailquote::UnescapeError> {
         let string = snailquote::unescape(literal)?;
-        let tstring = tvalue::TString::from_slice(&string);
+        let tstring = TString::from_slice(&string);
         Ok(self.current_fn_mut().descriptor(tstring))
     }
 
@@ -559,25 +559,25 @@ impl BytecodeGenerator {
         if let Ok(int) = i32::try_from(int) {
             return Operand::int32(int);
         }
-        self.current_fn_mut().descriptor(tvalue::TInteger::from_bytes(&int.to_le_bytes()))
+        self.current_fn_mut().descriptor(TInteger::from_bytes(&int.to_le_bytes()))
     }
 
     pub fn make_float(&mut self, float: f64) -> Operand {
-        self.current_fn_mut().descriptor(tvalue::TFloat::from_float(float))
+        self.current_fn_mut().descriptor(TFloat::from_float(float))
     }
 }
 
-
-impl tvalue::TFunction {
+impl TFunction {
     pub fn from_codegen(func: CGFunction) -> GCRef<Self> {
         let mut codesize = 0;
         for block in &func.blocks {
             codesize += block.data.len();
         }
 
-        let (function, tcode) = tvalue::TFunction::create_presized(
+        let (function, tcode) = TFunction::create_presized(
             func.name.get(),
             codesize,
+            func.num_params,
             func.register_allocator.0,
             func.descriptor_table.len_idx()._raw,
             func.blocks.len_idx()._raw
@@ -598,6 +598,153 @@ impl tvalue::TFunction {
         }
 
         function
+    }
+
+    fn create_presized(
+        name: &str,
+        codesize: usize,
+        params: u32,
+        registers: u32,
+        descriptors: u32,
+        blocks: u32
+    ) -> (GCRef<TFunction>, &mut TRawCode) {
+        let extra_size = codesize
+            + descriptors as usize * std::mem::size_of::<TValue>()
+            + blocks as usize * std::mem::size_of::<u32>();
+        let interpreter = get_interpeter();
+        let code = TRawCode::new(codesize, params, registers, descriptors, blocks);
+        let mut function = interpreter.block_allocator.allocate_var_object(
+            Self {
+                ty: Self::ttype(),
+                name: TString::from_slice(name),
+                kind: TFnKind::Function(code)
+            },
+            extra_size
+        );
+        let function2 = function.clone();
+        match function.kind {
+            TFnKind::Function(ref mut code) => {
+                (function2, unsafe { std::mem::transmute(code) })
+            }
+        }
+    }
+}
+
+#[repr(C)]
+pub struct TRawCode {
+    code_size: TInteger,
+    num_params: TInteger,
+    num_registers: TInteger,
+    num_descriptors: TInteger,
+    num_blocks: TInteger,
+    data: [u8; 0]
+}
+
+impl TRawCode {
+    fn new(
+        codesize: usize,
+        params: u32,
+        registers: u32,
+        descriptors: u32,
+        blocks: u32
+    ) -> Self {
+        Self {
+            code_size: TInteger::from_bytes(&(codesize as isize).to_le_bytes()),
+            num_params: TInteger::from_bytes(&(params as i32).to_le_bytes()),
+            num_registers: TInteger::from_bytes(&(registers as i32).to_le_bytes()),
+            num_descriptors: TInteger::from_bytes(&(descriptors as i32).to_le_bytes()),
+            num_blocks: TInteger::from_bytes(&(blocks as i32).to_le_bytes()),
+            data: [0u8; 0]
+        }
+    }
+    
+    fn create_presized(
+        codesize: usize,
+        params: u32,
+        registers: u32,
+        descriptors: u32,
+        blocks: u32
+    ) -> GCRef<Self> {
+        let extra_size = codesize
+            + descriptors as usize * std::mem::size_of::<TValue>()
+            + blocks as usize * std::mem::size_of::<u32>();
+        let interpreter = get_interpeter();
+        interpreter.block_allocator.allocate_var_object(
+            TRawCode::new(codesize, params, registers, descriptors, blocks),
+            extra_size
+        )
+    }
+
+    pub fn blocks(&self) -> &[u32] {
+        unsafe {
+            let len = self.num_blocks.as_usize().expect("TRawCode sensible num_blocks");
+            let offset = self.num_descriptors.as_usize().expect("TRawCode sensible num_descriptors")
+                * std::mem::size_of::<TValue>();
+            std::slice::from_raw_parts(
+                self.data.as_ptr().add(offset) as *const u32,
+                len
+            )
+        }
+    }
+
+    pub fn blocks_mut(&mut self) -> &mut [u32] {
+        unsafe {
+            let len = self.num_blocks.as_usize().expect("TRawCode sensible num_blocks");
+            let offset = self.num_descriptors.as_usize().expect("TRawCode sensible num_descriptors")
+                * std::mem::size_of::<TValue>();
+            std::slice::from_raw_parts_mut(
+                self.data.as_mut_ptr().add(offset) as *mut u32,
+                len
+            )
+        }
+    }
+
+    pub fn code(&self) -> &[u8] {
+        unsafe {
+            let len = self.code_size.as_usize().expect("TRawCode sensible code_size");
+            let offset = self.num_descriptors.as_usize().expect("TRawCode sensible num_descriptors")
+                * std::mem::size_of::<TValue>()
+                + self.num_blocks.as_usize().expect("TRawCode sensible num_blocks")
+                * std::mem::size_of::<u32>();
+            std::slice::from_raw_parts(
+                self.data.as_ptr().add(offset),
+                len
+            )
+        }
+    }
+
+    pub fn code_mut(&mut self) -> &mut [u8] {
+        unsafe {
+            let len = self.code_size.as_usize().expect("TRawCode sensible code_size");
+            let offset = self.num_descriptors.as_usize().expect("TRawCode sensible num_descriptors")
+                * std::mem::size_of::<TValue>()
+                + self.num_blocks.as_usize().expect("TRawCode sensible num_blocks")
+                * std::mem::size_of::<u32>();
+            std::slice::from_raw_parts_mut(
+                self.data.as_mut_ptr().add(offset),
+                len
+            )
+        }
+    }
+
+    pub fn descriptors(&self) -> &[TValue] {
+        unsafe {
+            let len = self.num_descriptors.as_usize().expect("TRawCode sensible num_descriptors");
+            std::slice::from_raw_parts(
+                self.data.as_ptr() as *const TValue,
+                len
+            )
+        }
+    }
+
+    pub fn descriptors_mut(&mut self) -> &mut [TValue] {
+        unsafe {
+            let len = self.num_descriptors.as_usize().expect("TRawCode sensible num_descriptors");
+            std::slice::from_raw_parts_mut(
+                self.data.as_mut_ptr() as *mut TValue,
+                len
+            )
+        }
     }
 }
 
