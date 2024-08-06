@@ -114,7 +114,7 @@ impl<'l> CodeStream<'l> {
 
     #[inline(always)]
     pub fn data(&self) -> &[u8] {
-        unsafe { self.code }
+        self.code
     }
 
     #[inline(always)]
@@ -750,14 +750,14 @@ impl TRawCode {
 
 pub trait InstructionSerializer<I: Instruction> {
     fn serialize(inst: I, vec: &mut Vec<u8>);
-    fn deserialize(data: &[u8]) -> Option<(I, usize)>;
+    fn deserialize<'c>(data: &'c mut CodeStream) -> Option<&'c I>;
 }
 
-pub struct BitSerializer<I>(PhantomData<I>);
+pub struct BitSerializer;
 
-impl<T: Copy> BitSerializer<T> {
+impl BitSerializer {
     #[inline(always)]
-    fn serialize(inst: T, vec: &mut Vec<u8>) {
+    fn serialize<T: Copy>(inst: T, vec: &mut Vec<u8>) {
         let bytes = unsafe {
             std::slice::from_raw_parts(
                 (&inst as *const T) as * const u8,
@@ -768,69 +768,44 @@ impl<T: Copy> BitSerializer<T> {
     }
 
     #[inline(always)]
-    fn deserialize(data: &[u8]) -> Option<T> {
+    fn deserialize<T: Copy>(data: &[u8]) -> Option<&T> {
         if data.len() < std::mem::size_of::<Self>() {
             return None;
         }
-        Some(*unsafe { std::mem::transmute::<*const u8, &T>(data.as_ptr()) })
+        Some(unsafe { std::mem::transmute::<*const u8, &T>(data.as_ptr()) })
     }
 }
 
-impl<I: Instruction> InstructionSerializer<I> for BitSerializer<I> {
+impl<I: Instruction> InstructionSerializer<I> for BitSerializer {
     #[inline(always)]
     fn serialize(inst: I, vec: &mut Vec<u8>) {
-        BitSerializer::serialize(inst, vec)
+        BitSerializer::serialize::<I>(inst, vec)
     }
 
     #[inline(always)]
-    fn deserialize(data: &[u8]) -> Option<(I, usize)> {
-        BitSerializer::deserialize(data).map(|i| (i, std::mem::size_of::<I>()))
+    fn deserialize<'c>(data: &'c mut CodeStream) -> Option<&'c I> {
+        let codestream: *mut _ = &mut *data;
+
+        let instr = BitSerializer::deserialize::<I>(data.code())?;
+        CodeStream::bump(unsafe { &mut *codestream }, std::mem::size_of::<I>());
+
+        Some(instr)
     }
 }
 
 pub struct CallSerializer;
 
-impl InstructionSerializer<instructions::Call> for CallSerializer {
-    #[inline(always)]
-    fn serialize(instructions::Call { callee, arguments, dst }: instructions::Call, vec: &mut Vec<u8>) {
-        BitSerializer::serialize(callee, vec);
-        BitSerializer::serialize(dst, vec);
-        arguments.serialize(vec);
-    }
-
-    #[inline(always)]
-    fn deserialize(data: &[u8]) -> Option<(instructions::Call, usize)> {
-        const VAL_SIZE: usize = std::mem::size_of::<Operand>();
-
-        let callee = BitSerializer::deserialize(data)?;
-        let dst = BitSerializer::deserialize(&data[VAL_SIZE..])?;
-        let (arguments, size) = DynamicArray::deserialize(&data[VAL_SIZE * 2..])?;
-
-        Some((instructions::Call {
-            callee,
-            arguments,
-            dst
-        }, VAL_SIZE * 2 + size))
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct DynamicArray<T: Copy> {
-    length: usize,
-    data: *const T
-}
-
-impl<T: Copy> DynamicArray<T> {
-    fn serialize(&self, vec: &mut Vec<u8>) {
-        let size = self.length * std::mem::size_of::<T>();
+impl CallSerializer {
+    fn serialize_slice<'a, T>(slice: &'a [T], vec: &mut Vec<u8>) {
+        let size = slice.len() * std::mem::size_of::<T>();
         let bytes = unsafe {
-            std::slice::from_raw_parts(self.data as *const u8, size)
+            std::slice::from_raw_parts(slice.as_ptr() as *const u8, size)
         };
         vec.extend(size.to_le_bytes());
         vec.extend(bytes);
     }
 
-    fn deserialize(data: &[u8]) -> Option<(Self, usize)> {
+    fn deserialize_slice<'a, T>(data: &'a [u8]) -> Option<(&'a [T], usize)> {
         let item_size = std::mem::size_of::<T>();
         let header_size = std::mem::size_of::<usize>();
 
@@ -847,37 +822,62 @@ impl<T: Copy> DynamicArray<T> {
         }
 
         let length = size / item_size;
-        Some((Self {
-            length,
-            data: data[header_size..].as_ptr() as *const T
-        }, header_size + size))
-    }
-}
-
-impl<T: Copy> From<&[T]> for DynamicArray<T> {
-    fn from(value: &[T]) -> Self {
-        DynamicArray {
-            length: value.len(),
-            data: value.as_ptr()
+        unsafe {
+            Some((std::slice::from_raw_parts(
+                data[header_size..].as_ptr() as *const T,
+                length
+            ), header_size + size))
         }
     }
 }
 
-impl<T: Copy> Deref for DynamicArray<T> {
-    type Target = [T];
+impl<'s> InstructionSerializer<instructions::Call_1<'s>> for CallSerializer {
+    #[inline(always)]
+    fn serialize(instr: instructions::Call_1<'s>, vec: &mut Vec<u8>) {
+        let instructions::Call_1 { callee, arguments, dst } = instr;
+        BitSerializer::serialize(callee, vec);
+        BitSerializer::serialize(dst, vec);
+        Self::serialize_slice(arguments, vec);
+    }
 
-    fn deref(&self) -> &Self::Target {
-        unsafe { std::slice::from_raw_parts(self.data, self.length) }
+    #[inline(always)]
+    fn deserialize<'c>(_data: &'c mut CodeStream) -> Option<&'c instructions::Call_1<'s>> {
+        panic!()
     }
 }
 
-impl<T: Copy + std::fmt::Debug> std::fmt::Debug for DynamicArray<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtResult {
-        let x: &[_] = Deref::deref(&self);
-        write!(f, "{:?}", x)
+impl InstructionSerializer<instructions::Call> for CallSerializer {
+    #[inline(always)]
+    fn serialize(_instr: instructions::Call, _vec: &mut Vec<u8>) {
+        panic!()
+    }
+
+    #[inline(always)]
+    fn deserialize<'c>(data: &'c mut CodeStream) -> Option<&'c instructions::Call> {
+        const SIZE: usize = std::mem::size_of::<instructions::Call>();
+        let codestream: *mut _ = &mut *data;
+
+        let instr = BitSerializer::deserialize::<instructions::Call>(data.code());
+        CodeStream::bump(unsafe { &mut *codestream }, SIZE);
+
+        let (_arguments, size) = Self::deserialize_slice::<Operand>(data.code())?;
+        CodeStream::bump(unsafe { &mut *codestream }, size);
+
+        instr
     }
 }
 
+impl instructions::Call {
+    fn arguments(&self) -> &[Operand] {
+        let data = unsafe {
+            std::slice::from_raw_parts(
+                self.arguments.as_ptr() as *const u8,
+                usize::MAX
+            )
+        };
+        CallSerializer::deserialize_slice(data).unwrap().0
+    }
+}
 
 define_instructions! {
     Mov {
@@ -975,10 +975,10 @@ define_instructions! {
     Fallthrough,
 
     #[serializer(CallSerializer)]
-    Call {
+    Call<'s> {
         dst: Operand,
         callee: Operand,
-        arguments: DynamicArray<Operand>,
+        arguments: &'s [Operand],
     },
 
     GetIterator { dst: Operand, iterable: Operand },

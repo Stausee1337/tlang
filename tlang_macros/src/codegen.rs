@@ -1,7 +1,7 @@
 use convert_case::{Casing, Case};
 use proc_macro2::{TokenStream, Ident, Span};
-use quote::quote;
-use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent};
+use quote::{quote, ToTokens};
+use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference, Field};
 
 pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
     let node: ItemEnum = syn::parse2(token_stream)?;
@@ -44,6 +44,7 @@ pub struct Instruction {
     serializer: Option<TokenStream>,
     terminator: bool,
     ident: Ident,
+    lifetime: Option<GenericLifetime>,
     fields: Option<FieldsNamed>,
     discriminant: Option<(Token![=], Expr)>,
 }
@@ -52,6 +53,9 @@ impl Parse for Instruction {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let attrs = Attribute::parse_outer(input)?;
         let ident: Ident = input.parse()?;
+        let lifetime: Option<GenericLifetime> = if input.peek(Token![<]) {
+            Some(input.parse()?)
+        } else { None };
         let fields: Option<FieldsNamed> = if input.peek(Brace) {
             Some(input.parse()?)
         } else { None };
@@ -102,10 +106,66 @@ impl Parse for Instruction {
             serializer,
             terminator,
             ident,
+            lifetime,
             fields,
             discriminant
         })
     }
+}
+
+struct GenericLifetime { 
+    pub lt_token: Token![<],
+    pub param: Lifetime,
+    pub gt_token: Token![>],
+}
+
+impl Parse for GenericLifetime {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        Ok(Self {
+            lt_token: input.parse()?,
+            param: input.parse()?,
+            gt_token: input.parse()?
+        })
+    }
+}
+
+impl ToTokens for GenericLifetime {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.lt_token.to_tokens(tokens);
+        self.param.to_tokens(tokens);
+        self.gt_token.to_tokens(tokens);
+    }
+}
+
+fn is_slice(ty: &Type) -> bool {
+    match ty {
+        Type::Reference(TypeReference { mutability: None, lifetime, elem, .. })
+            if matches!(elem.as_ref(), Type::Slice(..)) => true,
+        _ => false 
+    }
+}
+
+fn make_struct(
+    vis: Visibility,
+    ident: &Ident,
+    opcode: &Ident,
+    generics: &Option<GenericLifetime>,
+    fields: &TokenStream,
+    serializer: Option<&TokenStream>,
+    is_terminator: bool,
+    structures: &mut TokenStream) {
+    let serializer = serializer
+        .map(|x| x.clone())
+        .unwrap_or(quote!(BitSerializer));
+
+    structures.extend(quote!(#[derive(Clone, Copy, Debug)] #[repr(packed)] #vis struct #ident #generics #fields));
+    structures.extend(quote! {
+        impl #generics Instruction for #ident #generics {
+            const CODE: OpCode = OpCode::#opcode;
+            const IS_TERMINATOR: bool = #is_terminator;
+            type Serializer = #serializer;
+        }
+    });
 }
 
 pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
@@ -119,6 +179,7 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
     let mut debug_deserialize = TokenStream::new();
     for inst in &mut instructions {
         let ident = &inst.ident;
+        let generics = &inst.lifetime;
 
         opcodes.extend(quote!(#ident));
         if let Some((_, disc)) = &inst.discriminant {
@@ -126,49 +187,21 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
         }
         opcodes.extend(quote!(,));
 
-        let fields = if let Some(fields) = &mut inst.fields {
-            for field in &mut fields.named {
-                field.vis = Visibility::Public(syn::token::Pub::default());
-            }
-            quote!(#fields)
-        } else {
-            quote!({})
-        };
-
-        let serializer = inst.serializer
-            .as_ref()
-            .map(|x| x.clone())
-            .unwrap_or(quote!(BitSerializer<Self>));
-
-        let terminator = inst.terminator;
-
-        structures.extend(quote!(#[derive(Clone, Copy, Debug)] #[repr(packed)] pub struct #ident #fields));
-        structures.extend(quote! {
-            impl Instruction for #ident {
-                const CODE: OpCode = OpCode::#ident;
-                const IS_TERMINATOR: bool = #terminator;
-                type Serializer = #serializer;
-            }
-        });
-        
         let snake_case_name = format!("emit_{}", ident.to_string().to_case(Case::Snake));
         let snake_case_ident = Ident::new(&snake_case_name, Span::call_site());
         
-        let mut sargs = TokenStream::new();
+        let mut has_slice = false;
         let mut fargs = Punctuated::<Ident, Token![,]>::new();
         let mut params = TokenStream::new();
-        let mut gparams = TokenStream::new();
         if let Some(fields) = &inst.fields {
-            for (idx, field) in fields.named.iter().enumerate() { 
+            for field in fields.named.iter() { 
                 let ident = field.ident.as_ref().unwrap();
                 let ty = &field.ty;
 
-                let gident = Ident::new(&format!("__T{idx}"), Span::call_site());
+                has_slice |= is_slice(&field.ty);
 
                 fargs.push(ident.clone());
-                sargs.extend(quote!(#ident: #ident.into(),));
-                params.extend(quote!(#ident: #gident,));
-                gparams.extend(quote!(#gident: Into<#ty>,));
+                params.extend(quote!(#ident: #ty,));
             }
         }
 
@@ -176,19 +209,25 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
             Some(quote!(self.terminated = true;))
         } else { None };
 
+        let sident = if !has_slice {
+            ident.clone()
+        } else {
+            Ident::new(&format!("{}_{}", ident, 1), Span::call_site())
+        };
+
         block_impls.extend(quote! {
-            pub fn #snake_case_ident<#gparams>(&mut self, #params) {
+            pub fn #snake_case_ident #generics (&mut self, #params) {
                 debug_assert!(!self.terminated);
                 #terminator_code
-                let instruction = crate::bytecode::instructions::#ident {
-                    #sargs
+                let instruction = crate::bytecode::instructions::#sident {
+                    #fargs
                 };
                 Instruction::serialize(instruction, &mut self.data)
             }
         });
 
         codegen_impls.extend(quote! {
-            pub fn #snake_case_ident<#gparams>(&mut self, #params) {
+            pub fn #snake_case_ident #generics (&mut self, #params) {
                 let func = self.current_fn_mut();
                 let block = func.current_block_mut();
                 block.#snake_case_ident(#fargs);
@@ -197,8 +236,55 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
 
         debug_deserialize.extend(quote! {
             OpCode::#ident =>
-                Box::new(crate::bytecode::instructions::#ident::deserialize(stream).unwrap()),
+                crate::bytecode::instructions::#ident::deserialize(stream).unwrap(),
         });
+
+        let mut has_slice = false;
+        let fields = if let Some(fields) = &mut inst.fields.clone() {
+            for field in &mut fields.named {
+                if is_slice(&field.ty) {
+                    has_slice = true;
+                    field.ty = syn::parse2(quote!([(); 0])).unwrap();
+                    field.vis = syn::parse2(quote!( pub(super) )).unwrap();
+                    continue;
+                }
+                field.vis = Visibility::Public(syn::token::Pub::default());
+            }
+            quote!(#fields)
+        } else {
+            quote!({})
+        };
+
+        make_struct(
+            Visibility::Public(syn::token::Pub::default()),
+            ident, 
+            ident, 
+            &None,
+            &fields, 
+            inst.serializer.as_ref(),
+            inst.terminator,
+            &mut structures);
+
+        if has_slice {
+            let fields = inst.fields.as_mut().unwrap();
+            for field in &mut fields.named {
+                field.vis = syn::parse2(quote!( pub(super) )).unwrap();
+            }
+
+            let fields = quote!(#fields);
+
+            let ext_ident = Ident::new(&format!("{}_{}", ident, 1), Span::call_site());
+
+            make_struct(
+                syn::parse2(quote!( pub(super) )).unwrap(),
+                &ext_ident, 
+                ident,
+                generics,
+                &fields, 
+                inst.serializer.as_ref(),
+                inst.terminator,
+                &mut structures);
+        }
     }
 
     let module = quote! {
@@ -213,7 +299,7 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
                 unsafe { std::mem::transmute(op) }
             }
 
-            pub fn deserialize_for_debug(self, stream: &mut CodeStream) -> Box<dyn std::fmt::Debug> {
+            pub fn deserialize_for_debug<'c>(self, stream: &'c mut CodeStream) -> &'c dyn std::fmt::Debug {
                 match self {
                     #debug_deserialize
                 }
@@ -228,21 +314,20 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
             #[inline(always)]
             fn serialize(self, vec: &mut Vec<u8>) {
                 vec.push(Self::CODE as u8);
+                println!("serialize, {:?}", Self::CODE);
                 Self::Serializer::serialize(self, vec);
             }
 
             #[inline(always)]
-            fn deserialize(stream: &mut CodeStream) -> Option<Self> {
+            fn deserialize<'c>(stream: &'c mut CodeStream) -> Option<&'c Self> {
                 if stream.current() != Self::CODE as u8 {
                     return None;
                 }
                 stream.bump(1);
 
-                let Some((inst, size)) = Self::Serializer::deserialize(stream.code()) else {
-                    println!("{:?}", Self::CODE);
+                let Some(inst) = Self::Serializer::deserialize(stream) else {
                     return None;
                 };
-                stream.bump(size);
 
                 Some(inst)
             }

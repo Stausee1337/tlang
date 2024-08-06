@@ -3,7 +3,7 @@ use std::{mem::MaybeUninit, ops::Deref, slice::Iter};
 use index_vec::Idx;
 use tlang_macros::decode;
 
-use crate::{memory::{BlockAllocator, GCRef}, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register, DynamicArray}};
+use crate::{memory::BlockAllocator, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register}};
 
 static mut INTERPTETER: Wrapper = Wrapper(false, MaybeUninit::uninit());
 
@@ -58,11 +58,11 @@ impl TRawCode {
             loop {
                 match OpCode::decode(env.stream.current()) {
                     OpCode::Add => {
-                        decode!(Add { mut dst, lhs, rhs } in env);
-                        *dst = add_helper(lhs, rhs);
+                        // decode!(Add { mut dst, lhs, rhs } in env);
+                        // *dst = add_helper(lhs, rhs);
                     }
                     OpCode::Call => {
-                        decode!(Call { mut dst, callee, &arguments } in env);
+                        // decode!(Call { mut dst, callee, &arguments } in env);
                     }
                     OpCode::Fallthrough => (),
                     _ => todo!()
@@ -148,9 +148,3 @@ impl Decode for i32 {
 
 impl DecodeMut for i32 {}
 
-
-impl DecodeDeref for DynamicArray<Operand> {
-    fn decode_deref<'l>(&self, _env: &'l ExecutionEnvironment) -> &'l Iter<'l, TValue> {
-        todo!()
-    }
-}

@@ -354,7 +354,7 @@ impl<'ast> BinaryExpr<'ast> {
         generator: &mut BytecodeGenerator
     ) -> Result<(), CodegenErr> {
         let emit = match self.op {
-            BinaryOp::Equal => BytecodeGenerator::emit_branch_eq::<Operand, Operand, CodeLabel, CodeLabel>,
+            BinaryOp::Equal => BytecodeGenerator::emit_branch_eq,
             BinaryOp::NotEqual => BytecodeGenerator::emit_branch_ne,
             BinaryOp::GreaterThan => BytecodeGenerator::emit_branch_gt,
             BinaryOp::GreaterEqual => BytecodeGenerator::emit_branch_ge,
@@ -396,7 +396,7 @@ impl<'ast> BinaryExpr<'ast> {
 
     fn generate_nobool(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
         let emit = match self.op {
-            BinaryOp::Plus => BytecodeGenerator::emit_add::<Operand, Operand, Operand>,
+            BinaryOp::Plus => BytecodeGenerator::emit_add,
             BinaryOp::Minus => BytecodeGenerator::emit_sub,
             BinaryOp::Mul => BytecodeGenerator::emit_mul,
             BinaryOp::Div => BytecodeGenerator::emit_div,
@@ -458,7 +458,7 @@ impl<'ast> GeneratorNode for BinaryExpr<'ast> {
 impl<'ast> GeneratorNode for UnaryExpr<'ast> {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
         let emit = match self.op {
-            UnaryOp::Neg => BytecodeGenerator::emit_neg::<Operand, Operand>,
+            UnaryOp::Neg => BytecodeGenerator::emit_neg,
             UnaryOp::Not => BytecodeGenerator::emit_not,
             UnaryOp::Invert => BytecodeGenerator::emit_invert,
         };
