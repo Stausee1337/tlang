@@ -4,7 +4,7 @@ use std::{marker::PhantomData, ops::{Deref, IndexMut}, fmt::{Write, Result as Fm
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue, symbol::Symbol, parse::Ident, codegen};
+use crate::{tvalue::{self, TFunction}, symbol::Symbol, parse::Ident, codegen, memory::GCRef};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -484,6 +484,9 @@ impl BytecodeGenerator {
         let mut string = String::new();
         FunctionDisassembler::dissassemble(&func, &mut string).unwrap();
         println!("{string}");
+
+        let func = TFunction::from_codegen(func);
+
         Ok(None)
     }
 
@@ -561,6 +564,40 @@ impl BytecodeGenerator {
 
     pub fn make_float(&mut self, float: f64) -> Operand {
         self.current_fn_mut().descriptor(tvalue::TFloat::from_float(float))
+    }
+}
+
+
+impl tvalue::TFunction {
+    pub fn from_codegen(func: CGFunction) -> GCRef<Self> {
+        let mut codesize = 0;
+        for block in &func.blocks {
+            codesize += block.data.len();
+        }
+
+        let (function, tcode) = tvalue::TFunction::create_presized(
+            func.name.get(),
+            codesize,
+            func.register_allocator.0,
+            func.descriptor_table.len_idx()._raw,
+            func.blocks.len_idx()._raw
+        );
+
+        let mut offset = 0;
+        for block in &func.blocks {
+            assert!(block.terminated);
+
+            tcode.blocks_mut()[block.label.index()] = offset as u32;
+            let codebuf = &mut tcode.code_mut()[offset..];
+            codebuf.copy_from_slice(&block.data);
+            offset += block.data.len();
+        }
+
+        for (descriptor, value) in func.descriptor_table.iter_enumerated() {
+            tcode.descriptors_mut()[descriptor.index()] = *value;
+        }
+
+        function
     }
 }
 

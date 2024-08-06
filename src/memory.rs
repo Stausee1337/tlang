@@ -47,7 +47,7 @@ impl HeapBlock {
         Ok(NonNull::new_unchecked(raw))
     }
 
-    unsafe fn unmap(self) -> io::Result<()> {
+    unsafe fn unmap(&self) -> io::Result<()> {
         munmap(self.data.as_ptr() as *mut c_void, HeapBlock::PAGE_SIZE)
     }
 
@@ -58,23 +58,37 @@ impl HeapBlock {
         let size = layout.size();
         let align = layout.align();
 
-        let start = self.data.as_ptr() as usize + self.allocated_bytes;
-        let padding = align_up(start, align) - start;
+        let start = self.data.as_ptr();
+        let end = start.add(Self::PAGE_SIZE);
+
+        let head = start.add(self.allocated_bytes); 
+        let body = head.add(std::mem::size_of::<AtomHead>());
+
+        let body = align_up(body as usize, align) as *mut u8; /*- (body as usize)*/
 
         let alloc_size = align_up(size, Self::ALIGN);
-        if padding + alloc_size + self.allocated_bytes > Self::PAGE_SIZE {
+        if body.add(alloc_size) > end {
             return None;
         }
 
-        self.allocated_bytes += padding;
+        let prev_size = self.allocated_bytes;
+        self.allocated_bytes = (body.add(alloc_size) as usize) - (start as usize);
 
-        let addr = self.data.as_ptr().add(self.allocated_bytes);
+        *(head as *mut AtomHead) = AtomHead {
+            size: (self.allocated_bytes - prev_size) as u32,
+            alive: 1,
+            tag: 0
+        };
 
-        self.allocated_bytes += alloc_size;
+        // self.allocated_bytes += padding;
+
+        // let addr = self.data.as_ptr().add(self.allocated_bytes);
+
+        // self.allocated_bytes += alloc_size;
 
         println!("{layout:?}, {alloc_size}, {}", self.allocated_bytes);
 
-        Some(addr)
+        Some(body)
     }
 }
 
@@ -86,6 +100,25 @@ impl BlockAllocator {
     pub fn init() -> Self {
         let root_block = unsafe { HeapBlock::map().unwrap() };
         Self { current_block: Cell::new(root_block) }
+    }
+
+    pub fn allocate_object<T>(&self, object: T) -> GCRef<T> {
+        unsafe {
+            let mut data = self.allocate(Layout::new::<T>()).unwrap().cast::<T>();
+            *(data.as_mut()) = object;
+            GCRef(data.as_ptr())
+        }
+    }
+
+    pub fn allocate_var_object<T>(&self, object: T, extra_bytes: usize) -> GCRef<T> {
+        unsafe {
+            let layout = Layout::new::<T>();
+            let layout = Layout::from_size_align_unchecked(layout.size() + extra_bytes, layout.align());
+
+            let mut data = self.allocate(layout).unwrap().cast::<T>();
+            *(data.as_mut()) = object;
+            GCRef(data.as_ptr())
+        }
     }
 }
 
@@ -111,34 +144,32 @@ unsafe impl Allocator for BlockAllocator {
     unsafe fn deallocate(&self, _ptr: NonNull<u8>, _layout: Layout) { }
 }
 
-pub trait Atom: Sized {}
-
 #[derive(Eq)]
-pub struct GCRef<T: Atom>(*mut T);
+pub struct GCRef<T>(*mut T);
 
-impl<T: Atom> GCRef<T> {
+impl<T> GCRef<T> {
     pub const fn from_raw(raw: *mut T) -> Self {
         GCRef(raw)
     }
 }
 
-unsafe impl<T: Atom> Sync for GCRef<T> {}
-unsafe impl<T: Atom> Send for GCRef<T> {}
+unsafe impl<T> Sync for GCRef<T> {}
+unsafe impl<T> Send for GCRef<T> {}
 
-impl<T: Atom> PartialEq for GCRef<T> {
+impl<T> PartialEq for GCRef<T> {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::addr_eq(self.0, other.0)
     }
 }
 
-impl<T: Atom> Clone for GCRef<T> {
+impl<T> Clone for GCRef<T> {
     fn clone(&self) -> Self {
         GCRef(self.0)
     }
 }
-impl<T: Atom> std::marker::Copy for GCRef<T> {}
+impl<T> std::marker::Copy for GCRef<T> {}
 
-impl<T: Atom> Deref for GCRef<T> {
+impl<T> Deref for GCRef<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -146,7 +177,7 @@ impl<T: Atom> Deref for GCRef<T> {
     }
 }
 
-impl<T: Atom> DerefMut for GCRef<T> {
+impl<T> DerefMut for GCRef<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.0 }
     }

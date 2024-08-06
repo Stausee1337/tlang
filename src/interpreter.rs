@@ -7,7 +7,7 @@ static mut INTERPTETER: Wrapper = Wrapper(false, MaybeUninit::uninit());
 struct Wrapper(bool, MaybeUninit<TlInterpreter>);
 
 pub struct TlInterpreter {
-    pub block_allocator: BlockAllocator
+    pub block_allocator: BlockAllocator,
 }
 
 pub fn make_interpreter() -> &'static TlInterpreter {
