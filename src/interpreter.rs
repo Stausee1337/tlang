@@ -1,8 +1,9 @@
-use std::mem::MaybeUninit;
+use std::{mem::MaybeUninit, ops::Deref, slice::Iter};
 
 use index_vec::Idx;
+use tlang_macros::decode;
 
-use crate::{memory::{BlockAllocator, GCRef}, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register}};
+use crate::{memory::{BlockAllocator, GCRef}, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register, DynamicArray}};
 
 static mut INTERPTETER: Wrapper = Wrapper(false, MaybeUninit::uninit());
 
@@ -47,26 +48,38 @@ trait DecodeMut {
     }
 }
 
+trait DecodeDeref {
+    fn decode_deref<'l>(&self, env: &'l ExecutionEnvironment) -> &'l impl Iterator<Item = &'l TValue>;
+}
+
 impl TRawCode {
-    pub fn evaluate(&self, arguments: &[TValue]) -> TValue {
+    pub fn evaluate<'a>(&self, arguments: &'a Iter<'a, TValue>) -> TValue {
         Self::with_environment(arguments, |env| {
             loop {
                 match OpCode::decode(env.stream.current()) {
                     OpCode::Add => {
                         decode!(Add { mut dst, lhs, rhs } in env);
+                        *dst = add_helper(lhs, rhs);
                     }
                     OpCode::Call => {
                         decode!(Call { mut dst, callee, &arguments } in env);
                     }
+                    OpCode::Fallthrough => (),
                     _ => todo!()
                 }
             }
         })
     }
 
-    fn with_environment<F: FnOnce(&mut ExecutionEnvironment) -> TValue>(arguments: &[TValue], executor: F) -> TValue {
+    fn with_environment<'a, F: FnOnce(&mut ExecutionEnvironment) -> TValue>(
+        arguments: &'a Iter<'a, TValue>, executor: F) -> TValue {
         todo!()
     }
+}
+
+#[inline(always)]
+fn add_helper(lhs: TValue, rhs: TValue) -> TValue {
+    todo!()
 }
 
 impl Decode for Operand {
@@ -77,6 +90,18 @@ impl Decode for Operand {
             OperandKind::Register(reg) => reg.decode(env),
             OperandKind::Descriptor(desc) => desc.decode(env),
             OperandKind::Int32(int) => int.decode(env),
+        }
+    }
+}
+
+impl DecodeMut for Operand {
+    fn decode_mut<'l>(&self, env: &'l mut ExecutionEnvironment) -> &'l mut TValue {
+        match self.to_rust() {
+            OperandKind::Null => panic!("TValue::null() cannot be decoded as mutable"),
+            OperandKind::Bool(bool) => bool.decode_mut(env),
+            OperandKind::Register(reg) => reg.decode_mut(env),
+            OperandKind::Descriptor(desc) => desc.decode_mut(env),
+            OperandKind::Int32(int) => int.decode_mut(env),
         }
     }
 }
@@ -122,3 +147,10 @@ impl Decode for i32 {
 }
 
 impl DecodeMut for i32 {}
+
+
+impl DecodeDeref for DynamicArray<Operand> {
+    fn decode_deref<'l>(&self, _env: &'l ExecutionEnvironment) -> &'l Iter<'l, TValue> {
+        todo!()
+    }
+}

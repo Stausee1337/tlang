@@ -99,7 +99,7 @@ pub struct CodeStream<'l> {
 }
 
 impl<'l> CodeStream<'l> {
-    fn debug_from_data(code: &[u8])  -> Self {
+    fn debug_from_data(code: &'l [u8])  -> Self {
         Self {
             code,
             position: 0,

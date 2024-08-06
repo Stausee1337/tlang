@@ -1,7 +1,7 @@
 use convert_case::{Casing, Case};
 use proc_macro2::{TokenStream, Ident, Span};
 use quote::quote;
-use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool,};
+use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent};
 
 pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
     let node: ItemEnum = syn::parse2(token_stream)?;
@@ -267,5 +267,129 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
     Ok(quote! {
         #module
         #implementations
+    })
+}
+
+struct DecodeStmt {
+    decodable: Decodable,
+    in_token: Token![in],
+    environment: Ident
+}
+
+impl Parse for DecodeStmt {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let decodable = input.parse()?;
+        let in_token = input.parse()?;
+        let environment = input.parse()?;
+        Ok(Self { decodable, in_token, environment })
+    }
+}
+
+struct Decodable {
+    ident: Ident,
+    fields: DecodeFields
+}
+
+impl Parse for Decodable {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let ident: Ident = input.parse()?;
+        let fields = input.parse()?;
+        Ok(Self { ident, fields })
+    } }
+
+struct DecodeFields {
+    brace_token: Brace,
+    named: Punctuated<DecodeField, Token![,]>,
+}
+
+impl Parse for DecodeFields {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let content;
+        let brace_token = braced!(content in input);
+
+        let named = content.parse_terminated(DecodeField::parse, Token![,])?;
+        Ok(Self { brace_token, named })
+    }
+}
+
+struct DecodeField {
+    kind: DecodeKind,
+    ident: Ident
+}
+
+impl Parse for DecodeField {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let kind = input.parse()?;
+        let ident = input.parse()?;
+        Ok(Self { kind, ident })
+    }
+}
+
+enum DecodeKind {
+    Copy,
+    Deref(Token![&]),
+    Mutable(Token![mut]),
+}
+
+impl Parse for DecodeKind {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        if input.peek(Token![&]) {
+            Ok(DecodeKind::Deref(input.parse()?))
+        } else if input.peek(Token![mut]) {
+            Ok(DecodeKind::Mutable(input.parse()?))
+        } else {
+            Ok(DecodeKind::Copy)
+        }
+    }
+}
+
+pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+    let stmt: DecodeStmt = syn::parse2(token_stream)?;
+
+    let mut fields = Punctuated::<Ident, Token![,]>::new();
+    let mut locals = Punctuated::<PatIdent, Token![,]>::new();
+
+    let ident = &stmt.decodable.ident;
+    let environment = &stmt.environment;
+
+    let mut decode_logic = TokenStream::new(); 
+    for field in &stmt.decodable.fields.named {
+        let ident = &field.ident;
+        let local = PatIdent {
+            attrs: vec![],
+            ident: ident.clone(),
+            by_ref: None,
+            mutability: None,
+            subpat: None
+        };
+        
+        let decoding = match field.kind {
+            DecodeKind::Copy => quote!(Decode::decode(&#ident, unsafe { &*codenv })),
+            DecodeKind::Deref(_) => quote!(DecodeDeref::decode_deref(&#ident, unsafe { &*codenv })),
+            DecodeKind::Mutable(_) => quote!(DecodeMut::decode_mut(&#ident, unsafe { &mut *codenv })),
+        };
+
+        decode_logic.extend(quote!(let #local = #decoding; ));
+
+        fields.push(ident.clone());
+        locals.push(local);
+    }
+
+    decode_logic.extend(quote!((#fields)));
+
+    Ok(quote! {
+        let (#locals) = {
+            use std::ops::Deref;
+            use crate::bytecode::Instruction;
+            let instruction = crate::bytecode::instructions::#ident::deserialize(
+                &mut #environment.stream
+            ).unwrap();
+
+            let codenv: *mut _ = &mut *#environment;
+
+            let crate::bytecode::instructions::#ident { #fields } = instruction;
+
+            #decode_logic
+        };
     })
 }

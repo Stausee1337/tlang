@@ -16,3 +16,9 @@ pub fn define_instructions(item: TokenStream) -> TokenStream {
         .into()
 }
 
+#[proc_macro]
+pub fn decode(item: TokenStream) -> TokenStream {
+    codegen::generate_decode(item.into())
+        .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
+        .into()
+}
