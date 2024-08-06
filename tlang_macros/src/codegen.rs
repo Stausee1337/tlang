@@ -1,7 +1,7 @@
 use convert_case::{Casing, Case};
 use proc_macro2::{TokenStream, Ident, Span};
 use quote::{quote, ToTokens};
-use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference, Field};
+use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference};
 
 pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
     let node: ItemEnum = syn::parse2(token_stream)?;
@@ -178,7 +178,11 @@ fn make_struct(
         None
     };
 
-    structures.extend(quote!(#[derive(Clone, Copy, #debug)] #[repr(packed)] #vis struct #ident #generics #fields));
+    structures.extend(quote!(
+            #[derive(Clone, Copy, #debug)]
+            #[repr(packed)] 
+            #[allow(non_camel_case_types)]
+            #vis struct #ident #generics #fields));
     structures.extend(quote! {
         impl #generics Instruction for #ident #generics {
             const CODE: OpCode = OpCode::#opcode;
@@ -498,13 +502,15 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
         let (#locals) = {
             use std::ops::Deref;
             use crate::bytecode::Instruction;
+
+            let codenv: *mut _ = &mut *#environment;
+
             let instruction = crate::bytecode::instructions::#ident::deserialize(
                 &mut #environment.stream
             ).unwrap();
 
-            let codenv: *mut _ = &mut *#environment;
 
-            let crate::bytecode::instructions::#ident { #fields } = instruction;
+            let crate::bytecode::instructions::#ident { #fields, .. } = *instruction;
 
             #decode_logic
         };

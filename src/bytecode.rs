@@ -1,5 +1,5 @@
 
-use std::{marker::PhantomData, ops::{Deref, IndexMut}, fmt::{Write, Result as FmtResult}, usize, cell::OnceCell};
+use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCell};
 
 use ahash::HashMap;
 use tlang_macros::define_instructions;

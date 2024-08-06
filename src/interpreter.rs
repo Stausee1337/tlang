@@ -3,7 +3,7 @@ use std::{mem::MaybeUninit, ops::Deref, slice::Iter};
 use index_vec::Idx;
 use tlang_macros::decode;
 
-use crate::{memory::BlockAllocator, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register}};
+use crate::{memory::BlockAllocator, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register, CodeLabel}};
 
 static mut INTERPTETER: Wrapper = Wrapper(false, MaybeUninit::uninit());
 
@@ -38,7 +38,9 @@ struct ExecutionEnvironment<'l> {
 }
 
 trait Decode {
-    fn decode(&self, env: &ExecutionEnvironment) -> TValue;
+    type Output;
+
+    fn decode(&self, env: &ExecutionEnvironment) -> Self::Output;
 }
 
 trait DecodeMut {
@@ -54,16 +56,18 @@ trait DecodeDeref {
 
 impl TRawCode {
     pub fn evaluate<'a>(&self, arguments: &'a Iter<'a, TValue>) -> TValue {
-        Self::with_environment(arguments, |env| {
+        Self::with_environment(arguments, |mut env| {
             loop {
                 match OpCode::decode(env.stream.current()) {
-                    OpCode::Add => {
-                        // decode!(Add { mut dst, lhs, rhs } in env);
-                        // *dst = add_helper(lhs, rhs);
-                    }
-                    OpCode::Call => {
-                        // decode!(Call { mut dst, callee, &arguments } in env);
-                    }
+                    OpCode::Add => impls::add(&mut env), OpCode::Sub => impls::sub(&mut env),
+                    OpCode::Mul => impls::mul(&mut env), OpCode::Div => impls::mul(&mut env),
+                    OpCode::Mod => impls::rem(&mut env),
+
+                    OpCode::LeftShift => impls::shl(&mut env), OpCode::RightShift => impls::shr(&mut env),
+
+                    OpCode::BitwiseAnd => impls::bitand(&mut env), OpCode::BitwiseOr => impls::bitor(&mut env),
+                    OpCode::BitwiseXor => impls::bitxor(&mut env),
+
                     OpCode::Fallthrough => (),
                     _ => todo!()
                 }
@@ -71,18 +75,15 @@ impl TRawCode {
         })
     }
 
-    fn with_environment<'a, F: FnOnce(&mut ExecutionEnvironment) -> TValue>(
+    fn with_environment<'a, F: FnOnce(ExecutionEnvironment) -> TValue>(
         arguments: &'a Iter<'a, TValue>, executor: F) -> TValue {
         todo!()
     }
 }
 
-#[inline(always)]
-fn add_helper(lhs: TValue, rhs: TValue) -> TValue {
-    todo!()
-}
-
 impl Decode for Operand {
+    type Output = TValue;
+
     fn decode(&self, env: &ExecutionEnvironment) -> TValue {
         match self.to_rust() {
             OperandKind::Null => TValue::null(),
@@ -107,6 +108,8 @@ impl DecodeMut for Operand {
 }
 
 impl Decode for bool {
+    type Output = TValue;
+
     #[inline(always)]
     fn decode(&self, _env: &ExecutionEnvironment) -> TValue {
         TBool::from_bool(*self).into()
@@ -116,6 +119,8 @@ impl Decode for bool {
 impl DecodeMut for bool {}
 
 impl Decode for Descriptor {
+    type Output = TValue;
+
     #[inline(always)]
     fn decode(&self, env: &ExecutionEnvironment) -> TValue {
         env.descriptors[self.index()]
@@ -125,6 +130,8 @@ impl Decode for Descriptor {
 impl DecodeMut for Descriptor {}
 
 impl Decode for Register {
+    type Output = TValue;
+
     #[inline(always)]
     fn decode(&self, env: &ExecutionEnvironment) -> TValue {
         env.registers[self.index()]
@@ -140,6 +147,8 @@ impl DecodeMut for Register {
 }
 
 impl Decode for i32 {
+    type Output = TValue;
+
     #[inline(always)]
     fn decode(&self, _env: &ExecutionEnvironment) -> TValue {
         TInteger::from_int32(*self).into() 
@@ -148,3 +157,45 @@ impl Decode for i32 {
 
 impl DecodeMut for i32 {}
 
+impl Decode for CodeLabel {
+    type Output = CodeLabel;
+
+    fn decode(&self, _env: &ExecutionEnvironment) -> Self::Output {
+        *self
+    }
+}
+
+mod impls {
+    use super::*;
+    use std::ops::*;
+
+    macro_rules! arithmetic_impl {
+        ($fnname: ident, $inname: ident) => {
+            #[inline(always)]
+            pub fn $fnname(env: &mut ExecutionEnvironment) {
+                decode!($inname { mut dst, lhs, rhs } in env);
+                let lhs_int: Option<TInteger> = TInteger::try_from(lhs).ok();
+                let rhs_int: Option<TInteger> = TInteger::try_from(rhs).ok();
+                if let Some((lhs, rhs)) = lhs_int.zip(rhs_int) {
+                    *dst = TInteger::$fnname(lhs, rhs).into();
+                }
+                todo!()
+            }
+        };
+    }
+
+    macro_rules! iterate_arithmetics {
+        ($(impl $fnname:ident for $inname:ident;)*) => {
+            $(arithmetic_impl!($fnname, $inname);)*
+        };
+    }
+
+
+    iterate_arithmetics! {
+        impl add for Add; impl sub for Sub;
+        impl mul for Mul; impl div for Div; impl rem for Mod;
+
+        impl shl for LeftShift; impl shr for RightShift;
+        impl bitand for BitwiseAnd; impl bitor for BitwiseOr; impl bitxor for BitwiseXor;
+    }
+}

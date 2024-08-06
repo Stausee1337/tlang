@@ -195,6 +195,34 @@ impl TInteger {
     }
 }
 
+impl TryFrom<TValue> for TInteger {
+    type Error = ();
+
+    #[inline(always)]
+    fn try_from(value: TValue) -> Result<Self, Self::Error> {
+        Ok(match value.kind() {
+            TValueKind::Int32 => TInteger(value),
+            TValueKind::Object 
+                if value.as_object::<TIntObject>().ty == Self::ttype() => TInteger(value),
+            _ => return Err(())
+        })
+    }
+}
+
+impl std::ops::Add for TInteger {
+    type Output = TInteger;
+    fn add(self, rhs: Self) -> Self::Output {
+        todo!() 
+    }
+}
+
+impl std::ops::Sub for TInteger {
+    type Output = TInteger;
+    fn sub(self, rhs: Self) -> Self::Output {
+        todo!() 
+    }
+}
+
 impl Into<TValue> for TInteger {
     #[inline(always)]
     fn into(self) -> TValue {
