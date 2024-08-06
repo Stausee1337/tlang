@@ -559,7 +559,7 @@ impl BytecodeGenerator {
         if let Ok(int) = i32::try_from(int) {
             return Operand::int32(int);
         }
-        self.current_fn_mut().descriptor(TInteger::from_bytes(&int.to_le_bytes()))
+        self.current_fn_mut().descriptor(TInteger::from_usize(int as usize))
     }
 
     pub fn make_float(&mut self, float: f64) -> Operand {
@@ -649,11 +649,11 @@ impl TRawCode {
         blocks: u32
     ) -> Self {
         Self {
-            code_size: TInteger::from_bytes(&(codesize as isize).to_le_bytes()),
-            num_params: TInteger::from_bytes(&(params as i32).to_le_bytes()),
-            num_registers: TInteger::from_bytes(&(registers as i32).to_le_bytes()),
-            num_descriptors: TInteger::from_bytes(&(descriptors as i32).to_le_bytes()),
-            num_blocks: TInteger::from_bytes(&(blocks as i32).to_le_bytes()),
+            code_size: TInteger::from_usize(codesize),
+            num_params: TInteger::from_usize(params as usize),
+            num_registers: TInteger::from_usize(registers as usize),
+            num_descriptors: TInteger::from_usize(descriptors as usize),
+            num_blocks: TInteger::from_usize(blocks as usize),
             data: [0u8; 0]
         }
     }

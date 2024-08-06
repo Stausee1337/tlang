@@ -148,31 +148,19 @@ impl TInteger {
         TInteger(TValue::int32(int))
     }
 
-    /// Converts a sequence of signed little endian bytes
-    /// into a TInteger representation
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        // TODO: real bigintegers
-        if bytes.len() <= std::mem::size_of::<i32>() {
-            let int = match bytes {
-                [b1] => i8::from_le_bytes([*b1]) as i32,
-                [b1, b2] => i16::from_le_bytes([*b1, *b2]) as i32,
-                [b1, b2, b3, b4] => i32::from_le_bytes([*b1, *b2, *b3, *b4]) as i32,
-                _ => unreachable!()
-            };
-            return Self::from_int32(int);
+    #[inline(always)]
+    pub const fn from_usize(size: usize) -> Self {
+        let Ok(size) = isize::try_from(size) else {
+            return Self::from_signed_bytes(&(size as i128).to_le_bytes());
+        };
+        if let Ok(int) = i32::try_from(size) {
+            return TInteger(TValue::int32(int));
         }
+        Self::from_signed_bytes(&size.to_le_bytes()) 
+    }
 
-        match bytes {
-            [b1, b2, b3, b4, b5, b6, b7, b8] => {
-                let int = i64::from_le_bytes([*b1, *b2, *b3, *b4, *b5, *b6, *b7, *b8]);
-                if let Ok(int) = i32::try_from(int) {
-                    return Self::from_int32(int);
-                }
-                let object = Self::as_object(bytes);
-                TInteger(TValue::object_tagged(object, TValueKind::Object))
-            },
-            _ => todo!("real bigint support")
-        }
+    pub fn from_signed_bytes(bytes: &[u8]) -> Self {
+        todo!("real bigint support")
     }
 
     fn as_object(bytes: &[u8]) -> GCRef<TIntObject> {
@@ -292,11 +280,9 @@ impl TString {
     }
 
     pub fn from_slice(slice: &str) -> memory::GCRef<Self> {
-        let size = (slice.len() as isize).to_le_bytes();
-        let size = TInteger::from_bytes(&size);
+        let size = TInteger::from_usize(slice.len());
 
-        let length = (slice.chars().count() as isize).to_le_bytes();
-        let length = TInteger::from_bytes(&length);
+        let length = TInteger::from_usize(slice.chars().count());
 
         let interpreter = get_interpeter();
         let mut string = interpreter.block_allocator.allocate_var_object(

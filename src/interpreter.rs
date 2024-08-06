@@ -56,17 +56,22 @@ trait DecodeDeref {
 
 impl TRawCode {
     pub fn evaluate<'a>(&self, arguments: &'a Iter<'a, TValue>) -> TValue {
-        Self::with_environment(arguments, |mut env| {
+        Self::with_environment(arguments, |env| {
             loop {
                 match OpCode::decode(env.stream.current()) {
-                    OpCode::Add => impls::add(&mut env), OpCode::Sub => impls::sub(&mut env),
-                    OpCode::Mul => impls::mul(&mut env), OpCode::Div => impls::mul(&mut env),
-                    OpCode::Mod => impls::rem(&mut env),
+                    OpCode::Add => impls::add(env), OpCode::Sub => impls::sub(env),
+                    OpCode::Mul => impls::mul(env), OpCode::Div => impls::mul(env),
+                    OpCode::Mod => impls::rem(env),
 
-                    OpCode::LeftShift => impls::shl(&mut env), OpCode::RightShift => impls::shr(&mut env),
+                    OpCode::LeftShift => impls::shl(env), OpCode::RightShift => impls::shr(env),
 
-                    OpCode::BitwiseAnd => impls::bitand(&mut env), OpCode::BitwiseOr => impls::bitor(&mut env),
-                    OpCode::BitwiseXor => impls::bitxor(&mut env),
+                    OpCode::BitwiseAnd => impls::bitand(env), OpCode::BitwiseOr => impls::bitor(env),
+                    OpCode::BitwiseXor => impls::bitxor(env),
+
+                    OpCode::Branch => {
+                        decode!(Branch { target } in env);
+                        env.stream.jump(target);
+                    }
 
                     OpCode::Fallthrough => (),
                     _ => todo!()
@@ -75,7 +80,7 @@ impl TRawCode {
         })
     }
 
-    fn with_environment<'a, F: FnOnce(ExecutionEnvironment) -> TValue>(
+    fn with_environment<'a, F: FnOnce(&mut ExecutionEnvironment) -> TValue>(
         arguments: &'a Iter<'a, TValue>, executor: F) -> TValue {
         todo!()
     }
