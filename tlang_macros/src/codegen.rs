@@ -42,6 +42,7 @@ pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Erro
 
 pub struct Instruction {
     serializer: Option<TokenStream>,
+    formatter: Option<TokenStream>,
     terminator: bool,
     ident: Ident,
     lifetime: Option<GenericLifetime>,
@@ -66,6 +67,7 @@ impl Parse for Instruction {
         } else { None };
 
         let mut serializer = None;
+        let mut formatter = None;
         let mut terminator = false;
         for attr in attrs {
             let Meta::List(list) = attr.meta else {
@@ -98,12 +100,23 @@ impl Parse for Instruction {
                     let lit_bool = parser.parse2(list.tokens)?;
                     terminator = lit_bool.value;
                 }
+                "formatter" => {
+                    let MacroDelimiter::Paren(..) = list.delimiter else {
+                        return Err(
+                            syn::Error::new(
+                                list.delimiter.span().span(),
+                                "expected parens `(...)` for #[formatter(...)]")
+                        );
+                    };
+                    formatter = Some(list.tokens);
+                }
                 _ => continue,
             }
         }
 
         Ok(Self {
             serializer,
+            formatter,
             terminator,
             ident,
             lifetime,
@@ -153,12 +166,19 @@ fn make_struct(
     fields: &TokenStream,
     serializer: Option<&TokenStream>,
     is_terminator: bool,
+    has_formatter: bool,
     structures: &mut TokenStream) {
     let serializer = serializer
         .map(|x| x.clone())
         .unwrap_or(quote!(BitSerializer));
 
-    structures.extend(quote!(#[derive(Clone, Copy, Debug)] #[repr(packed)] #vis struct #ident #generics #fields));
+    let debug = if !has_formatter {
+        Some(quote!(Debug))
+    } else {
+        None
+    };
+
+    structures.extend(quote!(#[derive(Clone, Copy, #debug)] #[repr(packed)] #vis struct #ident #generics #fields));
     structures.extend(quote! {
         impl #generics Instruction for #ident #generics {
             const CODE: OpCode = OpCode::#opcode;
@@ -263,7 +283,18 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
             &fields, 
             inst.serializer.as_ref(),
             inst.terminator,
+            inst.formatter.is_some(),
             &mut structures);
+
+        if let Some(formatter) = &inst.formatter {
+            structures.extend(quote! {
+                impl std::fmt::Debug for #ident {
+                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        #formatter(self, f)
+                    }
+                }
+            });
+        }
 
         if has_slice {
             let fields = inst.fields.as_mut().unwrap();
@@ -283,6 +314,7 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
                 &fields, 
                 inst.serializer.as_ref(),
                 inst.terminator,
+                true,
                 &mut structures);
         }
     }

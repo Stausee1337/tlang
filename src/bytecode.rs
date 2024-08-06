@@ -868,7 +868,7 @@ impl InstructionSerializer<instructions::Call> for CallSerializer {
 }
 
 impl instructions::Call {
-    fn arguments(&self) -> &[Operand] {
+    pub fn arguments(&self) -> &[Operand] {
         let data = unsafe {
             std::slice::from_raw_parts(
                 self.arguments.as_ptr() as *const u8,
@@ -877,6 +877,18 @@ impl instructions::Call {
         };
         CallSerializer::deserialize_slice(data).unwrap().0
     }
+}
+
+fn call_format(call: &instructions::Call, f: &mut std::fmt::Formatter<'_>) -> FmtResult {
+    let instructions::Call { dst, callee, .. } = *call;
+
+    f.write_str("Call { ")?;
+
+    write!(f, "dst: {:?}, ", dst)?;
+    write!(f, "callee: {:?}, ", callee)?;
+    write!(f, "arguments: {:?}", call.arguments())?;
+
+    f.write_str(" }")
 }
 
 define_instructions! {
@@ -975,6 +987,7 @@ define_instructions! {
     Fallthrough,
 
     #[serializer(CallSerializer)]
+    #[formatter(call_format)]
     Call<'s> {
         dst: Operand,
         callee: Operand,
