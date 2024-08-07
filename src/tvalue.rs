@@ -1,9 +1,9 @@
-use std::{mem::{transmute, MaybeUninit}, hash::{BuildHasher, Hash, Hasher}, cell::OnceCell};
+use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, cell::OnceCell};
 
 
 use hashbrown::raw::RawTable;
 
-use crate::{memory::{self, GCRef}, symbol::Symbol, interpreter::get_interpeter, bytecode::{self, TRawCode}};
+use crate::{memory::{self, GCRef}, symbol::Symbol, interpreter::get_interpeter, bytecode::TRawCode, bigint::{TBigint, self, to_bigint, SignedSlice}};
 
 #[repr(u64)]
 #[derive(Debug)]
@@ -122,24 +122,26 @@ impl TType {
     }
 }
 
+enum IntegerKind {
+    Int32(i32),
+    Bigint(GCRef<TBigint>),
+}
+
 #[derive(Clone, Copy)]
 pub struct TInteger(TValue);
 
-#[repr(C)]
-struct TIntObject {
-    ty: GCRef<TType>,
-    bytes: [u8; 0]
-}
-
 impl TInteger {
-    pub fn as_usize(self) -> Option<usize> {
-        match self.0.kind() {
-            TValueKind::Int32 => usize::try_from(self.0.as_int32()).ok(),
-            TValueKind::Object => {
-                // debug_assert!(self.0.type() == Self::type());
-                todo!()
-            },
-            _ => unreachable!()
+    pub fn as_usize(&self) -> Option<usize> {
+        match self.to_rust() {
+            IntegerKind::Int32(int) => usize::try_from(int).ok(),
+            IntegerKind::Bigint(bigint) => bigint::try_as_usize(bigint)
+        }
+    }
+
+    pub fn as_isize(&self) -> Option<isize> {
+        match self.to_rust() {
+            IntegerKind::Int32(int) => isize::try_from(int).ok(),
+            IntegerKind::Bigint(bigint) => bigint::try_as_isize(bigint)
         }
     }
 
@@ -149,7 +151,12 @@ impl TInteger {
     }
 
     #[inline(always)]
-    pub const fn from_usize(size: usize) -> Self {
+    pub const fn from_bigint(bigint: GCRef<TBigint>) -> Self {
+        TInteger(TValue::object_tagged(bigint, TValueKind::Object))
+    }
+
+    #[inline(always)]
+    pub fn from_usize(size: usize) -> Self {
         let Ok(size) = isize::try_from(size) else {
             return Self::from_signed_bytes(&(size as i128).to_le_bytes());
         };
@@ -163,22 +170,22 @@ impl TInteger {
         todo!("real bigint support")
     }
 
-    fn as_object(bytes: &[u8]) -> GCRef<TIntObject> {
-        let interpreter = get_interpeter();
-        let mut object = interpreter.block_allocator.allocate_var_object(
-            TIntObject { ty: Self::ttype(), bytes: [0u8; 0] },
-            bytes.len()
-        );
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), object.bytes.as_mut_ptr(), bytes.len());
-        }
-        object
-    }
-
     pub fn ttype() -> GCRef<TType> {
         static mut TYPE: OnceCell<GCRef<TType>> = OnceCell::new();
         unsafe {
             *TYPE.get_or_init(|| TType::create())
+        }
+    }
+
+    #[inline(always)]
+    fn to_rust(&self) -> IntegerKind {
+        match self.0.kind() {
+            TValueKind::Int32 =>
+                IntegerKind::Int32(self.0.as_int32()),
+            TValueKind::Object 
+                if self.0.as_object::<TBigint>().ty == Self::ttype() =>
+                    IntegerKind::Bigint(self.0.as_object::<TBigint>()),
+            _ => unreachable!()
         }
     }
 }
@@ -191,25 +198,67 @@ impl TryFrom<TValue> for TInteger {
         Ok(match value.kind() {
             TValueKind::Int32 => TInteger(value),
             TValueKind::Object 
-                if value.as_object::<TIntObject>().ty == Self::ttype() => TInteger(value),
+                if value.as_object::<TBigint>().ty == Self::ttype() =>
+                    TInteger(value),
             _ => return Err(())
         })
     }
 }
 
-impl std::ops::Add for TInteger {
-    type Output = TInteger;
-    fn add(self, rhs: Self) -> Self::Output {
-        todo!() 
-    }
+macro_rules! impl_int_safe {
+    ($lhs:ident, $rhs:ident, $fn:ident,) => {
+        Self::from_int32($lhs.$fn($rhs))
+    };
+    ($lhs:ident, $rhs:ident, $fn:ident, $checked_fn:ident) => {
+        $lhs.$checked_fn($rhs as _).map(Self::from_int32).unwrap_or_else(|| {
+            Self::from_bigint(bigint::$fn(&to_bigint($lhs), &to_bigint($rhs)))
+        })
+    };
 }
 
-impl std::ops::Sub for TInteger {
-    type Output = TInteger;
-    fn sub(self, rhs: Self) -> Self::Output {
-        todo!() 
-    }
+macro_rules! impl_int_arithmetic {
+    ($op:ident, $ty:ident, $fn:ident, $($checked_fn:ident)?) => { 
+        impl std::ops::$op for $ty {
+            type Output = $ty;
+
+            #[inline(always)]
+            fn $fn(self, rhs: Self) -> Self::Output {
+                match (self.to_rust(), rhs.to_rust()) {
+                    (IntegerKind::Int32(lhs), IntegerKind::Int32(rhs)) =>
+                        impl_int_safe!(lhs, rhs, $fn, $($checked_fn)?),
+                    (IntegerKind::Int32(lhs), IntegerKind::Bigint(rhs)) =>
+                        Self::from_bigint(bigint::$fn(&to_bigint(lhs), rhs)),
+                    (IntegerKind::Bigint(lhs), IntegerKind::Int32(rhs)) =>
+                        Self::from_bigint(bigint::$fn(lhs, &to_bigint(rhs))),
+                    (IntegerKind::Bigint(lhs), IntegerKind::Bigint(rhs)) =>
+                        Self::from_bigint(bigint::$fn(lhs, rhs)),
+                }
+            }
+        }
+    };
 }
+
+macro_rules! iter_int_arithmetics {
+    ($(impl $op:ident for $ty:ident in ($fn:ident$(, $checked_fn:ident)?);)*) => {
+        $(impl_int_arithmetic!($op, $ty, $fn, $($checked_fn)?);)*
+    };
+}
+
+iter_int_arithmetics! {
+    impl Add for TInteger in (add, checked_add);
+    impl Sub for TInteger in (sub, checked_sub);
+    impl Mul for TInteger in (mul, checked_mul);
+    impl Div for TInteger in (div, checked_div);
+    impl Rem for TInteger in (rem, checked_rem);
+
+    impl Shl for TInteger in (shl, checked_shl);
+    impl Shr for TInteger in (shr, checked_shr);
+
+    impl BitAnd for TInteger in (bitand);
+    impl BitOr for TInteger in (bitor);
+    impl BitXor for TInteger in (bitxor);
+}
+
 
 impl Into<TValue> for TInteger {
     #[inline(always)]

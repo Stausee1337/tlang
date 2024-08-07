@@ -16,6 +16,7 @@ mod bytecode;
 mod tvalue;
 mod interpreter;
 mod memory;
+mod bigint;
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options] [-c cmd | file] [arg]", program);

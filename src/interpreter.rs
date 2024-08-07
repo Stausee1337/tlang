@@ -1,6 +1,5 @@
-use std::{mem::MaybeUninit, ops::Deref, slice::Iter};
+use std::{mem::MaybeUninit, slice::Iter};
 
-use index_vec::Idx;
 use tlang_macros::decode;
 
 use crate::{memory::BlockAllocator, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register, CodeLabel}};
