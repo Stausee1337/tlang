@@ -1,4 +1,4 @@
-use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::NonNull, alloc::Layout, cell::Cell, any::TypeId};
+use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::NonNull, alloc::Layout, cell::Cell, any::TypeId, mem::transmute};
 use rustix::{
     io,
     mm::{mmap_anonymous, munmap, MapFlags, ProtFlags}
@@ -86,46 +86,6 @@ impl HeapBlock {
     }
 }
 
-pub trait Atom: Send + Sync + 'static {
-    type Child;
-    type Parent;
-
-    fn iterate_children(&self, p: GCRef<Self::Parent>) -> &dyn Iterator<Item = GCRef<Self::Child>>;
-}
-
-#[repr(C)]
-struct AtomTrait<Atom: 'static = ()> {
-    vtable: &'static AtomTraitVTable,
-    atom: &'static Atom
-}
-
-impl<A: Atom> AtomTrait<A> {
-    fn new(atom: &'static A) -> Self {
-        let vtable = &AtomTraitVTable {
-            atom_ref: atom_ref::<A>,
-            atom_downcast: atom_downcast::<A>,
-        };
-        AtomTrait { vtable, atom }
-    }
-}
-
-unsafe fn atom_ref<A: Atom>(a: &AtomTrait) -> &dyn Atom<Child = (), Parent = ()> {
-    todo!()
-}
-
-unsafe fn atom_downcast<A: Atom>(a: &'_ AtomTrait, target: TypeId) -> Option<&'_ ()> {
-    todo!()
-}
-
-#[repr(C)]
-struct AtomTraitVTable {
-    atom_downcast: unsafe fn(&'_ AtomTrait, TypeId) -> Option<&'_ ()>,
-    atom_ref: unsafe fn(&'_ AtomTrait) -> &'_ dyn Atom<Child = (), Parent = ()>,
-}
-
-#[repr(C)]
-struct Allocation<A: 'static, T>(AtomTrait<A>, T);
-
 pub struct Heap {
     current_block: Cell<NonNull<HeapBlock>>
 }
@@ -183,11 +143,70 @@ unsafe impl Allocator for Heap {
     unsafe fn deallocate(&self, _ptr: NonNull<u8>, _layout: Layout) { }
 }
 
+pub trait Atom: Send + Sync + 'static {
+    type Child;
+    type Parent;
+
+    fn iterate_children(&self, p: GCRef<Self::Parent>) -> &dyn Iterator<Item = GCRef<Self::Child>>;
+}
+
+#[repr(C)]
+struct AtomTrait<Atom: 'static = ()> {
+    vtable: &'static AtomTraitVTable,
+    atom: &'static Atom
+}
+
+impl<A: Atom> AtomTrait<A> {
+    fn new(atom: &'static A) -> Self {
+        let vtable = &AtomTraitVTable {
+            atom_ref: atom_ref::<A>,
+            atom_downcast: atom_downcast::<A>,
+        };
+        AtomTrait { vtable, atom }
+    }
+}
+
+impl AtomTrait {
+    fn downcast<A: Atom>(&self) -> Option<&A> {
+        let target = TypeId::of::<A>();
+        unsafe {
+            if let Some(addr) = (self.vtable.atom_downcast)(self, target) {
+                return Some(refcast::<(), A>(addr));
+            }
+            None
+        }
+    }
+}
+
+unsafe fn refcast<Src, Dst>(a: &Src) -> &Dst {
+    transmute::<&Src, &Dst>(a)
+}
+
+#[repr(C)]
+struct AtomTraitVTable {
+    atom_downcast: unsafe fn(&'_ AtomTrait, TypeId) -> Option<&'_ ()>,
+    atom_ref: unsafe fn(&'_ AtomTrait) -> &'_ dyn Atom<Child = (), Parent = ()>,
+}
+
+unsafe fn atom_ref<A: Atom>(a: &AtomTrait) -> &dyn Atom<Child = (), Parent = ()> {
+    todo!()
+}
+
+unsafe fn atom_downcast<A: Atom>(a: &'_ AtomTrait, target: TypeId) -> Option<&'_ ()> {
+    if TypeId::of::<A>() == target {
+        return Some(a.atom);
+    }
+    None
+}
+
+#[repr(C)]
+struct Allocation<A: 'static, T>(AtomTrait<A>, T);
+
 #[derive(Eq)]
 pub struct GCRef<T>(*mut T);
 
 impl<T> GCRef<T> {
-    pub const fn from_raw(raw: *mut T) -> Self {
+    pub(crate) const unsafe fn from_raw(raw: *mut T) -> Self {
         GCRef(raw)
     }
 
@@ -196,7 +215,11 @@ impl<T> GCRef<T> {
     }
 
     pub fn kind<A: Atom>(&self) -> Option<&A> {
-        todo!()
+        unsafe { self.atom().downcast() }
+    }
+
+    unsafe fn atom(&self) -> &AtomTrait {
+        &*(self.0.sub(std::mem::size_of::<AtomTrait>()) as *const AtomTrait)
     }
 
     unsafe fn from_allocation<A: Atom>(allocation: *mut Allocation<A, T>) -> GCRef<T> {

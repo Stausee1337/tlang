@@ -37,7 +37,7 @@ impl TValue {
     
     #[inline(always)]
     pub const fn null() -> Self {
-        let null = GCRef::<()>::from_raw(std::ptr::null_mut());
+        let null = unsafe { GCRef::<()>::from_raw(std::ptr::null_mut()) };
         Self::object_tagged(null, TValueKind::Object)
     }
 
@@ -113,7 +113,7 @@ impl TValue {
 
     #[inline(always)]
     const fn as_object<T>(&self) -> memory::GCRef<T> {
-        memory::GCRef::from_raw((self.0 & Self::NAN_VALUE_MASK) as *mut T)
+        unsafe { memory::GCRef::from_raw((self.0 & Self::NAN_VALUE_MASK) as *mut T) }
     }
 }
 
@@ -137,21 +137,25 @@ impl TType {
             &TypeCollector, object
         ) 
     }
+}
 
-    pub fn allocate_object<T>(&self, object: T) -> GCRef<T> {
-        todo!()
+impl GCRef<TType> {
+    pub fn allocate_object<T: Typed>(self, object: T) -> GCRef<T> {
+        debug_assert!(std::ptr::addr_eq(self.as_ptr(), T::ttype().as_ptr()));
+        self.module.interpreter.heap.allocate_atom(
+            unsafe { &*self.as_ptr() },
+            object
+        )
     }
 
-    pub fn allocate_var_object<T>(&self, object: T, extra_bytes: usize) -> GCRef<T> {
-        todo!()
+    pub fn allocate_var_object<T: Typed>(self, object: T, extra_bytes: usize) -> GCRef<T> {
+        debug_assert!(std::ptr::addr_eq(self.as_ptr(), T::ttype().as_ptr()));
+        self.module.interpreter.heap.allocate_var_atom(
+            unsafe { &*self.as_ptr() },
+            object,
+            extra_bytes
+        )
     }
-
-    /*pub fn ttype() -> GCRef<TType> {
-        static mut TYPE: OnceCell<GCRef<TType>> = OnceCell::new();
-        unsafe {
-            *TYPE.get_or_init(|| TType::create())
-        }
-    }*/
 }
 
 impl Atom for TType {
