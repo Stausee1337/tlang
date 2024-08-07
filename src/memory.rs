@@ -108,6 +108,10 @@ impl HeapBlock {
         let ptr = ((ptr as usize) & !(HeapBlock::PAGE_SIZE - 1)) as *const HeapBlock;
         &*ptr
     }
+
+    fn previous(&self) -> Option<NonNull<Self>> {
+        NonNull::new(self.previous as *mut Self)
+    }
 }
 
 pub struct Heap {
@@ -151,6 +155,22 @@ impl Heap {
 
     pub fn vm(&self) -> Rc<VM> {
         self.vm.upgrade().expect("we should have dropped to")
+    }
+}
+
+impl Drop for Heap {
+    fn drop(&mut self) {
+        let mut current_block: NonNull<HeapBlock> = self.current_block.get();
+        unsafe {
+            loop {
+                let block = current_block.as_mut();
+                let Some(previous) = block.previous() else {
+                    break;
+                };
+                block.unmap().unwrap(); 
+                current_block = previous;
+            }
+        }
     }
 }
 
