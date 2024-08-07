@@ -350,7 +350,6 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
             #[inline(always)]
             fn serialize(self, vec: &mut Vec<u8>) {
                 vec.push(Self::CODE as u8);
-                println!("serialize, {:?}", Self::CODE);
                 Self::Serializer::serialize(self, vec);
             }
 
@@ -485,9 +484,9 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
         };
         
         let decoding = match field.kind {
-            DecodeKind::Copy => quote!(Decode::decode(&#ident, unsafe { &*codenv })),
+            DecodeKind::Copy => quote!(Decode::decode(&#ident, #environment)),
             DecodeKind::Deref(_) => quote!(DecodeDeref::decode_deref(&#ident, unsafe { &*codenv })),
-            DecodeKind::Mutable(_) => quote!(DecodeMut::decode_mut(&#ident, unsafe { &mut *codenv })),
+            DecodeKind::Mutable(_) => quote!(DecodeMut::decode_mut(&#ident, #environment)),
         };
 
         decode_logic.extend(quote!(let #local = #decoding; ));

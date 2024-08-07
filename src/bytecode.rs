@@ -4,7 +4,7 @@ use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCel
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, interpreter::get_interpeter};
+use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, interpreter::get_interpeter};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -496,6 +496,12 @@ impl BytecodeGenerator {
 
         let func = TFunction::from_codegen(func);
 
+        let result = func.call(&mut [
+            TBool::from_bool(false).into(),
+        ]);
+        let int = TBool::try_from(result).unwrap();
+        println!("{int}");
+
         Ok(None)
     }
 
@@ -597,7 +603,8 @@ impl TFunction {
             assert!(block.terminated);
 
             tcode.blocks_mut()[block.label.index()] = offset as u32;
-            let codebuf = &mut tcode.code_mut()[offset..];
+            let length = block.data.len();
+            let codebuf = &mut tcode.code_mut()[offset..offset + length];
             codebuf.copy_from_slice(&block.data);
             offset += block.data.len();
         }
@@ -666,15 +673,7 @@ impl TRawCode {
             data: [0u8; 0]
         }
     }
-
-    pub fn registers(&self) -> usize {
-        self.num_registers.as_usize().expect("TRawCode sensible num_registers")
-    }
-
-    pub fn params(&self) -> usize {
-        self.num_params.as_usize().expect("TRawCode sensible num_params")
-    }
-    
+ 
     fn create_presized(
         codesize: usize,
         params: u32,
@@ -690,6 +689,14 @@ impl TRawCode {
             TRawCode::new(codesize, params, registers, descriptors, blocks),
             extra_size
         )
+    }
+
+    pub fn registers(&self) -> usize {
+        self.num_registers.as_usize().expect("TRawCode sensible num_registers")
+    }
+
+    pub fn params(&self) -> usize {
+        self.num_params.as_usize().expect("TRawCode sensible num_params")
     }
 
     pub fn blocks(&self) -> &[u32] {

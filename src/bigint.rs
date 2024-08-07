@@ -1,6 +1,22 @@
-use std::{marker::PhantomData, ops::Index};
+use std::{marker::PhantomData, ops::Index, fmt::Display};
 
 use crate::{tvalue::{TInteger, TType}, memory::GCRef};
+
+#[repr(u8)]
+#[derive(Clone, Copy)]
+pub enum Sign {
+    Positive, Negative
+}
+
+impl Sign {
+    #[inline(always)]
+    fn isize(&self) -> isize {
+        match self {
+            Sign::Positive => 1, 
+            Sign::Negative => -1, 
+        }
+    }
+}
 
 #[repr(C)]
 pub struct SignedSlice<'a> {
@@ -25,13 +41,6 @@ impl<'a> SignedSlice<'a> {
     }
 }
 
-#[repr(C)]
-pub struct TBigint {
-    pub ty: GCRef<TType>,
-    size: TInteger,
-    bytes: [u8; 0]
-}
-
 impl<'l> From<GCRef<TBigint>> for SignedSlice<'l> {
     fn from(value: GCRef<TBigint>) -> Self {
         Self {
@@ -53,25 +62,22 @@ impl<'l> Index<usize> for SignedSlice<'l> {
     }
 }
 
-#[repr(u8)]
-#[derive(Clone, Copy)]
-pub enum Sign {
-    Positive, Negative
-}
-
-impl Sign {
-    #[inline(always)]
-    fn isize(&self) -> isize {
-        match self {
-            Sign::Positive => 1, 
-            Sign::Negative => -1, 
-        }
-    }
-}
-
 impl<'a, const LENGTH: usize> From<&'a (Sign, [u8; LENGTH])> for SignedSlice<'a> {
     fn from(value: &'a (Sign, [u8; LENGTH])) -> Self {
         SignedSlice::from_slice_with_sign(value.0, &value.1)
+    }
+}
+
+#[repr(C)]
+pub struct TBigint {
+    pub ty: GCRef<TType>,
+    size: TInteger,
+    bytes: [u8; 0]
+}
+
+impl Display for TBigint {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
     }
 }
 

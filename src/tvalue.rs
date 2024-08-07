@@ -1,4 +1,4 @@
-use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, cell::OnceCell};
+use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, cell::OnceCell, fmt::{Display, Write}};
 
 
 use hashbrown::raw::RawTable;
@@ -8,11 +8,11 @@ use crate::{memory::{self, GCRef}, symbol::Symbol, interpreter::get_interpeter, 
 #[repr(u64)]
 #[derive(Debug)]
 enum TValueKind {
-    Object   = 0b000 << 49,
+    Object   = 0b101 << 49,
     Int32    = 0b001 << 49,
     Bool     = 0b010 << 49,
     String   = 0b110 << 49,
-    Function = 0b101 << 49,
+    Function = 0b000 << 49,
     Float    = 0b100 << 49,
 }
 
@@ -35,36 +35,44 @@ impl TValue {
 
     /// Constructors
     
+    #[inline(always)]
     pub const fn null() -> Self {
-        todo!()
+        let null = GCRef::<()>::from_raw(std::ptr::null_mut());
+        Self::object_tagged(null, TValueKind::Object)
     }
 
+    #[inline(always)]
     const fn bool(bool: bool) -> Self {
         let bool = bool as u64;
         TValue(Self::FLOAT_NAN_TAG | TValueKind::Bool as u64 | bool)
     }
 
+    #[inline(always)]
     const fn int32(int: i32) -> Self {
         let int = int as u64;
         TValue(Self::FLOAT_NAN_TAG | TValueKind::Int32 as u64 | int)
     }
 
+    #[inline(always)]
     const fn float(float: f64) -> Self {
         return TValue(unsafe { transmute(float) });
     }
 
+    #[inline(always)]
     const fn object_tagged<T>(object: memory::GCRef<T>, kind: TValueKind) -> Self {
         let object: u64 = unsafe { transmute(object) };
         assert!(object & (!Self::NAN_VALUE_MASK) == 0);
         TValue(Self::FLOAT_NAN_TAG | kind as u64 | object)
     }
 
+    #[inline(always)]
     const fn string(string: memory::GCRef<TString>) -> Self {
         Self::object_tagged(string, TValueKind::String)
     }
 
     /// Private Helpers
 
+    #[inline(always)]
     fn kind(&self) -> TValueKind {
         let float: f64 = unsafe { transmute(self.0) };
         if !float.is_nan() {
@@ -73,18 +81,22 @@ impl TValue {
         unsafe { transmute(self.0 & Self::FLOAT_TAG_MASK) }
     }
 
+    #[inline(always)]
     const fn as_int32(&self) -> i32 {
         (self.0 & Self::NAN_VALUE_MASK) as u32 as i32
     }
 
+    #[inline(always)]
     const fn as_bool(&self) -> bool {
         (self.0 & Self::NAN_VALUE_MASK) != 0
     }
 
+    #[inline(always)]
     const fn as_float(&self) -> f64 {
         unsafe { transmute(self.0) }
     }
 
+    #[inline(always)]
     const fn as_object<T>(&self) -> memory::GCRef<T> {
         memory::GCRef::from_raw((self.0 & Self::NAN_VALUE_MASK) as *mut T)
     }
@@ -205,6 +217,15 @@ impl TryFrom<TValue> for TInteger {
     }
 }
 
+impl Display for TInteger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.to_rust() {
+            IntegerKind::Int32(int) => f.write_fmt(format_args!("{int}")),
+            IntegerKind::Bigint(bigint) => bigint.fmt(f)
+        }
+    }
+}
+
 macro_rules! impl_int_safe {
     ($lhs:ident, $rhs:ident, $fn:ident,) => {
         Self::from_int32($lhs.$fn($rhs))
@@ -303,10 +324,32 @@ impl TBool {
 
 }
 
+impl TryFrom<TValue> for TBool {
+    type Error = ();
+
+    #[inline(always)]
+    fn try_from(value: TValue) -> Result<Self, Self::Error> {
+        match value.kind() {
+            TValueKind::Bool => Ok(TBool(value.as_bool())),
+            _ => Err(())
+        }
+    }
+}
+
 impl Into<TValue> for TBool {
     #[inline(always)]
     fn into(self) -> TValue {
         TValue::bool(self.0)
+    }
+}
+
+impl Display for TBool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.as_bool() {
+            "true"
+        } else {
+            "false"
+        })
     }
 }
 
@@ -376,6 +419,16 @@ impl TFunction {
         static mut TYPE: OnceCell<GCRef<TType>> = OnceCell::new();
         unsafe {
             *TYPE.get_or_init(|| TType::create())
+        }
+    }
+
+    #[inline(always)]
+    pub fn call<'a>(&self, arguments: &'a mut [TValue]) -> TValue {
+        match &self.kind {
+            TFnKind::Function(code) => {
+                // TODO: check len(arguments) == len(params)
+                code.evaluate(arguments)
+            }
         }
     }
 }

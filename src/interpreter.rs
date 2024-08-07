@@ -59,6 +59,10 @@ impl TRawCode {
         self.with_environment(arguments, |env| {
             loop {
                 match OpCode::decode(env.stream.current()) {
+                    OpCode::Mov => {
+                        decode!(Mov { src, mut dst } in env);
+                        *dst = src;
+                    }
                     OpCode::Add => impls::add(env), OpCode::Sub => impls::sub(env),
                     OpCode::Mul => impls::mul(env), OpCode::Div => impls::mul(env),
                     OpCode::Mod => impls::rem(env),
@@ -72,6 +76,19 @@ impl TRawCode {
                         decode!(Branch { target } in env);
                         env.stream.jump(target);
                     }
+                    OpCode::BranchIf => {
+                        decode!(BranchIf { condition, true_target, false_target } in env);
+                        if impls::truthy(condition) {
+                            env.stream.jump(true_target);
+                        } else {
+                            env.stream.jump(false_target);
+                        }
+                    }
+
+                    OpCode::Return => {
+                        decode!(Return { value } in env);
+                        return value;
+                    }
 
                     OpCode::Fallthrough => (),
                     _ => todo!()
@@ -83,7 +100,8 @@ impl TRawCode {
     fn with_environment<'a, F: FnOnce(&mut ExecutionEnvironment) -> TValue>(
         &self, arguments: &'a mut [TValue], executor: F) -> TValue {
         debug_assert!(arguments.len() == self.params());
-        let mut registers = Vec::<TValue>::with_capacity(self.registers());
+
+        let mut registers = vec![TValue::null(); self.registers()];
         let mut env = ExecutionEnvironment {
             stream: CodeStream::from_raw(self),
             descriptors: self.descriptors(),
@@ -187,15 +205,23 @@ mod impls {
     use super::*;
     use std::ops::*;
 
+    pub fn truthy(bool: TValue) -> bool {
+        if let Ok(tbool) = TBool::try_from(bool) {
+            return tbool.as_bool();
+        }
+        todo!()
+    }
+
     macro_rules! arithmetic_impl {
         ($fnname: ident, $inname: ident) => {
             #[inline(always)]
             pub fn $fnname(env: &mut ExecutionEnvironment) {
-                decode!($inname { mut dst, lhs, rhs } in env);
+                decode!($inname { lhs, rhs, mut dst } in env);
                 let lhs_int: Option<TInteger> = TInteger::try_from(lhs).ok();
                 let rhs_int: Option<TInteger> = TInteger::try_from(rhs).ok();
                 if let Some((lhs, rhs)) = lhs_int.zip(rhs_int) {
                     *dst = TInteger::$fnname(lhs, rhs).into();
+                    return;
                 }
                 todo!()
             }

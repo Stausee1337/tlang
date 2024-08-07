@@ -30,7 +30,6 @@ VarKind: bool = {
 Statement: &'ast parse::Statement<'ast> = {
     <stmt:DelimitedStatement> => ctx.alloc(stmt),
     <stmt:LineStatement> ";" => ctx.alloc(stmt),
-    ! => panic!()
 };
 
 LineStatement: parse::Statement<'ast> = {
