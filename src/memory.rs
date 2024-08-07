@@ -1,4 +1,4 @@
-use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::NonNull, alloc::Layout, cell::Cell, any::TypeId, mem::transmute};
+use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::NonNull, alloc::Layout, cell::Cell, any::TypeId, mem::transmute, rc::{Weak, Rc}};
 use rustix::{
     io,
     mm::{mmap_anonymous, munmap, MapFlags, ProtFlags}
@@ -6,6 +6,8 @@ use rustix::{
 
 use allocator_api2::alloc::{Allocator, AllocError};
 use static_assertions::const_assert_eq;
+
+use crate::interpreter::VM;
 
 #[repr(C)]
 struct AtomHead {
@@ -50,15 +52,16 @@ impl HeapBlock {
             allocated_bytes: std::mem::size_of::<Self>()
         };
 
-        Ok(NonNull::new_unchecked(block))
+        let block = NonNull::new_unchecked(block);
+        Ok(block)
     }
 
     unsafe fn unmap(&mut self) -> io::Result<()> {
         munmap(self.data() as *mut c_void, HeapBlock::PAGE_SIZE)
     }
 
-    unsafe fn fork(&mut self) -> io::Result<NonNull<HeapBlock>> {
-        Self::map(&*self.heap, self)
+    unsafe fn fork(&mut self, heap: &Heap) -> io::Result<NonNull<HeapBlock>> {
+        Self::map(heap, self)
     }
 
     #[inline(always)]
@@ -108,14 +111,18 @@ impl HeapBlock {
 }
 
 pub struct Heap {
+    vm: Weak<VM>,
     current_block: Cell<NonNull<HeapBlock>>
 }
 
 impl Heap {
-    pub fn init() -> Self {
+    pub fn init(vm: Weak<VM>) -> Self {
         let block: *const HeapBlock = &*HeapBlock::EMPTY;
         let block = unsafe { NonNull::new_unchecked(block as *mut HeapBlock) };
-        Self { current_block: Cell::new(block) }
+        Self {
+            vm,
+            current_block: Cell::new(block)
+        }
     }
 
     pub fn allocate_atom<A: Atom, T>(&self, kind: &'static A, object: T) -> GCRef<T> {
@@ -142,6 +149,9 @@ impl Heap {
         }
     }
 
+    pub fn vm(&self) -> Rc<VM> {
+        self.vm.upgrade().expect("we should have dropped to")
+    }
 }
 
 unsafe impl Allocator for Heap {
@@ -155,7 +165,8 @@ unsafe impl Allocator for Heap {
             } else if let Some(ptr) = block.alloc_raw(layout) {
                 raw = ptr;
             } else {
-                self.current_block.set(block.fork().unwrap());
+                self.current_block.set(block.fork(self).unwrap());
+                let block = self.current_block.get().as_mut();
                 raw = block.alloc_raw(layout).ok_or(AllocError)?;
             }
 
@@ -244,8 +255,13 @@ impl<T> GCRef<T> {
 
     pub fn heap(&self) -> &Heap {
         unsafe {
-            &*HeapBlock::from_allocation(self.as_ptr()).heap
+            let block = HeapBlock::from_allocation(self.as_ptr());
+            &*block.heap
         }
+    }
+
+    pub fn vm(&self) -> Rc<VM> {
+        self.heap().vm().clone()
     }
 
     unsafe fn atom(&self) -> &AtomTrait {

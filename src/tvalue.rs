@@ -3,7 +3,7 @@ use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, fmt::Display};
 
 use hashbrown::raw::RawTable;
 
-use crate::{memory::{self, GCRef, Atom, Heap}, symbol::Symbol, interpreter::TlInterpreter, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}};
+use crate::{memory::{self, GCRef, Atom, Heap}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}};
 
 #[repr(u64)]
 #[derive(Debug)]

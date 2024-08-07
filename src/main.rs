@@ -1,7 +1,6 @@
 use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 
 use getopts::{Options, ParsingStyle};
-use memory::Heap;
 use parse::ParseContext;
 
 use crate::bytecode::{BytecodeGenerator, FunctionDisassembler};
@@ -28,10 +27,10 @@ fn read_entire_file(filename: &Path) -> Result<String, io::Error> {
     Ok(result)
 }
 
-#[repr(align(32))]
+/*#[repr(align(32))]
 struct AlignedStruct {
     data: [u8; 64],
-}
+}*/
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
@@ -55,7 +54,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let interp = interpreter::make_interpreter();
+    let vm = interpreter::VM::init();
     /*let result = allocator_api2::boxed::Box::<AlignedStruct, &Heap>::new_in(
         AlignedStruct {
             data: [0x55; 64]
@@ -96,9 +95,12 @@ fn main() -> ExitCode {
 
         println!("{}", string);
 
+        drop(vm);
+
         return ExitCode::SUCCESS;
     }
 
+    drop(vm);
 
     return ExitCode::SUCCESS;
 }

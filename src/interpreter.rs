@@ -1,27 +1,25 @@
-use std::mem::MaybeUninit;
+
+use std::rc::Rc;
 
 use tlang_macros::decode;
 
 use crate::{memory::Heap, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register, CodeLabel}};
 
-static mut INTERPTETER: Wrapper = Wrapper(false, MaybeUninit::uninit());
-
-struct Wrapper(bool, MaybeUninit<TlInterpreter>);
-
-pub struct TlInterpreter {
-    pub heap: Heap,
+pub struct VM {
+    heap: Box<Heap>
 }
 
-pub fn make_interpreter() -> &'static TlInterpreter {
-    unsafe {
-        let interpreter = TlInterpreter {
-            heap: Heap::init()
-        };
-        INTERPTETER = Wrapper(
-            true,
-            MaybeUninit::new(interpreter)
-        );
-        INTERPTETER.1.assume_init_ref()
+impl VM {
+    pub fn init() -> Rc<VM> {
+        let vm = Rc::new_cyclic(|me| {
+            let heap = Box::new(Heap::init(me.clone()));
+            VM { heap }
+        });
+        vm
+    }
+
+    pub fn heap(&self) -> &Heap {
+        &self.heap
     }
 }
 
