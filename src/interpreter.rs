@@ -33,6 +33,7 @@ pub fn get_interpeter() -> &'static TlInterpreter {
 struct ExecutionEnvironment<'l> {
     stream: CodeStream<'l>,
     descriptors: &'l [TValue],
+    arguments: &'l mut [TValue],
     registers: &'l mut [TValue]
 }
 
@@ -54,8 +55,8 @@ trait DecodeDeref {
 }
 
 impl TRawCode {
-    pub fn evaluate<'a>(&self, arguments: &'a Iter<'a, TValue>) -> TValue {
-        Self::with_environment(arguments, |env| {
+    pub fn evaluate<'a>(&self, arguments: &'a mut [TValue]) -> TValue {
+        self.with_environment(arguments, |env| {
             loop {
                 match OpCode::decode(env.stream.current()) {
                     OpCode::Add => impls::add(env), OpCode::Sub => impls::sub(env),
@@ -80,8 +81,16 @@ impl TRawCode {
     }
 
     fn with_environment<'a, F: FnOnce(&mut ExecutionEnvironment) -> TValue>(
-        arguments: &'a Iter<'a, TValue>, executor: F) -> TValue {
-        todo!()
+        &self, arguments: &'a mut [TValue], executor: F) -> TValue {
+        debug_assert!(arguments.len() == self.params());
+        let mut registers = Vec::<TValue>::with_capacity(self.registers());
+        let mut env = ExecutionEnvironment {
+            stream: CodeStream::from_raw(self),
+            descriptors: self.descriptors(),
+            arguments,
+            registers: registers.as_mut_slice()
+        };
+        executor(&mut env)
     }
 }
 
@@ -138,15 +147,20 @@ impl Decode for Register {
 
     #[inline(always)]
     fn decode(&self, env: &ExecutionEnvironment) -> TValue {
-        env.registers[self.index()]
+        let idx = self.index();
+        idx.checked_sub(env.arguments.len())
+            .map(|idx| env.registers[idx])
+            .unwrap_or_else(|| env.arguments[idx])
     }
 }
 
 impl DecodeMut for Register {
     #[inline(always)]
     fn decode_mut<'l>(&self, env: &'l mut ExecutionEnvironment) -> &'l mut TValue { 
-        let index = self.index();
-        &mut env.registers[index]
+        let idx = self.index();
+        idx.checked_sub(env.arguments.len())
+            .map(|idx| env.registers.get_mut(idx).unwrap())
+            .unwrap_or_else(|| env.arguments.get_mut(idx).unwrap())
     }
 }
 

@@ -99,6 +99,14 @@ pub struct CodeStream<'l> {
 }
 
 impl<'l> CodeStream<'l> {
+    pub fn from_raw(raw: &'l TRawCode) -> Self {
+        Self {
+            position: 0,
+            code: raw.code(),
+            blocks: raw.blocks()
+        }
+    }
+
     fn debug_from_data(code: &'l [u8])  -> Self {
         Self {
             code,
@@ -127,6 +135,7 @@ impl<'l> CodeStream<'l> {
         self.data()[self.position]
     }
 
+    #[inline(always)]
     pub fn jump(&mut self, to: CodeLabel) {
         self.position = self.blocks[to.index()] as usize;
     }
@@ -656,6 +665,14 @@ impl TRawCode {
             num_blocks: TInteger::from_usize(blocks as usize),
             data: [0u8; 0]
         }
+    }
+
+    pub fn registers(&self) -> usize {
+        self.num_registers.as_usize().expect("TRawCode sensible num_registers")
+    }
+
+    pub fn params(&self) -> usize {
+        self.num_params.as_usize().expect("TRawCode sensible num_params")
     }
     
     fn create_presized(
