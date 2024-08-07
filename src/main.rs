@@ -56,13 +56,11 @@ fn main() -> ExitCode {
     }
 
     let interp = interpreter::make_interpreter();
-    let result = allocator_api2::boxed::Box::<AlignedStruct, &Heap>::new_in(
+    /*let result = allocator_api2::boxed::Box::<AlignedStruct, &Heap>::new_in(
         AlignedStruct {
             data: [0x55; 64]
         },
-        &interp.heap);
-
-    // println!("{:?}", result);
+        &interp.heap);*/
 
     let input = if !matches.free.is_empty() {
         matches.free

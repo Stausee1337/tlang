@@ -3,7 +3,7 @@ use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, fmt::Display};
 
 use hashbrown::raw::RawTable;
 
-use crate::{memory::{self, GCRef, Atom}, symbol::Symbol, interpreter::TlInterpreter, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}};
+use crate::{memory::{self, GCRef, Atom, Heap}, symbol::Symbol, interpreter::TlInterpreter, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}};
 
 #[repr(u64)]
 #[derive(Debug)]
@@ -121,28 +121,20 @@ pub trait Typed {
     fn ttype() -> GCRef<TType>;
 }
 
-pub struct TModule {
-    pub interpreter: &'static TlInterpreter
-}
-
 #[repr(C)]
-pub struct TType {
-    module: GCRef<TModule>
-}
+pub struct TType { }
 
 impl TType {
-    pub fn create(module: GCRef<TModule>) -> GCRef<Self> {  
-        let object = TType { module };
-        module.interpreter.heap.allocate_atom(
-            &TypeCollector, object
-        ) 
+    pub fn create(heap: &Heap) -> GCRef<Self> {  
+        let object = TType { };
+        heap.allocate_atom(&TypeCollector, object) 
     }
 }
 
 impl GCRef<TType> {
     pub fn allocate_object<T: Typed>(self, object: T) -> GCRef<T> {
         debug_assert!(std::ptr::addr_eq(self.as_ptr(), T::ttype().as_ptr()));
-        self.module.interpreter.heap.allocate_atom(
+        self.heap().allocate_atom(
             unsafe { &*self.as_ptr() },
             object
         )
@@ -150,7 +142,7 @@ impl GCRef<TType> {
 
     pub fn allocate_var_object<T: Typed>(self, object: T, extra_bytes: usize) -> GCRef<T> {
         debug_assert!(std::ptr::addr_eq(self.as_ptr(), T::ttype().as_ptr()));
-        self.module.interpreter.heap.allocate_var_atom(
+        self.heap().allocate_var_atom(
             unsafe { &*self.as_ptr() },
             object,
             extra_bytes

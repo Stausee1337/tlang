@@ -21,7 +21,8 @@ fn align_up(size: usize, align: usize) -> usize {
 
 #[derive(Clone, Copy)]
 struct HeapBlock {
-    data: NonNull<u8>,
+    heap: *const Heap,
+    previous: *const HeapBlock,
     allocated_bytes: usize
 }
 
@@ -29,26 +30,41 @@ impl HeapBlock {
     const PAGE_SIZE: usize = 4096;
     const ALIGN: usize = std::mem::size_of::<usize>();
 
-    unsafe fn map() -> io::Result<NonNull<HeapBlock>> {
-        let memory = mmap_anonymous(
+    const EMPTY: &'static HeapBlock = &HeapBlock {
+        heap: std::ptr::null(),
+        previous: std::ptr::null(),
+        allocated_bytes: Self::PAGE_SIZE
+    };
+
+    unsafe fn map(heap: &Heap, previous: &Self) -> io::Result<NonNull<HeapBlock>> {
+        let block = mmap_anonymous(
             std::ptr::null_mut(),
             Self::PAGE_SIZE,
             ProtFlags::READ | ProtFlags::WRITE,
             MapFlags::PRIVATE,
-        )?;
-        let mut block = HeapBlock {
-            data: NonNull::new(memory as *mut u8).unwrap(),
-            allocated_bytes: 0
+        )? as *mut Self;
+
+        *block = HeapBlock {
+            heap: &*heap,
+            previous: &*previous,
+            allocated_bytes: std::mem::size_of::<Self>()
         };
 
-        let raw = block.alloc_raw(Layout::new::<HeapBlock>()).unwrap() as *mut HeapBlock;
-        *raw = block;
-
-        Ok(NonNull::new_unchecked(raw))
+        Ok(NonNull::new_unchecked(block))
     }
 
-    unsafe fn unmap(&self) -> io::Result<()> {
-        munmap(self.data.as_ptr() as *mut c_void, HeapBlock::PAGE_SIZE)
+    unsafe fn unmap(&mut self) -> io::Result<()> {
+        munmap(self.data() as *mut c_void, HeapBlock::PAGE_SIZE)
+    }
+
+    unsafe fn fork(&mut self) -> io::Result<NonNull<HeapBlock>> {
+        Self::map(&*self.heap, self)
+    }
+
+    #[inline(always)]
+    unsafe fn data(&mut self) -> *mut u8 {
+        let raw: *mut Self = &mut *self;
+        raw as *mut u8
     }
 
     #[inline(always)]
@@ -58,7 +74,7 @@ impl HeapBlock {
         let size = layout.size();
         let align = layout.align();
 
-        let start = self.data.as_ptr();
+        let start = self.data();
         let end = start.add(Self::PAGE_SIZE);
 
         let head = start.add(self.allocated_bytes); 
@@ -84,6 +100,11 @@ impl HeapBlock {
 
         Some(body)
     }
+
+    unsafe fn from_allocation<T: Sized>(ptr: *const T) -> &'static HeapBlock {
+        let ptr = ((ptr as usize) & !(HeapBlock::PAGE_SIZE - 1)) as *const HeapBlock;
+        &*ptr
+    }
 }
 
 pub struct Heap {
@@ -92,8 +113,9 @@ pub struct Heap {
 
 impl Heap {
     pub fn init() -> Self {
-        let root_block = unsafe { HeapBlock::map().unwrap() };
-        Self { current_block: Cell::new(root_block) }
+        let block: *const HeapBlock = &*HeapBlock::EMPTY;
+        let block = unsafe { NonNull::new_unchecked(block as *mut HeapBlock) };
+        Self { current_block: Cell::new(block) }
     }
 
     pub fn allocate_atom<A: Atom, T>(&self, kind: &'static A, object: T) -> GCRef<T> {
@@ -119,6 +141,7 @@ impl Heap {
             GCRef::from_allocation(data.as_ptr())
         }
     }
+
 }
 
 unsafe impl Allocator for Heap {
@@ -132,7 +155,8 @@ unsafe impl Allocator for Heap {
             } else if let Some(ptr) = block.alloc_raw(layout) {
                 raw = ptr;
             } else {
-                return Err(AllocError);
+                self.current_block.set(block.fork().unwrap());
+                raw = block.alloc_raw(layout).ok_or(AllocError)?;
             }
 
             let raw = NonNull::new(raw).unwrap();
@@ -216,6 +240,12 @@ impl<T> GCRef<T> {
 
     pub fn kind<A: Atom>(&self) -> Option<&A> {
         unsafe { self.atom().downcast() }
+    }
+
+    pub fn heap(&self) -> &Heap {
+        unsafe {
+            &*HeapBlock::from_allocation(self.as_ptr()).heap
+        }
     }
 
     unsafe fn atom(&self) -> &AtomTrait {
