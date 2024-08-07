@@ -1,4 +1,4 @@
-use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::NonNull, alloc::Layout, cell::Cell};
+use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::NonNull, alloc::Layout, cell::Cell, any::TypeId};
 use rustix::{
     io,
     mm::{mmap_anonymous, munmap, MapFlags, ProtFlags}
@@ -80,49 +80,88 @@ impl HeapBlock {
             tag: 0
         };
 
-        // self.allocated_bytes += padding;
-
-        // let addr = self.data.as_ptr().add(self.allocated_bytes);
-
-        // self.allocated_bytes += alloc_size;
-
         println!("{layout:?}, {alloc_size}, {}", self.allocated_bytes);
 
         Some(body)
     }
 }
 
-pub struct BlockAllocator {
+pub trait Atom: Send + Sync + 'static {
+    type Child;
+    type Parent;
+
+    fn iterate_children(&self, p: GCRef<Self::Parent>) -> &dyn Iterator<Item = GCRef<Self::Child>>;
+}
+
+#[repr(C)]
+struct AtomTrait<Atom: 'static = ()> {
+    vtable: &'static AtomTraitVTable,
+    atom: &'static Atom
+}
+
+impl<A: Atom> AtomTrait<A> {
+    fn new(atom: &'static A) -> Self {
+        let vtable = &AtomTraitVTable {
+            atom_ref: atom_ref::<A>,
+            atom_downcast: atom_downcast::<A>,
+        };
+        AtomTrait { vtable, atom }
+    }
+}
+
+unsafe fn atom_ref<A: Atom>(a: &AtomTrait) -> &dyn Atom<Child = (), Parent = ()> {
+    todo!()
+}
+
+unsafe fn atom_downcast<A: Atom>(a: &'_ AtomTrait, target: TypeId) -> Option<&'_ ()> {
+    todo!()
+}
+
+#[repr(C)]
+struct AtomTraitVTable {
+    atom_downcast: unsafe fn(&'_ AtomTrait, TypeId) -> Option<&'_ ()>,
+    atom_ref: unsafe fn(&'_ AtomTrait) -> &'_ dyn Atom<Child = (), Parent = ()>,
+}
+
+#[repr(C)]
+struct Allocation<A: 'static, T>(AtomTrait<A>, T);
+
+pub struct Heap {
     current_block: Cell<NonNull<HeapBlock>>
 }
 
-impl BlockAllocator {
+impl Heap {
     pub fn init() -> Self {
         let root_block = unsafe { HeapBlock::map().unwrap() };
         Self { current_block: Cell::new(root_block) }
     }
 
-    pub fn allocate_object<T>(&self, object: T) -> GCRef<T> {
+    pub fn allocate_atom<A: Atom, T>(&self, kind: &'static A, object: T) -> GCRef<T> {
+        let atom = AtomTrait::new(kind);
+        let allocation = Allocation(atom, object);
         unsafe {
-            let mut data = self.allocate(Layout::new::<T>()).unwrap().cast::<T>();
-            *(data.as_mut()) = object;
-            GCRef(data.as_ptr())
+            let mut data = self.allocate(
+                Layout::new::<Allocation<A, T>>()).unwrap().cast::<Allocation<A, T>>();
+            *(data.as_mut()) = allocation;
+            GCRef::from_allocation(data.as_ptr())
         }
     }
 
-    pub fn allocate_var_object<T>(&self, object: T, extra_bytes: usize) -> GCRef<T> {
+    pub fn allocate_var_atom<A: Atom, T>(&self, kind: &'static A, object: T, extra_bytes: usize) -> GCRef<T> {
+        let atom = AtomTrait::new(kind);
+        let allocation = Allocation(atom, object);
         unsafe {
-            let layout = Layout::new::<T>();
+            let layout = Layout::new::<Allocation<A, T>>();
             let layout = Layout::from_size_align_unchecked(layout.size() + extra_bytes, layout.align());
 
-            let mut data = self.allocate(layout).unwrap().cast::<T>();
-            *(data.as_mut()) = object;
-            GCRef(data.as_ptr())
+            let mut data = self.allocate(layout).unwrap().cast::<Allocation<A, T>>();
+            *(data.as_mut()) = allocation;
+            GCRef::from_allocation(data.as_ptr())
         }
     }
 }
 
-unsafe impl Allocator for BlockAllocator {
+unsafe impl Allocator for Heap {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         unsafe {
             let block = self.current_block.get().as_mut();
@@ -150,6 +189,18 @@ pub struct GCRef<T>(*mut T);
 impl<T> GCRef<T> {
     pub const fn from_raw(raw: *mut T) -> Self {
         GCRef(raw)
+    }
+
+    pub const fn as_ptr(&self) -> *mut T {
+        self.0
+    }
+
+    pub fn kind<A: Atom>(&self) -> Option<&A> {
+        todo!()
+    }
+
+    unsafe fn from_allocation<A: Atom>(allocation: *mut Allocation<A, T>) -> GCRef<T> {
+        GCRef(&mut (*allocation).1)
     }
 }
 

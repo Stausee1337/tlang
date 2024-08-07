@@ -1,33 +1,28 @@
-use std::{mem::MaybeUninit, slice::Iter};
+use std::mem::MaybeUninit;
 
 use tlang_macros::decode;
 
-use crate::{memory::BlockAllocator, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register, CodeLabel}};
+use crate::{memory::Heap, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register, CodeLabel}};
 
 static mut INTERPTETER: Wrapper = Wrapper(false, MaybeUninit::uninit());
 
 struct Wrapper(bool, MaybeUninit<TlInterpreter>);
 
 pub struct TlInterpreter {
-    pub block_allocator: BlockAllocator,
+    pub heap: Heap,
 }
 
 pub fn make_interpreter() -> &'static TlInterpreter {
-    let interpreter = TlInterpreter {
-        block_allocator: BlockAllocator::init()
-    };
     unsafe {
+        let interpreter = TlInterpreter {
+            heap: Heap::init()
+        };
         INTERPTETER = Wrapper(
             true,
             MaybeUninit::new(interpreter)
         );
+        INTERPTETER.1.assume_init_ref()
     }
-    get_interpeter()
-}
-
-pub fn get_interpeter() -> &'static TlInterpreter {
-    unsafe { assert!(INTERPTETER.0, "Interpreter initialized") };
-    unsafe { INTERPTETER.1.assume_init_ref() }
 }
 
 struct ExecutionEnvironment<'l> {

@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, ops::Index, fmt::Display};
 
-use crate::{tvalue::{TInteger, TType}, memory::GCRef};
+use crate::{tvalue::{TInteger, TType, Typed}, memory::GCRef};
 
 #[repr(u8)]
 #[derive(Clone, Copy)]
@@ -70,9 +70,14 @@ impl<'a, const LENGTH: usize> From<&'a (Sign, [u8; LENGTH])> for SignedSlice<'a>
 
 #[repr(C)]
 pub struct TBigint {
-    pub ty: GCRef<TType>,
     size: TInteger,
     bytes: [u8; 0]
+}
+
+impl Typed for TBigint {
+    fn ttype() -> GCRef<TType> {
+        todo!()
+    }
 }
 
 impl Display for TBigint {

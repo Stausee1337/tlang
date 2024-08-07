@@ -1,10 +1,8 @@
 use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 
-use allocator_api2::alloc::Allocator;
 use getopts::{Options, ParsingStyle};
-use memory::BlockAllocator;
+use memory::Heap;
 use parse::ParseContext;
-use tvalue::TType;
 
 use crate::bytecode::{BytecodeGenerator, FunctionDisassembler};
 
@@ -58,11 +56,11 @@ fn main() -> ExitCode {
     }
 
     let interp = interpreter::make_interpreter();
-    let result = allocator_api2::boxed::Box::<AlignedStruct, &BlockAllocator>::new_in(
+    let result = allocator_api2::boxed::Box::<AlignedStruct, &Heap>::new_in(
         AlignedStruct {
             data: [0x55; 64]
         },
-        &interp.block_allocator);
+        &interp.heap);
 
     // println!("{:?}", result);
 

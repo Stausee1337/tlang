@@ -1,9 +1,9 @@
-use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, cell::OnceCell, fmt::{Display, Write}};
+use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, fmt::Display};
 
 
 use hashbrown::raw::RawTable;
 
-use crate::{memory::{self, GCRef}, symbol::Symbol, interpreter::get_interpeter, bytecode::TRawCode, bigint::{TBigint, self, to_bigint, SignedSlice}};
+use crate::{memory::{self, GCRef, Atom}, symbol::Symbol, interpreter::TlInterpreter, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}};
 
 #[repr(u64)]
 #[derive(Debug)]
@@ -60,6 +60,7 @@ impl TValue {
 
     #[inline(always)]
     const fn object_tagged<T>(object: memory::GCRef<T>, kind: TValueKind) -> Self {
+        // TODO: use object.as_ptr() instead
         let object: u64 = unsafe { transmute(object) };
         assert!(object & (!Self::NAN_VALUE_MASK) == 0);
         TValue(Self::FLOAT_NAN_TAG | kind as u64 | object)
@@ -68,6 +69,20 @@ impl TValue {
     #[inline(always)]
     const fn string(string: memory::GCRef<TString>) -> Self {
         Self::object_tagged(string, TValueKind::String)
+    }
+
+    /// Public Helpers 
+
+    #[inline(always)]
+    pub fn query_type<T: Typed>(&self) -> Option<GCRef<T>> {
+        if let TValueKind::Object = self.kind() {
+            let object = self.as_object::<T>();
+            let object_kind = object.kind::<TType>()?;
+            if std::ptr::addr_eq(object_kind, T::ttype().as_ptr()) {
+                return Some(object);
+            }
+        }
+        None
     }
 
     /// Private Helpers
@@ -102,35 +117,60 @@ impl TValue {
     }
 }
 
+pub trait Typed {
+    fn ttype() -> GCRef<TType>;
+}
+
+pub struct TModule {
+    pub interpreter: &'static TlInterpreter
+}
+
 #[repr(C)]
 pub struct TType {
-    ty: GCRef<TType>,
+    module: GCRef<TModule>
 }
 
 impl TType {
-    pub fn create() -> GCRef<Self> {  
-        let interpreter = get_interpeter();
-        interpreter.block_allocator.allocate_object(
-            Self { ty: Self::ttype() }
+    pub fn create(module: GCRef<TModule>) -> GCRef<Self> {  
+        let object = TType { module };
+        module.interpreter.heap.allocate_atom(
+            &TypeCollector, object
         ) 
     }
 
-    pub fn ttype() -> GCRef<TType> {
+    pub fn allocate_object<T>(&self, object: T) -> GCRef<T> {
+        todo!()
+    }
+
+    pub fn allocate_var_object<T>(&self, object: T, extra_bytes: usize) -> GCRef<T> {
+        todo!()
+    }
+
+    /*pub fn ttype() -> GCRef<TType> {
         static mut TYPE: OnceCell<GCRef<TType>> = OnceCell::new();
         unsafe {
-            if let Some(ty) = TYPE.get_mut() {
-                if ty.ty == GCRef::from_raw(std::ptr::null_mut::<TType>()) {
-                    ty.ty = *ty;
-                }
-            }
-            *TYPE.get_or_init(|| {
-                let interpreter = get_interpeter();
-                let ty = GCRef::from_raw(std::ptr::null_mut());
-                interpreter.block_allocator.allocate_object(
-                    Self { ty }
-                )
-            })
+            *TYPE.get_or_init(|| TType::create())
         }
+    }*/
+}
+
+impl Atom for TType {
+    type Child = ();
+    type Parent = ();
+
+    fn iterate_children(&self, p: GCRef<Self::Parent>) -> &dyn Iterator<Item = GCRef<Self::Child>> {
+        todo!()
+    }
+}
+
+pub struct TypeCollector;
+
+impl Atom for TypeCollector {
+    type Child = ();
+    type Parent = TType;
+
+    fn iterate_children(&self, p: GCRef<Self::Parent>) -> &dyn Iterator<Item = GCRef<Self::Child>> {
+        todo!()
     }
 }
 
@@ -182,21 +222,13 @@ impl TInteger {
         todo!("real bigint support")
     }
 
-    pub fn ttype() -> GCRef<TType> {
-        static mut TYPE: OnceCell<GCRef<TType>> = OnceCell::new();
-        unsafe {
-            *TYPE.get_or_init(|| TType::create())
-        }
-    }
-
     #[inline(always)]
     fn to_rust(&self) -> IntegerKind {
         match self.0.kind() {
             TValueKind::Int32 =>
                 IntegerKind::Int32(self.0.as_int32()),
-            TValueKind::Object 
-                if self.0.as_object::<TBigint>().ty == Self::ttype() =>
-                    IntegerKind::Bigint(self.0.as_object::<TBigint>()),
+            TValueKind::Object =>
+                IntegerKind::Bigint(self.0.query_type::<TBigint>().unwrap()),
             _ => unreachable!()
         }
     }
@@ -210,7 +242,7 @@ impl TryFrom<TValue> for TInteger {
         Ok(match value.kind() {
             TValueKind::Int32 => TInteger(value),
             TValueKind::Object 
-                if value.as_object::<TBigint>().ty == Self::ttype() =>
+                if value.query_type::<TBigint>().is_some() =>
                     TInteger(value),
             _ => return Err(())
         })
@@ -355,7 +387,6 @@ impl Display for TBool {
 
 #[repr(C)]
 pub struct TString {
-    ty: GCRef<TType>,
     pub size: TInteger,
     pub length: TInteger,
     pub data: [u8; 0]
@@ -376,9 +407,8 @@ impl TString {
 
         let length = TInteger::from_usize(slice.chars().count());
 
-        let interpreter = get_interpeter();
-        let mut string = interpreter.block_allocator.allocate_var_object(
-            Self { ty: Self::ttype(), size, length, data: [0u8; 0] },
+        let mut string = Self::ttype().allocate_var_object(
+            Self { size, length, data: [0u8; 0] },
             slice.len()
         );
 
@@ -388,12 +418,11 @@ impl TString {
 
         string
     }
+}
 
-    pub fn ttype() -> GCRef<TType> {
-        static mut TYPE: OnceCell<GCRef<TType>> = OnceCell::new();
-        unsafe {
-            *TYPE.get_or_init(|| TType::create())
-        }
+impl Typed for TString {
+    fn ttype() -> GCRef<TType> {
+        todo!()
     }
 }
 
@@ -405,7 +434,6 @@ impl Into<TValue> for memory::GCRef<TString> {
 
 #[repr(C)]
 pub struct TFunction {
-    pub ty: GCRef<TType>,
     pub name: GCRef<TString>,
     pub kind: TFnKind
 }
@@ -415,13 +443,6 @@ pub enum TFnKind {
 }
 
 impl TFunction {
-    pub fn ttype() -> GCRef<TType> {
-        static mut TYPE: OnceCell<GCRef<TType>> = OnceCell::new();
-        unsafe {
-            *TYPE.get_or_init(|| TType::create())
-        }
-    }
-
     #[inline(always)]
     pub fn call<'a>(&self, arguments: &'a mut [TValue]) -> TValue {
         match &self.kind {
@@ -433,10 +454,16 @@ impl TFunction {
     }
 }
 
+impl Typed for TFunction {
+    fn ttype() -> GCRef<TType> {
+        todo!()
+    }
+}
+
 #[repr(C)]
 struct TObjectHead {
     ttype: TType,
-    descriptor: RawTable<Symbol, memory::BlockAllocator>,
+    descriptor: RawTable<Symbol, memory::Heap>,
     data: [u8; 1]
 }
 

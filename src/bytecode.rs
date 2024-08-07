@@ -4,7 +4,7 @@ use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCel
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, interpreter::get_interpeter};
+use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed}, symbol::Symbol, parse::Ident, codegen, memory::GCRef};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -627,11 +627,9 @@ impl TFunction {
         let extra_size = codesize
             + descriptors as usize * std::mem::size_of::<TValue>()
             + blocks as usize * std::mem::size_of::<u32>();
-        let interpreter = get_interpeter();
         let code = TRawCode::new(codesize, params, registers, descriptors, blocks);
-        let mut function = interpreter.block_allocator.allocate_var_object(
+        let mut function = Self::ttype().allocate_var_object(
             Self {
-                ty: Self::ttype(),
                 name: TString::from_slice(name),
                 kind: TFnKind::Function(code)
             },
@@ -684,11 +682,12 @@ impl TRawCode {
         let extra_size = codesize
             + descriptors as usize * std::mem::size_of::<TValue>()
             + blocks as usize * std::mem::size_of::<u32>();
-        let interpreter = get_interpeter();
-        interpreter.block_allocator.allocate_var_object(
+        /*let interpreter = get_interpeter();
+        interpreter.block_allocator.allocate_var_atom(
             TRawCode::new(codesize, params, registers, descriptors, blocks),
             extra_size
-        )
+        )*/
+        todo!()
     }
 
     pub fn registers(&self) -> usize {
