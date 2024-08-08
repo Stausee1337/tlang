@@ -2,7 +2,7 @@ use std::{mem::transmute, fmt::Debug};
 
 use lalrpop_util::ParseError;
 
-use crate::{lexer::{Token, Span, SyntaxError}, symbol::Symbol};
+use crate::{lexer::{Token, Span, SyntaxError}, symbol::Symbol, memory::GCRef, tvalue::TString};
 use tlang_macros::GeneratorNode;
 
 #[derive(Debug, Copy, Clone)]
@@ -23,7 +23,7 @@ pub enum Statement<'ast> {
     Break(Break),
     Return(Return<'ast>),
     Continue(Continue),
-    Import(Import<'ast>),
+    Import(Import),
     ForLoop(ForLoop<'ast>),
     WhileLoop(WhileLoop<'ast>),
     Variable(Variable<'ast>),
@@ -67,9 +67,9 @@ pub struct Return<'ast> {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct Import<'ast> { 
+pub struct Import { 
     pub alias: Option<Ident>,
-    pub file: &'ast str,
+    pub file: GCRef<TString>,
     pub span: Span
 }
 
@@ -92,7 +92,7 @@ pub struct Function<'ast> {
 #[derive(Debug, Copy, Clone, GeneratorNode)]
 pub enum Expression<'ast> {
     Assign(AssignExpr<'ast>),
-    Literal(Literal<'ast>),
+    Literal(Literal),
     Ident(Ident),
     BinaryExpr(BinaryExpr<'ast>),
     UnaryExpr(UnaryExpr<'ast>),
@@ -119,18 +119,18 @@ pub struct AssignExpr<'ast> {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct Literal<'ast> {
-    pub kind: LiteralKind<'ast>,
+pub struct Literal {
+    pub kind: LiteralKind,
     pub span: Span
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum LiteralKind<'ast> {
+pub enum LiteralKind {
     Null,
     Integer(u64),
     Float(f64),
     Boolean(bool),
-    String(&'ast str),
+    String(GCRef<TString>),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -208,20 +208,20 @@ pub struct Lambda<'ast> {
     pub span: Span
 }
 
-pub struct ParseContext<'ast> {
+pub struct ParseContext {
     nodes: bumpalo::Bump,
-    tokens: Box<[Token<'ast>]>
+    tokens: Box<[Token]>
 }
 
-impl<'ast> ParseContext<'ast> {
-    pub fn new(tokens: Box<[Token<'ast>]>) -> Self {
+impl ParseContext {
+    pub fn new(tokens: Box<[Token]>) -> Self {
         Self {
             tokens,
             nodes: bumpalo::Bump::new(),
         }
     }
 
-    pub fn parse(&self) -> Result<Module<'ast>, SyntaxError> {
+    pub fn parse<'ast>(&'ast self) -> Result<Module<'ast>, SyntaxError> {
         internal::ModuleParser::new()
             .parse(self, self.tokens
                 .into_iter()
@@ -229,18 +229,18 @@ impl<'ast> ParseContext<'ast> {
             .map_err(|err| SyntaxError(as_span(err)))
     }
 
-    pub fn alloc<T>(&self, node: T) -> &'ast T {
+    pub fn alloc<'ast, T>(&'ast self, node: T) -> &'ast T {
         unsafe {
             transmute(self.nodes.alloc(node))
         }
     }
 
-    pub fn slice<T>(&self, vec: Vec<T>) -> &'ast [T] {
+    pub fn slice<'ast, T>(&'ast self, vec: Vec<T>) -> &'ast [T] {
         let slice = vec.into_boxed_slice();
         self.alloc(slice)
     }
 
-    pub fn to_params(&self, exprs: &'ast [&'ast Expression]) -> Option<&'ast [&'ast Ident]> {
+    pub fn to_params<'ast>(&'ast self, exprs: &'ast [&'ast Expression]) -> Option<&'ast [&'ast Ident]> {
         let mut idents = Vec::new();
         for expr in exprs {
             match expr {

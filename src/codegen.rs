@@ -1,14 +1,23 @@
 
 use crate::lexer::Span;
+use crate::memory::GCRef;
 use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop, Variable, Function, AssignExpr, Literal, Ident, BinaryExpr, UnaryExpr, CallExpr, AttributeExpr, SubscriptExpr, ListExpr, ObjectExpr, TupleExpr, Lambda, Module, Statement, LiteralKind, Expression, BinaryOp, UnaryOp};
 
 use crate::bytecode::{Operand, BytecodeGenerator, CodeLabel, RibKind};
+use crate::symbol::Symbol;
+use crate::tvalue::TString;
 
 #[derive(Debug)]
 pub enum CodegenErr {
     SyntaxError {
         message: Option<String>,
         span: Span
+    }
+}
+
+impl BytecodeGenerator {
+    fn debug(&self, sym: Symbol) -> GCRef<TString> {
+        self.vm().symbols.get(sym)
     }
 }
 
@@ -31,7 +40,8 @@ pub fn generate_body<'ast>(body: &'ast [&'ast Statement], generator: &mut Byteco
                 generator.register_local(var.name, var.constant)
                 .map_err(|()| CodegenErr::SyntaxError {
                     span: var.span,
-                    message: Some(format!("identifier `{}` has already been declared", var.name.symbol.get()))
+                    message: Some(
+                        format!("identifier `{}` has already been declared", generator.debug(var.name.symbol)))
                 })?,
             Statement::If(..) |
             Statement::ForLoop(..) | Statement::WhileLoop(..) =>
@@ -146,7 +156,7 @@ impl<'ast> GeneratorNode for Break {
     }
 }
 
-impl<'ast> GeneratorNode for Import<'ast> {
+impl GeneratorNode for Import {
     fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
         todo!()
     }
@@ -293,19 +303,14 @@ impl<'ast> GeneratorNode for AssignExpr<'ast> {
     }
 }
 
-impl<'ast> GeneratorNode for Literal<'ast> {
+impl GeneratorNode for Literal {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
         Ok(Some(match self.kind {
             LiteralKind::Null => Operand::null(),
             LiteralKind::Integer(int) => generator.make_int(int),
             LiteralKind::Float(float) => generator.make_float(float),
             LiteralKind::Boolean(bool) => Operand::bool(bool),
-            LiteralKind::String(str) => 
-                generator.make_string_literal(str)
-                .map_err(|err| CodegenErr::SyntaxError {
-                    message: Some(err.to_string()),
-                    span: self.span
-                })?,
+            LiteralKind::String(str) => generator.make_string(str),
         }))
     }
 }

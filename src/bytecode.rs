@@ -1,10 +1,10 @@
 
-use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCell};
+use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCell, rc::Rc};
 
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed}, symbol::Symbol, parse::Ident, codegen, memory::GCRef};
+use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, interpreter::VM};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -318,7 +318,7 @@ impl CGFunction {
 
     fn module() -> Self {
         Self {
-            name: Symbol::intern("$module"),
+            name: todo!(),
             ribs: vec![Rib::new(RibKind::Module)],
             num_params: 0,
             num_locals: 0,
@@ -468,6 +468,10 @@ impl BytecodeGenerator {
         }
     }
 
+    pub fn vm(&self) -> Rc<VM> {
+        todo!()
+    }
+
     pub fn current_fn(&self) -> &CGFunction {
         return self.function_stack.last().unwrap_or_else(|| &self.root_fn);
     }
@@ -494,7 +498,7 @@ impl BytecodeGenerator {
         FunctionDisassembler::dissassemble(&func, &mut string).unwrap();
         println!("{string}");
 
-        let func = TFunction::from_codegen(func);
+        let func = TFunction::from_codegen(&self.vm(), func);
 
         let result = func.call(&mut [
             TBool::from_bool(false).into(),
@@ -564,10 +568,8 @@ impl BytecodeGenerator {
             .get_local_reg(symbol)
     }
 
-    pub fn make_string_literal(&mut self, literal: &str) -> Result<Operand, snailquote::UnescapeError> {
-        let string = snailquote::unescape(literal)?;
-        let tstring = TString::from_slice(&string);
-        Ok(self.current_fn_mut().descriptor(tstring))
+    pub fn make_string(&mut self, string: GCRef<TString>) -> Operand {
+        self.current_fn_mut().descriptor(string)
     }
 
     pub fn make_int(&mut self, int: u64) -> Operand {
@@ -583,14 +585,15 @@ impl BytecodeGenerator {
 }
 
 impl TFunction {
-    pub fn from_codegen(func: CGFunction) -> GCRef<Self> {
+    pub fn from_codegen(vm: &VM, func: CGFunction) -> GCRef<Self> {
         let mut codesize = 0;
         for block in &func.blocks {
             codesize += block.data.len();
         }
 
         let (function, tcode) = TFunction::create_presized(
-            func.name.get(),
+            vm,
+            vm.symbols.get(func.name),
             codesize,
             func.num_params,
             func.register_allocator.0,
@@ -617,7 +620,8 @@ impl TFunction {
     }
 
     fn create_presized(
-        name: &str,
+        vm: &VM,
+        name: GCRef<TString>,
         codesize: usize,
         params: u32,
         registers: u32,
@@ -628,9 +632,9 @@ impl TFunction {
             + descriptors as usize * std::mem::size_of::<TValue>()
             + blocks as usize * std::mem::size_of::<u32>();
         let code = TRawCode::new(codesize, params, registers, descriptors, blocks);
-        let mut function = Self::ttype().allocate_var_object(
+        let mut function = Self::ttype(vm).allocate_var_object(
             Self {
-                name: TString::from_slice(name),
+                name,
                 kind: TFnKind::Function(code)
             },
             extra_size

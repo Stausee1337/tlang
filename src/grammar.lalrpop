@@ -1,9 +1,11 @@
 use crate::{
     lexer::{self, Span}, parse,
     symbol::Symbol,
+    memory::GCRef,
+    tvalue::TString,
 };
 
-grammar<'ast, 'ctx>(ctx: &'ctx parse::ParseContext<'ast>);
+grammar<'ast>(ctx: &'ast parse::ParseContext);
 
 pub Module: parse::Module<'ast> = {
     <start:@L> <body:Body> <end:@R> => parse::Module {
@@ -330,7 +332,7 @@ LambdaBody: parse::Lambda<'ast> = {
     },
 };
 
-LiteralKind: parse::LiteralKind<'ast> = {
+LiteralKind: parse::LiteralKind = {
     "null" => parse::LiteralKind::Null,
     "true" => parse::LiteralKind::Boolean(true),
     "false" => parse::LiteralKind::Boolean(false),
@@ -372,7 +374,7 @@ SeperatedList2<T, Sep>: (&'ast [&'ast T], bool) = {
 extern {
     type Location = usize;
 
-    enum lexer::TokenKind<'ast> {
+    enum lexer::TokenKind {
         "." => lexer::TokenKind::Dot,
         "," => lexer::TokenKind::Comma,
         ":" => lexer::TokenKind::Colon,
@@ -434,7 +436,7 @@ extern {
         "null" => lexer::TokenKind::Null,
 
         name => lexer::TokenKind::Name(<Symbol>),
-        string => lexer::TokenKind::String(<&'ast str>),
+        string => lexer::TokenKind::String(<GCRef<TString>>),
         integer => lexer::TokenKind::Intnumber(<u64>),
         float => lexer::TokenKind::Floatnumber(<f64>),
     }

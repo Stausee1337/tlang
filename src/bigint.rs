@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, ops::Index, fmt::Display};
 
-use crate::{tvalue::{TInteger, TType, Typed}, memory::GCRef};
+use crate::{tvalue::{TInteger, TType, Typed}, memory::GCRef, interpreter::VM};
 
 #[repr(u8)]
 #[derive(Clone, Copy)]
@@ -75,7 +75,7 @@ pub struct TBigint {
 }
 
 impl Typed for TBigint {
-    fn ttype() -> GCRef<TType> {
+    fn ttype(vm: &VM) -> GCRef<TType> {
         todo!()
     }
 }

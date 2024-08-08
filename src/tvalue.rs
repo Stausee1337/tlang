@@ -3,7 +3,7 @@ use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, fmt::Display};
 
 use hashbrown::raw::RawTable;
 
-use crate::{memory::{self, GCRef, Atom, Heap}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}};
+use crate::{memory::{self, GCRef, Atom, Heap}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, interpreter::VM};
 
 #[repr(u64)]
 #[derive(Debug)]
@@ -37,7 +37,7 @@ impl TValue {
     
     #[inline(always)]
     pub const fn null() -> Self {
-        let null = unsafe { GCRef::<()>::from_raw(std::ptr::null_mut()) };
+        let null = unsafe { GCRef::<()>::from_raw(std::ptr::null()) };
         Self::object_tagged(null, TValueKind::Object)
     }
 
@@ -74,15 +74,29 @@ impl TValue {
     /// Public Helpers 
 
     #[inline(always)]
-    pub fn query_type<T: Typed>(&self) -> Option<GCRef<T>> {
+    pub fn query_type<T: Typed>(&self, vm: &VM) -> Option<GCRef<T>> {
         if let TValueKind::Object = self.kind() {
-            let object = self.as_object::<T>();
-            let object_kind = object.kind::<TType>()?;
-            if std::ptr::addr_eq(object_kind, T::ttype().as_ptr()) {
-                return Some(object);
+            let object_type = self.ttype(vm);
+            if std::ptr::addr_eq(object_type.as_ptr(), T::ttype(vm).as_ptr()) {
+                return Some(self.as_object::<T>());
             }
         }
         None
+    }
+
+    #[inline(always)]
+    pub fn ttype(&self, vm: &VM) -> GCRef<TType> {
+        match self.kind() {
+            TValueKind::Bool => TBool::ttype(vm),
+            TValueKind::Int32 => TInteger::ttype(vm),
+            TValueKind::Float => TFloat::ttype(vm),
+            _ => {
+                let object = self.as_object::<()>();
+                let object_type = object.kind::<TType>()
+                    .expect("TValue have TType");
+                unsafe { GCRef::from_raw(&*object_type) }
+            }
+        }
     }
 
     /// Private Helpers
@@ -118,7 +132,7 @@ impl TValue {
 }
 
 pub trait Typed {
-    fn ttype() -> GCRef<TType>;
+    fn ttype(vm: &VM) -> GCRef<TType>;
 }
 
 #[repr(C)]
@@ -133,7 +147,7 @@ impl TType {
 
 impl GCRef<TType> {
     pub fn allocate_object<T: Typed>(self, object: T) -> GCRef<T> {
-        debug_assert!(std::ptr::addr_eq(self.as_ptr(), T::ttype().as_ptr()));
+        debug_assert!(std::ptr::addr_eq(self.as_ptr(), T::ttype(&self.vm()).as_ptr()));
         self.heap().allocate_atom(
             unsafe { &*self.as_ptr() },
             object
@@ -141,7 +155,7 @@ impl GCRef<TType> {
     }
 
     pub fn allocate_var_object<T: Typed>(self, object: T, extra_bytes: usize) -> GCRef<T> {
-        debug_assert!(std::ptr::addr_eq(self.as_ptr(), T::ttype().as_ptr()));
+        debug_assert!(std::ptr::addr_eq(self.as_ptr(), T::ttype(&self.vm()).as_ptr()));
         self.heap().allocate_var_atom(
             unsafe { &*self.as_ptr() },
             object,
@@ -170,24 +184,25 @@ impl Atom for TypeCollector {
     }
 }
 
+#[derive(Clone, Copy)]
 enum IntegerKind {
     Int32(i32),
     Bigint(GCRef<TBigint>),
 }
 
 #[derive(Clone, Copy)]
-pub struct TInteger(TValue);
+pub struct TInteger(IntegerKind);
 
 impl TInteger {
     pub fn as_usize(&self) -> Option<usize> {
-        match self.to_rust() {
+        match self.0 {
             IntegerKind::Int32(int) => usize::try_from(int).ok(),
             IntegerKind::Bigint(bigint) => bigint::try_as_usize(bigint)
         }
     }
 
     pub fn as_isize(&self) -> Option<isize> {
-        match self.to_rust() {
+        match self.0 {
             IntegerKind::Int32(int) => isize::try_from(int).ok(),
             IntegerKind::Bigint(bigint) => bigint::try_as_isize(bigint)
         }
@@ -195,12 +210,12 @@ impl TInteger {
 
     #[inline(always)]
     pub const fn from_int32(int: i32) -> Self {
-        TInteger(TValue::int32(int))
+        TInteger(IntegerKind::Int32(int))
     }
 
     #[inline(always)]
     pub const fn from_bigint(bigint: GCRef<TBigint>) -> Self {
-        TInteger(TValue::object_tagged(bigint, TValueKind::Object))
+        TInteger(IntegerKind::Bigint(bigint))
     }
 
     #[inline(always)]
@@ -209,24 +224,13 @@ impl TInteger {
             return Self::from_signed_bytes(&(size as i128).to_le_bytes());
         };
         if let Ok(int) = i32::try_from(size) {
-            return TInteger(TValue::int32(int));
+            return TInteger(IntegerKind::Int32(int));
         }
         Self::from_signed_bytes(&size.to_le_bytes()) 
     }
 
     pub fn from_signed_bytes(bytes: &[u8]) -> Self {
         todo!("real bigint support")
-    }
-
-    #[inline(always)]
-    fn to_rust(&self) -> IntegerKind {
-        match self.0.kind() {
-            TValueKind::Int32 =>
-                IntegerKind::Int32(self.0.as_int32()),
-            TValueKind::Object =>
-                IntegerKind::Bigint(self.0.query_type::<TBigint>().unwrap()),
-            _ => unreachable!()
-        }
     }
 }
 
@@ -236,10 +240,8 @@ impl TryFrom<TValue> for TInteger {
     #[inline(always)]
     fn try_from(value: TValue) -> Result<Self, Self::Error> {
         Ok(match value.kind() {
-            TValueKind::Int32 => TInteger(value),
-            TValueKind::Object 
-                if value.query_type::<TBigint>().is_some() =>
-                    TInteger(value),
+            TValueKind::Int32 => TInteger(IntegerKind::Int32(value.as_int32())),
+            TValueKind::Object => todo!(),
             _ => return Err(())
         })
     }
@@ -247,7 +249,7 @@ impl TryFrom<TValue> for TInteger {
 
 impl Display for TInteger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.to_rust() {
+        match self.0 {
             IntegerKind::Int32(int) => f.write_fmt(format_args!("{int}")),
             IntegerKind::Bigint(bigint) => bigint.fmt(f)
         }
@@ -272,7 +274,7 @@ macro_rules! impl_int_arithmetic {
 
             #[inline(always)]
             fn $fn(self, rhs: Self) -> Self::Output {
-                match (self.to_rust(), rhs.to_rust()) {
+                match (self.0, rhs.0) {
                     (IntegerKind::Int32(lhs), IntegerKind::Int32(rhs)) =>
                         impl_int_safe!(lhs, rhs, $fn, $($checked_fn)?),
                     (IntegerKind::Int32(lhs), IntegerKind::Bigint(rhs)) =>
@@ -312,7 +314,17 @@ iter_int_arithmetics! {
 impl Into<TValue> for TInteger {
     #[inline(always)]
     fn into(self) -> TValue {
-        self.0
+        match self.0 {
+            IntegerKind::Int32(int) => TValue::int32(int),
+            IntegerKind::Bigint(bigint) =>
+                TValue::object_tagged(bigint, TValueKind::Object)
+        }
+    }
+}
+
+impl Typed for TInteger {
+    fn ttype(vm: &VM) -> GCRef<TType> {
+        todo!()
     }
 }
 
@@ -327,12 +339,17 @@ impl TFloat {
     pub const fn from_float(float: f64) -> Self {
         TFloat(float)
     }
-
 }
 
 impl Into<TValue> for TFloat {
     fn into(self) -> TValue {
         TValue::float(self.0)
+    }
+}
+
+impl Typed for TFloat {
+    fn ttype(vm: &VM) -> GCRef<TType> {
+        todo!()
     }
 }
 
@@ -349,7 +366,12 @@ impl TBool {
     pub const fn from_bool(bool: bool) -> Self {
         TBool(bool)
     }
+}
 
+impl Typed for TBool {
+    fn ttype(vm: &VM) -> GCRef<TType> {
+        todo!()
+    }
 }
 
 impl TryFrom<TValue> for TBool {
@@ -389,7 +411,7 @@ pub struct TString {
 }
 
 impl TString {
-    pub fn as_slice<'a>(self) -> &'a str {
+    pub fn as_slice<'a>(&self) -> &'a str {
         let size = self.size.as_usize().expect("TString sensible size");
         unsafe {
             let bytes = std::slice::from_raw_parts(self.data.as_ptr(), size);
@@ -398,12 +420,12 @@ impl TString {
         }
     }
 
-    pub fn from_slice(slice: &str) -> memory::GCRef<Self> {
+    pub fn from_slice(vm: &VM, slice: &str) -> memory::GCRef<Self> {
         let size = TInteger::from_usize(slice.len());
 
         let length = TInteger::from_usize(slice.chars().count());
 
-        let mut string = Self::ttype().allocate_var_object(
+        let mut string = Self::ttype(vm).allocate_var_object(
             Self { size, length, data: [0u8; 0] },
             slice.len()
         );
@@ -416,8 +438,20 @@ impl TString {
     }
 }
 
+impl Display for TString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_slice())
+    }
+}
+
+impl std::fmt::Debug for TString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_slice())
+    }
+}
+
 impl Typed for TString {
-    fn ttype() -> GCRef<TType> {
+    fn ttype(vm: &VM) -> GCRef<TType> {
         todo!()
     }
 }
@@ -451,7 +485,7 @@ impl TFunction {
 }
 
 impl Typed for TFunction {
-    fn ttype() -> GCRef<TType> {
+    fn ttype(vm: &VM) -> GCRef<TType> {
         todo!()
     }
 }
@@ -465,7 +499,7 @@ struct TObjectHead {
 
 impl TObjectHead {
     fn getattr(&self, attribute: Symbol) -> Option<TValue> {
-        let builder = ahash::RandomState::new();
+        /*let builder = ahash::RandomState::new();
         let mut hasher = builder.build_hasher();
         attribute.get().hash(&mut hasher);
         let hash = hasher.finish();
@@ -483,7 +517,8 @@ impl TObjectHead {
             );
             let idx = self.descriptor.bucket_index(&bucket);
             Some(values[idx])
-        }
+        }*/
+        todo!()
     }
 }
 

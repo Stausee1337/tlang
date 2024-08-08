@@ -1,8 +1,8 @@
-use std::ops::Range;
+use std::{ops::Range, rc::Rc};
 
 use logos::Logos;
 
-use crate::symbol::Symbol;
+use crate::{symbol::Symbol, interpreter::VM, tvalue::TString, memory::GCRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
@@ -21,7 +21,8 @@ impl From<Range<usize>> for Span {
 
 #[derive(Logos, Clone, Copy, Debug)]
 #[logos(skip r"[ \n\t\f]+")]
-pub enum TokenKind<'source> { 
+#[logos(extras = Rc<VM>)]
+pub enum TokenKind { 
     #[regex(r"//[^\n]*")]
     Comment,
 
@@ -99,14 +100,14 @@ pub enum TokenKind<'source> {
     #[token("!")]
     Bang,
 
-    #[regex(r"[^\d\W]\w*", |lex| Symbol::intern(lex.slice()))]
+    #[regex(r"[^\d\W]\w*", |lex| lex.extras.symbols.intern(TString::from_slice(&lex.extras, lex.slice())))]
     Name(Symbol),
     #[regex(r"(?:0(?:_?0)*|[1-9](?:_?[0-9])*)", |lex| lex.slice().parse().ok())]
     Intnumber(u64),
     #[regex(r"(([0-9](?:_?[0-9])*\.(?:[0-9](?:_?[0-9])*)?|\.[0-9](?:_?[0-9])*)([eE][-+]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*[eE][-+]?[0-9](?:_?[0-9])*)", |lex| lex.slice().parse().ok())]
     Floatnumber(f64),
-    #[regex("\"[^\\n\"\\\\]*(?:\\\\.[^\\n\"\\\\]*)*\"", |lex| lex.slice())]
-    String(&'source str),
+    #[regex("\"[^\\n\"\\\\]*(?:\\\\.[^\\n\"\\\\]*)*\"", |lex| TString::from_slice(&lex.extras, lex.slice()))]
+    String(GCRef<TString>),
 
     #[token("const")]
     Const,
@@ -146,13 +147,13 @@ pub enum TokenKind<'source> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Token<'source>(pub TokenKind<'source>, pub Span);
+pub struct Token(pub TokenKind, pub Span);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SyntaxError(pub Span);
 
-pub fn tokenize<'source>(source: &'source str) -> Result<Box<[Token<'source>]>, SyntaxError> {
-    let mut lexer = TokenKind::lexer(source);
+pub fn tokenize<'source>(vm: Rc<VM>, source: &'source str) -> Result<Box<[Token]>, SyntaxError> {
+    let mut lexer = TokenKind::lexer_with_extras(source, vm);
     let mut tokens = Vec::new();
 
     loop {
@@ -167,7 +168,7 @@ pub fn tokenize<'source>(source: &'source str) -> Result<Box<[Token<'source>]>, 
             TokenKind::Comment =>
                 continue,
             TokenKind::String(s) => {
-                snailquote::unescape(s)
+                snailquote::unescape(s.as_slice())
                     .map_err(|_| SyntaxError(span))?;
             }
             _ => ()

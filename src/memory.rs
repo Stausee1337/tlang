@@ -9,12 +9,27 @@ use static_assertions::const_assert_eq;
 
 use crate::interpreter::VM;
 
-#[repr(C)]
-struct AtomHead {
-    size: u32, alive: u16, tag: u16,
+struct State(u16);
+
+impl State {
+    /// The region of memory does not contain any
+    /// used object and is free for allocation
+    const DEAD:   State = State(0);
+    /// The region of memory is considered a live object
+    /// it can be moved or collected (and become DEAD)
+    const ALIVE:  State = State(1);
+    /// The region of memory is considered a live object
+    /// it can be moved but never be collected. It is considered
+    /// an entry point for finding live objects
+    const STATIC: State = State(2);
 }
 
-const_assert_eq!(std::mem::size_of::<AtomHead>(), 8);
+#[repr(C)]
+struct AllocHead {
+    size: u32, state: State, tag: u16,
+}
+
+const_assert_eq!(std::mem::size_of::<AllocHead>(), 8);
 
 #[inline(always)]
 fn align_up(size: usize, align: usize) -> usize {
@@ -81,7 +96,7 @@ impl HeapBlock {
         let end = start.add(Self::PAGE_SIZE);
 
         let head = start.add(self.allocated_bytes); 
-        let body = head.add(std::mem::size_of::<AtomHead>());
+        let body = head.add(std::mem::size_of::<AllocHead>());
 
         let body = align_up(body as usize, align) as *mut u8; /*- (body as usize)*/
 
@@ -93,9 +108,9 @@ impl HeapBlock {
         let prev_size = self.allocated_bytes;
         self.allocated_bytes = (body.add(alloc_size) as usize) - (start as usize);
 
-        *(head as *mut AtomHead) = AtomHead {
+        *(head as *mut AllocHead) = AllocHead {
             size: (self.allocated_bytes - prev_size) as u32,
-            alive: 1,
+            state: State::ALIVE,
             tag: 0
         };
 
@@ -211,6 +226,8 @@ struct AtomTrait<Atom: 'static = ()> {
     atom: &'static Atom
 }
 
+const_assert_eq!(std::mem::size_of::<AtomTrait>(), 16);
+
 impl<A: Atom> AtomTrait<A> {
     fn new(atom: &'static A) -> Self {
         let vtable = &AtomTraitVTable {
@@ -261,8 +278,8 @@ struct Allocation<A: 'static, T>(AtomTrait<A>, T);
 pub struct GCRef<T>(*mut T);
 
 impl<T> GCRef<T> {
-    pub(crate) const unsafe fn from_raw(raw: *mut T) -> Self {
-        GCRef(raw)
+    pub(crate) const unsafe fn from_raw(raw: *const T) -> Self {
+        GCRef(raw as *mut T)
     }
 
     pub const fn as_ptr(&self) -> *mut T {
@@ -282,6 +299,17 @@ impl<T> GCRef<T> {
 
     pub fn vm(&self) -> Rc<VM> {
         self.heap().vm().clone()
+    }
+
+    pub fn make_static(&self) -> GCRef<T> {
+        unsafe {
+            let head = self.as_ptr().byte_sub(
+                std::mem::size_of::<AtomTrait>()
+                + std::mem::size_of::<AllocHead>()
+            ) as *mut AllocHead;
+            (&mut *head).state = State::STATIC;
+        }
+        *self
     }
 
     unsafe fn atom(&self) -> &AtomTrait {
@@ -308,6 +336,18 @@ impl<T> Clone for GCRef<T> {
     }
 }
 impl<T> std::marker::Copy for GCRef<T> {}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for GCRef<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.deref(), f)
+    }
+}
+
+impl<T: std::fmt::Display> std::fmt::Display for GCRef<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.deref(), f)
+    }
+}
 
 impl<T> Deref for GCRef<T> {
     type Target = T;
