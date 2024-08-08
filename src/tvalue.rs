@@ -42,6 +42,15 @@ impl TValue {
     }
 
     #[inline(always)]
+    pub fn object<T: Typed>(object: GCRef<T>) -> Self {
+        debug_assert!(std::ptr::addr_eq(
+            &T::ttype(&object.vm()),
+            object.kind::<TType>().unwrap()
+        ));
+        Self::object_tagged(object, TValueKind::Object)
+    }
+
+    #[inline(always)]
     const fn bool(bool: bool) -> Self {
         let bool = bool as u64;
         TValue(Self::FLOAT_NAN_TAG | TValueKind::Bool as u64 | bool)
@@ -476,41 +485,48 @@ impl GetHash for GCRef<TString> {
     }
 }
 
-#[repr(C)]
-pub struct TFunction {
-    pub name: TValue, /// Optional<TString>
-    pub module: GCRef<TModule>,
-    pub kind: TFnKind
-}
+pub use prelude::{TFunction, TFnKind};
 
-pub enum TFnKind {
-    Function(TRawCode),
-}
+mod prelude {
+    use super::*;
 
-impl GCRef<TFunction> {
-    #[inline(always)]
-    pub fn call<'a>(&self, arguments: &'a mut [TValue]) -> TValue {
-        match &self.kind {
-            TFnKind::Function(code) => {
-                // TODO: check len(arguments) == len(params)
-                code.evaluate(&self.vm(), arguments)
+    #[repr(C)] 
+    pub struct TFunction {
+        pub name: TValue, /// Optional<TString>
+        pub module: GCRef<TModule>,
+        pub kind: TFnKind
+    }
+
+    pub enum TFnKind {
+        Function(TRawCode),
+    }
+
+    impl GCRef<TFunction> {
+        #[inline(always)]
+        pub fn call<'a>(&self, arguments: &'a mut [TValue]) -> TValue {
+            match &self.kind {
+                TFnKind::Function(code) => {
+                    // TODO: check len(arguments) == len(params)
+                    code.evaluate(&self.vm(), arguments)
+                }
             }
+        }
+    }
+
+    impl Into<TValue> for GCRef<TFunction> {
+        #[inline(always)]
+        fn into(self) -> TValue {
+            TValue::object_tagged(self, TValueKind::Function)
+        }
+    }
+
+    impl Typed for TFunction {
+        fn ttype(vm: &VM) -> GCRef<TType> {
+            todo!()
         }
     }
 }
 
-impl Into<TValue> for GCRef<TFunction> {
-    #[inline(always)]
-    fn into(self) -> TValue {
-        TValue::object_tagged(self, TValueKind::Function)
-    }
-}
-
-impl Typed for TFunction {
-    fn ttype(vm: &VM) -> GCRef<TType> {
-        todo!()
-    }
-}
 
 #[repr(C)]
 struct TObjectHead {
