@@ -27,10 +27,10 @@ pub trait GeneratorNode {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult;
 }
 
-pub fn generate_module<'ast>(module: Module<'ast>, generator: &mut BytecodeGenerator) -> Result<GCRef<TFunction>, CodegenErr> {
-    generate_body(module.body, generator)?;
+pub fn generate_module<'ast>(module: Module<'ast>, mut generator: BytecodeGenerator) -> Result<GCRef<TFunction>, CodegenErr> {
+    generate_body(module.body, &mut generator)?;
     generator.emit_return(Operand::null());
-    Ok(todo!())
+    Ok(generator.root_function())
 }
 
 fn generate_body<'ast>(body: &'ast [&'ast Statement], generator: &mut BytecodeGenerator) -> CodegenResult {

@@ -37,32 +37,29 @@ impl Cache {
 }
 
 pub struct SymbolInterner {
-    cache: Mutex<Cache>
+    cache: Cache
 }
 
 impl SymbolInterner {
     pub fn new() -> Self {
         Self {
-            cache: Mutex::new(Cache::new())
+            cache: Cache::new()
         }
     }
 
     pub fn intern(&mut self, str: GCRef<TString>) -> Symbol {
-        let cache = self.cache.get_mut().unwrap();
-        Symbol(cache.cache(str) as u32)
+        Symbol(self.cache.cache(str) as u32)
     }
 
     pub fn hash(&self, symbol: Symbol) -> u64 {
-        let cache = self.cache.lock().unwrap();
-        let Some(cached) = cache.query(symbol.0 as usize) else {
+        let Some(cached) = self.cache.query(symbol.0 as usize) else {
             panic!("Invalid symbol");
         };
         cached.1
     }
 
     pub fn get(&self, symbol: Symbol) -> GCRef<TString> {
-        let cache = self.cache.lock().unwrap();
-        let Some(cached) = cache.query(symbol.0 as usize) else {
+        let Some(cached) = self.cache.query(symbol.0 as usize) else {
             panic!("Invalid symbol");
         };
         cached.0

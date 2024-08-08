@@ -1,4 +1,4 @@
-use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, fmt::Display, u64, any::TypeId};
+use std::{mem::transmute, fmt::Display, u64, any::TypeId};
 
 
 use hashbrown::raw::RawTable;
@@ -59,7 +59,7 @@ impl TValue {
     }
 
     #[inline(always)]
-    const fn object_tagged<T>(object: memory::GCRef<T>, kind: TValueKind) -> Self {
+    const fn object_tagged<T>(object: GCRef<T>, kind: TValueKind) -> Self {
         // TODO: use object.as_ptr() instead
         let object: u64 = unsafe { transmute(object) };
         assert!(object & (!Self::NAN_VALUE_MASK) == 0);
@@ -67,7 +67,7 @@ impl TValue {
     }
 
     #[inline(always)]
-    const fn string(string: memory::GCRef<TString>) -> Self {
+    const fn string(string: GCRef<TString>) -> Self {
         Self::object_tagged(string, TValueKind::String)
     }
 
@@ -155,8 +155,8 @@ impl TValue {
     }
 
     #[inline(always)]
-    const fn as_object<T>(&self) -> memory::GCRef<T> {
-        unsafe { memory::GCRef::from_raw((self.0 & Self::NAN_VALUE_MASK) as *mut T) }
+    const fn as_object<T>(&self) -> GCRef<T> {
+        unsafe { GCRef::from_raw((self.0 & Self::NAN_VALUE_MASK) as *mut T) }
     }
 }
 
@@ -428,7 +428,7 @@ impl TString {
         }
     }
 
-    pub fn from_slice(vm: &VM, slice: &str) -> memory::GCRef<Self> {
+    pub fn from_slice(vm: &VM, slice: &str) -> GCRef<Self> {
         let size = TInteger::from_usize(slice.len());
 
         let length = TInteger::from_usize(slice.chars().count());
@@ -464,7 +464,7 @@ impl Typed for TString {
     }
 }
 
-impl Into<TValue> for memory::GCRef<TString> {
+impl Into<TValue> for GCRef<TString> {
     fn into(self) -> TValue {
         TValue::string(self)
     }
@@ -496,6 +496,13 @@ impl GCRef<TFunction> {
                 code.evaluate(&self.vm(), arguments)
             }
         }
+    }
+}
+
+impl Into<TValue> for GCRef<TFunction> {
+    #[inline(always)]
+    fn into(self) -> TValue {
+        TValue::object_tagged(self, TValueKind::Function)
     }
 }
 

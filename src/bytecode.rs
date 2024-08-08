@@ -4,7 +4,7 @@ use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCel
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, vm::{VM, TModule}};
+use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed}, symbol::Symbol, parse::Ident, codegen::{self, CodegenErr}, memory::GCRef, vm::{VM, TModule}};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -501,12 +501,9 @@ impl BytecodeGenerator {
         println!("{string}");
 
         let func = TFunction::from_codegen(&self.vm(), func, self.module);
-
-        let result = func.call(&mut [
-            TBool::from_bool(false).into(),
-        ]);
-        let int = result.query_bool();
-        println!("{int:?}");
+        if let Err(crate::vm::GlobalErr::Redeclared(..)) = self.module.set_global(name.symbol, func.into(), true) {
+            todo!("codegen errors that are more like runtime errors? Keep going?");
+        }
 
         Ok(None)
     }
@@ -583,6 +580,10 @@ impl BytecodeGenerator {
 
     pub fn make_float(&mut self, float: f64) -> Operand {
         self.current_fn_mut().descriptor(TFloat::from_float(float))
+    }
+
+    pub fn root_function(self) -> GCRef<TFunction> {
+        TFunction::from_codegen(&self.vm(), self.root_fn, self.module)
     }
 }
 

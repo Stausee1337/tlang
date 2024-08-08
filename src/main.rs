@@ -92,8 +92,8 @@ fn main() -> ExitCode {
         let mut module = TModule::new_from_rust(&vm, modname);
         module.set_source(source.drop_static());
 
-        let mut generator = BytecodeGenerator::new(module);
-        let gen_fn = codegen::generate_module(ast, &mut generator).unwrap();
+        let generator = BytecodeGenerator::new(module);
+        let gen_fn = codegen::generate_module(ast, generator).unwrap();
 
         drop(vm);
 

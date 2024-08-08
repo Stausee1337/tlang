@@ -1,6 +1,6 @@
 use std::{rc::Rc, cell::OnceCell, any::TypeId};
 
-use crate::{memory::{Heap, GCRef, StaticAtom}, symbol::SymbolInterner, tvalue::{TType, self, TString, TValue}};
+use crate::{memory::{Heap, GCRef, StaticAtom}, symbol::{SymbolInterner, Symbol}, tvalue::{TType, self, TString, TValue}};
 
 pub struct VM {
     heap: Box<Heap>,
@@ -54,9 +54,16 @@ impl RustTypeInterner {
     }
 }
 
+pub enum GlobalErr {
+    Redeclared(Symbol),
+    NotFound(Symbol),
+    Constant(Symbol)
+}
+
 pub struct TModule {
     name: GCRef<TString>,
-    source: TValue
+    source: TValue,
+    table: hashbrown::HashTable<(Symbol, TValue, bool)>
 }
 
 impl TModule {
@@ -65,12 +72,53 @@ impl TModule {
         StaticAtom::allocate(vm.heap(), 
             Self {
                 name: modname,
-                source: TValue::null()
+                source: TValue::null(),
+                table: Default::default()
             }
         )
     }
 
     pub fn set_source(&mut self, source: GCRef<TString>) {
         self.source = source.into();
+    }
+}
+
+impl GCRef<TModule> {
+    pub fn set_global(&mut self, name: Symbol, value: TValue, constant: bool) -> Result<(), GlobalErr> {
+        let symbols = self.vm().symbols();
+
+        let Err(..) = self.get_global(name) else {
+            return Err(GlobalErr::Redeclared(name));
+        };
+
+        self.table.insert_unique(
+            symbols.hash(name),
+            (name, value, constant),
+            |value| symbols.hash(value.0)
+        );
+        Ok(())
+    }
+
+    pub fn get_global(&self, name: Symbol) -> Result<TValue, GlobalErr> {
+        self.table.find(
+            self.vm().symbols().hash(name),
+            |entry| entry.0 == name
+        ).map(|entry| entry.1).ok_or(GlobalErr::NotFound(name))
+    }
+
+    pub fn get_global_mut(&mut self, name: Symbol) -> Result<&mut TValue, GlobalErr> {
+        let symbols = self.vm().symbols();
+        let Some(entry) = self.table.find_mut(
+            symbols.hash(name),
+            |entry| entry.0 == name
+        ) else {
+            return Err(GlobalErr::NotFound(name))
+        };
+
+        if entry.2 {
+            return Err(GlobalErr::Constant(name));
+        }
+
+        Ok(&mut entry.1)
     }
 }
