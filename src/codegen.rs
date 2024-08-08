@@ -5,7 +5,7 @@ use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop
 
 use crate::bytecode::{Operand, BytecodeGenerator, CodeLabel, RibKind};
 use crate::symbol::Symbol;
-use crate::tvalue::TString;
+use crate::tvalue::{TString, TFunction};
 
 #[derive(Debug)]
 pub enum CodegenErr {
@@ -27,13 +27,13 @@ pub trait GeneratorNode {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult;
 }
 
-pub fn generate_module<'ast>(module: Module<'ast>, generator: &mut BytecodeGenerator, ) -> CodegenResult {
+pub fn generate_module<'ast>(module: Module<'ast>, generator: &mut BytecodeGenerator) -> Result<GCRef<TFunction>, CodegenErr> {
     generate_body(module.body, generator)?;
     generator.emit_return(Operand::null());
-    Ok(None)
+    Ok(todo!())
 }
 
-pub fn generate_body<'ast>(body: &'ast [&'ast Statement], generator: &mut BytecodeGenerator) -> CodegenResult {
+fn generate_body<'ast>(body: &'ast [&'ast Statement], generator: &mut BytecodeGenerator) -> CodegenResult {
     for stmt in body {
         match stmt {
             Statement::Variable(ref var) if generator.find_rib(RibKind::Module, 1).is_none() =>

@@ -1,6 +1,6 @@
 use std::{rc::Rc, cell::OnceCell, any::TypeId};
 
-use crate::{memory::{Heap, GCRef, StaticAtom}, symbol::SymbolInterner, tvalue::{TType, self}};
+use crate::{memory::{Heap, GCRef, StaticAtom}, symbol::SymbolInterner, tvalue::{TType, self, TString, TValue}};
 
 pub struct VM {
     heap: Box<Heap>,
@@ -51,5 +51,26 @@ impl RustTypeInterner {
     pub fn query(&self, id: TypeId) -> GCRef<TType> {
         *self.0.get(&id).expect(
             &format!("expected query of interned rust type"))
+    }
+}
+
+pub struct TModule {
+    name: GCRef<TString>,
+    source: TValue
+}
+
+impl TModule {
+    pub fn new_from_rust(vm: &VM, modname: &str) -> GCRef<Self> {
+        let modname = TString::from_slice(vm, modname);
+        StaticAtom::allocate(vm.heap(), 
+            Self {
+                name: modname,
+                source: TValue::null()
+            }
+        )
+    }
+
+    pub fn set_source(&mut self, source: GCRef<TString>) {
+        self.source = source.into();
     }
 }

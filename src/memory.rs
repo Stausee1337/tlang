@@ -314,15 +314,27 @@ impl<T> GCRef<T> {
         self.heap().vm().clone()
     }
 
+    pub fn drop_static(&self) -> GCRef<T> {
+        unsafe {
+            let head = self.head();
+            (&mut *head).state = State::ALIVE;
+        }
+        *self
+    }
+
     pub fn make_static(&self) -> GCRef<T> {
         unsafe {
-            let head = self.as_ptr().byte_sub(
-                std::mem::size_of::<AtomTrait>()
-                + std::mem::size_of::<AllocHead>()
-            ) as *mut AllocHead;
+            let head = self.head();
             (&mut *head).state = State::STATIC;
         }
         *self
+    }
+
+    unsafe fn head(&self) -> *mut AllocHead {
+        self.as_ptr().byte_sub(
+            std::mem::size_of::<AtomTrait>()
+            + std::mem::size_of::<AllocHead>()
+        ) as *mut AllocHead
     }
 
     unsafe fn atom(&self) -> &AtomTrait {

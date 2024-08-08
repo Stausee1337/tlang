@@ -1,8 +1,8 @@
-use std::{mem::transmute, fmt::Debug};
+use std::{fmt::Debug, rc::Rc};
 
 use lalrpop_util::ParseError;
 
-use crate::{lexer::{Token, Span, SyntaxError}, symbol::Symbol, memory::GCRef, tvalue::TString};
+use crate::{lexer::{Token, Span, SyntaxError, tokenize, self}, symbol::Symbol, memory::GCRef, tvalue::TString};
 use tlang_macros::GeneratorNode;
 
 #[derive(Debug, Copy, Clone)]
@@ -208,20 +208,20 @@ pub struct Lambda<'ast> {
     pub span: Span
 }
 
-pub struct ParseContext {
-    nodes: bumpalo::Bump,
+pub struct ParseContext<'ast> {
+    nodes: &'ast bumpalo::Bump,
     tokens: Box<[Token]>
 }
 
-impl ParseContext {
-    pub fn new(tokens: Box<[Token]>) -> Self {
+impl<'ast> ParseContext<'ast> {
+    pub fn new(tokens: Box<[Token]>, arena: &'ast bumpalo::Bump) -> Self {
         Self {
             tokens,
-            nodes: bumpalo::Bump::new(),
+            nodes: arena
         }
     }
 
-    pub fn parse<'ast>(&'ast self) -> Result<Module<'ast>, SyntaxError> {
+    pub fn parse(&self) -> Result<Module<'ast>, SyntaxError> {
         internal::ModuleParser::new()
             .parse(self, self.tokens
                 .into_iter()
@@ -229,18 +229,16 @@ impl ParseContext {
             .map_err(|err| SyntaxError(as_span(err)))
     }
 
-    pub fn alloc<'ast, T>(&'ast self, node: T) -> &'ast T {
-        unsafe {
-            transmute(self.nodes.alloc(node))
-        }
+    pub fn alloc<T>(&self, node: T) -> &'ast T {
+        self.nodes.alloc(node)
     }
 
-    pub fn slice<'ast, T>(&'ast self, vec: Vec<T>) -> &'ast [T] {
+    pub fn slice<T>(&self, vec: Vec<T>) -> &'ast [T] {
         let slice = vec.into_boxed_slice();
         self.alloc(slice)
     }
 
-    pub fn to_params<'ast>(&'ast self, exprs: &'ast [&'ast Expression]) -> Option<&'ast [&'ast Ident]> {
+    pub fn to_params(&self, exprs: &'ast [&'ast Expression]) -> Option<&'ast [&'ast Ident]> {
         let mut idents = Vec::new();
         for expr in exprs {
             match expr {
@@ -272,6 +270,15 @@ fn as_span<T: Debug, E: Debug>(error: ParseError<usize, T, E>) -> Span {
     }
 }
 
+pub fn parse_from_tstring<'ast>(
+    vm: Rc<crate::vm::VM>,
+    source: GCRef<TString>,
+    arena: &'ast bumpalo::Bump,
+) -> Result<Module<'ast>, SyntaxError> {
+    let tokens = lexer::tokenize(vm, source.as_slice())?;
+    let ctx = ParseContext::new(tokens, arena);
+    ctx.parse()
+}
 
 mod internal {
     include!(concat!(env!("OUT_DIR"), "/grammar.rs"));

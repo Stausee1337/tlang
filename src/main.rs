@@ -1,7 +1,11 @@
 use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 
+use bumpalo::Bump;
 use getopts::{Options, ParsingStyle};
+use memory::GCRef;
 use parse::ParseContext;
+use tvalue::{TFunction, TValue, TString};
+use vm::TModule;
 
 use crate::bytecode::{BytecodeGenerator, FunctionDisassembler};
 
@@ -56,11 +60,6 @@ fn main() -> ExitCode {
     }
 
     let vm = vm::VM::init();
-    /*let result = allocator_api2::boxed::Box::<AlignedStruct, &Heap>::new_in(
-        AlignedStruct {
-            data: [0x55; 64]
-        },
-        &interp.heap);*/
 
     let input = if !matches.free.is_empty() {
         matches.free
@@ -71,7 +70,6 @@ fn main() -> ExitCode {
     if let Some(filename) = input.first() {
         let mut filepath = std::env::current_dir().unwrap();
         filepath.push(filename);
-        // let filename = PathBuf::from_str(filename).unwrap();
         let contents = match read_entire_file(&filepath) {
             Ok(s) => s,
             Err(err) => {
@@ -80,21 +78,22 @@ fn main() -> ExitCode {
             }
         };
 
-        let tokens = lexer::tokenize(vm.clone(), &contents).unwrap();
-        
-        let ctx = ParseContext::new(tokens);
-        let module = ctx.parse().unwrap();
+        let source = TString::from_slice(&vm, &contents).make_static();
 
-        let mut generator = BytecodeGenerator::new();
-        codegen::generate_module(module, &mut generator).unwrap();
+        let arena = Bump::new();
+        let ast = parse::parse_from_tstring(vm.clone(), source, &arena).unwrap();
 
-        let mut string = String::new();
-        let function = generator.current_fn();
+        let modname = if let Some(idx) = filename.find('.') {
+            filename.split_at(idx).0
+        } else {
+            filename
+        };
 
-        FunctionDisassembler::dissassemble(function, &mut string)
-            .unwrap();
+        let mut module = TModule::new_from_rust(&vm, modname);
+        module.set_source(source.drop_static());
 
-        println!("{}", string);
+        let mut generator = BytecodeGenerator::new(module);
+        let gen_fn = codegen::generate_module(ast, &mut generator).unwrap();
 
         drop(vm);
 

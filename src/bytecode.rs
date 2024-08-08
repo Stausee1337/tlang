@@ -4,7 +4,7 @@ use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCel
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, vm::VM};
+use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, vm::{VM, TModule}};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -304,7 +304,7 @@ impl Rib {
 }
 
 pub struct CGFunction {
-    name: Symbol,
+    name: Option<Symbol>,
     num_params: u32,
     num_locals: u32,
     descriptor_table: IndexVec<Descriptor, TValue>,
@@ -318,7 +318,7 @@ impl CGFunction {
 
     fn module() -> Self {
         Self {
-            name: todo!(),
+            name: None,
             ribs: vec![Rib::new(RibKind::Module)],
             num_params: 0,
             num_locals: 0,
@@ -331,7 +331,7 @@ impl CGFunction {
 
     fn function(name: Symbol, _closure: bool, params: &[&Ident]) -> Result<Self, Ident> {
         let mut rv = Self {
-            name,
+            name: Some(name),
             num_params: params.len() as u32,
             ribs: vec![Rib::new(RibKind::Function)],
             register_allocator: RegisterAllocator::new(),
@@ -454,6 +454,7 @@ impl CGFunction {
 }
 
 pub struct BytecodeGenerator {
+    module: GCRef<TModule>,
     root_fn: CGFunction,
     function_stack: Vec<CGFunction>
 }
@@ -461,15 +462,16 @@ pub struct BytecodeGenerator {
 pub struct ClosureScope;
 
 impl BytecodeGenerator {
-    pub fn new() -> Self {
+    pub fn new(module: GCRef<TModule>) -> Self {
         Self {
+            module,
             root_fn: CGFunction::module(),
             function_stack: Default::default()
         }
     }
 
     pub fn vm(&self) -> Rc<VM> {
-        todo!()
+        self.module.vm()
     }
 
     pub fn current_fn(&self) -> &CGFunction {
@@ -498,7 +500,7 @@ impl BytecodeGenerator {
         FunctionDisassembler::dissassemble(&func, &mut string).unwrap();
         println!("{string}");
 
-        let func = TFunction::from_codegen(&self.vm(), func);
+        let func = TFunction::from_codegen(&self.vm(), func, self.module);
 
         let result = func.call(&mut [
             TBool::from_bool(false).into(),
@@ -585,15 +587,17 @@ impl BytecodeGenerator {
 }
 
 impl TFunction {
-    pub fn from_codegen(vm: &VM, func: CGFunction) -> GCRef<Self> {
+    pub fn from_codegen(vm: &VM, func: CGFunction, module: GCRef<TModule>) -> GCRef<Self> {
         let mut codesize = 0;
         for block in &func.blocks {
             codesize += block.data.len();
         }
 
+        let name = func.name.map(|name| vm.symbols().get(name));
         let (function, tcode) = TFunction::create_presized(
             vm,
-            vm.symbols().get(func.name),
+            name,
+            module,
             codesize,
             func.num_params,
             func.register_allocator.0,
@@ -621,7 +625,8 @@ impl TFunction {
 
     fn create_presized(
         vm: &VM,
-        name: GCRef<TString>,
+        name: Option<GCRef<TString>>,
+        module: GCRef<TModule>,
         codesize: usize,
         params: u32,
         registers: u32,
@@ -631,10 +636,18 @@ impl TFunction {
         let extra_size = codesize
             + descriptors as usize * std::mem::size_of::<TValue>()
             + blocks as usize * std::mem::size_of::<u32>();
+
+        let name = if let Some(name) = name {
+            name.into()
+        } else {
+            TValue::null()
+        };
         let code = TRawCode::new(codesize, params, registers, descriptors, blocks);
+
         let mut function = Self::ttype(vm).allocate_var_object(
             Self {
                 name,
+                module,
                 kind: TFnKind::Function(code)
             },
             extra_size
@@ -674,24 +687,6 @@ impl TRawCode {
             num_blocks: TInteger::from_usize(blocks as usize),
             data: [0u8; 0]
         }
-    }
- 
-    fn create_presized(
-        codesize: usize,
-        params: u32,
-        registers: u32,
-        descriptors: u32,
-        blocks: u32
-    ) -> GCRef<Self> {
-        let extra_size = codesize
-            + descriptors as usize * std::mem::size_of::<TValue>()
-            + blocks as usize * std::mem::size_of::<u32>();
-        /*let interpreter = get_interpeter();
-        interpreter.block_allocator.allocate_var_atom(
-            TRawCode::new(codesize, params, registers, descriptors, blocks),
-            extra_size
-        )*/
-        todo!()
     }
 
     pub fn registers(&self) -> usize {

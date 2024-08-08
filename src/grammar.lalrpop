@@ -5,7 +5,7 @@ use crate::{
     tvalue::TString,
 };
 
-grammar<'ast>(ctx: &'ast parse::ParseContext);
+grammar<'ctx, 'ast>(ctx: &'ctx parse::ParseContext<'ast>);
 
 pub Module: parse::Module<'ast> = {
     <start:@L> <body:Body> <end:@R> => parse::Module {
