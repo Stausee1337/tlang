@@ -74,7 +74,7 @@ impl TValue {
     /// Public Helpers 
 
     #[inline(always)]
-    pub fn query_type<T: Typed>(&self, vm: &VM) -> Option<GCRef<T>> {
+    pub fn query_object<T: Typed>(&self, vm: &VM) -> Option<GCRef<T>> {
         if let TValueKind::Object = self.kind() {
             let object_type = self.ttype(vm);
             if std::ptr::addr_eq(object_type.as_ptr(), T::ttype(vm).as_ptr()) {
@@ -82,6 +82,35 @@ impl TValue {
             }
         }
         None
+    }
+
+    #[inline(always)]
+    pub fn query_integer(&self, vm: &VM) -> Option<TInteger> {
+        match self.kind() {
+            TValueKind::Int32 =>
+                Some(TInteger(IntegerKind::Int32(self.as_int32()))),
+            TValueKind::Object =>
+                Some(TInteger(IntegerKind::Bigint(self.query_object::<TBigint>(vm)?))),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn query_float(&self) -> Option<TFloat> {
+        match self.kind() {
+            TValueKind::Float =>
+                Some(TFloat(self.as_float())),
+            _ => None
+        }
+    }
+
+    #[inline(always)]
+    pub fn query_bool(&self) -> Option<TBool> {
+        match self.kind() {
+            TValueKind::Bool =>
+                Some(TBool(self.as_bool())),
+            _ => None
+        }
     }
 
     #[inline(always)]
@@ -234,19 +263,6 @@ impl TInteger {
     }
 }
 
-impl TryFrom<TValue> for TInteger {
-    type Error = ();
-
-    #[inline(always)]
-    fn try_from(value: TValue) -> Result<Self, Self::Error> {
-        Ok(match value.kind() {
-            TValueKind::Int32 => TInteger(IntegerKind::Int32(value.as_int32())),
-            TValueKind::Object => todo!(),
-            _ => return Err(())
-        })
-    }
-}
-
 impl Display for TInteger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
@@ -374,18 +390,6 @@ impl Typed for TBool {
     }
 }
 
-impl TryFrom<TValue> for TBool {
-    type Error = ();
-
-    #[inline(always)]
-    fn try_from(value: TValue) -> Result<Self, Self::Error> {
-        match value.kind() {
-            TValueKind::Bool => Ok(TBool(value.as_bool())),
-            _ => Err(())
-        }
-    }
-}
-
 impl Into<TValue> for TBool {
     #[inline(always)]
     fn into(self) -> TValue {
@@ -400,6 +404,12 @@ impl Display for TBool {
         } else {
             "false"
         })
+    }
+}
+
+impl std::fmt::Debug for TBool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
     }
 }
 
@@ -472,13 +482,13 @@ pub enum TFnKind {
     Function(TRawCode),
 }
 
-impl TFunction {
+impl GCRef<TFunction> {
     #[inline(always)]
     pub fn call<'a>(&self, arguments: &'a mut [TValue]) -> TValue {
         match &self.kind {
             TFnKind::Function(code) => {
                 // TODO: check len(arguments) == len(params)
-                code.evaluate(arguments)
+                code.evaluate(&self.vm(), arguments)
             }
         }
     }

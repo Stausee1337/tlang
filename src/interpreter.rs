@@ -29,6 +29,7 @@ impl VM {
 
 struct ExecutionEnvironment<'l> {
     stream: CodeStream<'l>,
+    vm: &'l VM,
     descriptors: &'l [TValue],
     arguments: &'l mut [TValue],
     registers: &'l mut [TValue]
@@ -52,8 +53,8 @@ trait DecodeDeref {
 }
 
 impl TRawCode {
-    pub fn evaluate<'a>(&self, arguments: &'a mut [TValue]) -> TValue {
-        self.with_environment(arguments, |env| {
+    pub fn evaluate<'a>(&self, vm: &VM, arguments: &'a mut [TValue]) -> TValue {
+        self.with_environment(vm, arguments, |env| {
             loop {
                 match OpCode::decode(env.stream.current()) {
                     OpCode::Mov => {
@@ -75,7 +76,7 @@ impl TRawCode {
                     }
                     OpCode::BranchIf => {
                         decode!(BranchIf { condition, true_target, false_target } in env);
-                        if impls::truthy(condition) {
+                        if impls::truthy(condition, env) {
                             env.stream.jump(true_target);
                         } else {
                             env.stream.jump(false_target);
@@ -95,11 +96,12 @@ impl TRawCode {
     }
 
     fn with_environment<'a, F: FnOnce(&mut ExecutionEnvironment) -> TValue>(
-        &self, arguments: &'a mut [TValue], executor: F) -> TValue {
+        &self, vm: &VM, arguments: &'a mut [TValue], executor: F) -> TValue {
         debug_assert!(arguments.len() == self.params());
 
         let mut registers = vec![TValue::null(); self.registers()];
         let mut env = ExecutionEnvironment {
+            vm,
             stream: CodeStream::from_raw(self),
             descriptors: self.descriptors(),
             arguments,
@@ -202,8 +204,8 @@ mod impls {
     use super::*;
     use std::ops::*;
 
-    pub fn truthy(bool: TValue) -> bool {
-        if let Ok(tbool) = TBool::try_from(bool) {
+    pub fn truthy(bool: TValue, env: &ExecutionEnvironment) -> bool {
+        if let Some(tbool) = bool.query_bool() {
             return tbool.as_bool();
         }
         todo!()
@@ -213,9 +215,10 @@ mod impls {
         ($fnname: ident, $inname: ident) => {
             #[inline(always)]
             pub fn $fnname(env: &mut ExecutionEnvironment) {
+                let vm = env.vm;
                 decode!($inname { lhs, rhs, mut dst } in env);
-                let lhs_int: Option<TInteger> = TInteger::try_from(lhs).ok();
-                let rhs_int: Option<TInteger> = TInteger::try_from(rhs).ok();
+                let lhs_int: Option<TInteger> = lhs.query_integer(vm);
+                let rhs_int: Option<TInteger> = rhs.query_integer(vm);
                 if let Some((lhs, rhs)) = lhs_int.zip(rhs_int) {
                     *dst = TInteger::$fnname(lhs, rhs).into();
                     return;

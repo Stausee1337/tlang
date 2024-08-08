@@ -503,8 +503,8 @@ impl BytecodeGenerator {
         let result = func.call(&mut [
             TBool::from_bool(false).into(),
         ]);
-        let int = TBool::try_from(result).unwrap();
-        println!("{int}");
+        let int = result.query_bool();
+        println!("{int:?}");
 
         Ok(None)
     }
