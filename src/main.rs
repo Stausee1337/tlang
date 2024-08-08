@@ -33,19 +33,6 @@ struct AlignedStruct {
     data: [u8; 64],
 }*/
 
-struct NonsenseAtom;
-
-impl memory::Atom for NonsenseAtom {
-    type Child = ();
-    type Parent = ();
-
-    fn iterate_children(&self, p: memory::GCRef<Self::Parent>) -> &dyn Iterator<Item = memory::GCRef<Self::Child>> {
-        todo!()
-    }
-}
-
-const NONSENSE: &'static NonsenseAtom = &NonsenseAtom;
-
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let program = args[0].clone();
@@ -75,10 +62,6 @@ fn main() -> ExitCode {
         },
         &interp.heap);*/
 
-    let int = vm.heap().allocate_atom(NONSENSE, 12i32);
-
-    assert!(std::ptr::addr_eq(vm.as_ref(), int.vm().as_ref()));
-
     let input = if !matches.free.is_empty() {
         matches.free
     } else {
@@ -99,7 +82,7 @@ fn main() -> ExitCode {
 
         let tokens = lexer::tokenize(vm.clone(), &contents).unwrap();
         
-        println!("Tokenized {}", vm.symbols.get(symbol::test()));
+        println!("Tokenized {}", vm.symbols().get(symbol::test()));
 
         let ctx = ParseContext::new(tokens);
         let module = ctx.parse().unwrap();

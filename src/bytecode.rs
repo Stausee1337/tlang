@@ -593,7 +593,7 @@ impl TFunction {
 
         let (function, tcode) = TFunction::create_presized(
             vm,
-            vm.symbols.get(func.name),
+            vm.symbols().get(func.name),
             codesize,
             func.num_params,
             func.register_allocator.0,

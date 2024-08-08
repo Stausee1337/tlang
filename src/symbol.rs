@@ -1,4 +1,4 @@
-use std::{fmt::Debug, cell::RefCell};
+use std::{fmt::Debug, cell::RefCell, sync::Mutex};
 
 use hashbrown::raw::RawTable;
 
@@ -37,23 +37,23 @@ impl Cache {
 }
 
 pub struct SymbolInterner {
-    cache: RefCell<Cache>
+    cache: Mutex<Cache>
 }
 
 impl SymbolInterner {
     pub fn new() -> Self {
         Self {
-            cache: RefCell::new(Cache::new())
+            cache: Mutex::new(Cache::new())
         }
     }
 
-    pub fn intern(&self, str: GCRef<TString>) -> Symbol {
-        let mut cache = self.cache.borrow_mut();
+    pub fn intern(&mut self, str: GCRef<TString>) -> Symbol {
+        let cache = self.cache.get_mut().unwrap();
         Symbol(cache.cache(str) as u32)
     }
 
     pub fn hash(&self, symbol: Symbol) -> u64 {
-        let cache = self.cache.borrow();
+        let cache = self.cache.lock().unwrap();
         let Some(cached) = cache.query(symbol.0 as usize) else {
             panic!("Invalid symbol");
         };
@@ -61,7 +61,7 @@ impl SymbolInterner {
     }
 
     pub fn get(&self, symbol: Symbol) -> GCRef<TString> {
-        let cache = self.cache.borrow();
+        let cache = self.cache.lock().unwrap();
         let Some(cached) = cache.query(symbol.0 as usize) else {
             panic!("Invalid symbol");
         };

@@ -213,11 +213,23 @@ unsafe impl Allocator for Heap {
     unsafe fn deallocate(&self, _ptr: NonNull<u8>, _layout: Layout) { }
 }
 
-pub trait Atom: Send + Sync + 'static {
-    type Child;
-    type Parent;
+pub struct StaticAtom;
+static STATIC_ALLOCATOR: &'static StaticAtom = &StaticAtom;
 
-    fn iterate_children(&self, p: GCRef<Self::Parent>) -> &dyn Iterator<Item = GCRef<Self::Child>>;
+impl Atom for StaticAtom {
+    fn iterate_children(&self, _p: *const ()) -> Box<dyn Iterator<Item = *const ()>> {
+        Box::new(std::iter::empty())
+    }
+}
+
+impl StaticAtom {
+    pub fn allocate<T>(heap: &Heap, object: T) -> GCRef<T> {
+        heap.allocate_atom(STATIC_ALLOCATOR, object)
+    }
+}
+
+pub trait Atom: Send + Sync + 'static {
+    fn iterate_children(&self, p: *const ()) -> Box<dyn Iterator<Item = *const ()>>;
 }
 
 #[repr(C)]
@@ -250,18 +262,15 @@ impl AtomTrait {
     }
 }
 
-unsafe fn refcast<Src, Dst>(a: &Src) -> &Dst {
-    transmute::<&Src, &Dst>(a)
-}
-
 #[repr(C)]
 struct AtomTraitVTable {
     atom_downcast: unsafe fn(&'_ AtomTrait, TypeId) -> Option<&'_ ()>,
-    atom_ref: unsafe fn(&'_ AtomTrait) -> &'_ dyn Atom<Child = (), Parent = ()>,
+    atom_ref: unsafe fn(&'_ AtomTrait) -> &'_ dyn Atom,
 }
 
-unsafe fn atom_ref<A: Atom>(a: &AtomTrait) -> &dyn Atom<Child = (), Parent = ()> {
-    todo!()
+unsafe fn atom_ref<A: Atom>(a: &AtomTrait) -> &dyn Atom {
+    let unerased_a = refcast::<AtomTrait, AtomTrait<A>>(a);
+    unerased_a.atom
 }
 
 unsafe fn atom_downcast<A: Atom>(a: &'_ AtomTrait, target: TypeId) -> Option<&'_ ()> {
@@ -269,6 +278,10 @@ unsafe fn atom_downcast<A: Atom>(a: &'_ AtomTrait, target: TypeId) -> Option<&'_
         return Some(a.atom);
     }
     None
+}
+
+unsafe fn refcast<Src, Dst>(a: &Src) -> &Dst {
+    transmute::<&Src, &Dst>(a)
 }
 
 #[repr(C)]

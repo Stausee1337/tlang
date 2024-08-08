@@ -198,10 +198,7 @@ impl GCRef<TType> {
 }
 
 impl Atom for TType {
-    type Child = ();
-    type Parent = ();
-
-    fn iterate_children(&self, p: GCRef<Self::Parent>) -> &dyn Iterator<Item = GCRef<Self::Child>> {
+    fn iterate_children(&self, p: *const ()) -> Box<dyn Iterator<Item = *const ()>> {
         todo!()
     }
 }
@@ -209,10 +206,7 @@ impl Atom for TType {
 pub struct TypeCollector;
 
 impl Atom for TypeCollector {
-    type Child = ();
-    type Parent = TType;
-
-    fn iterate_children(&self, p: GCRef<Self::Parent>) -> &dyn Iterator<Item = GCRef<Self::Child>> {
+    fn iterate_children(&self, p: *const ()) -> Box<dyn Iterator<Item = *const ()>> {
         todo!()
     }
 }

@@ -1,11 +1,11 @@
-use std::rc::Rc;
+use std::{rc::Rc, cell::OnceCell};
 
-use crate::{memory::Heap, symbol::SymbolInterner};
+use crate::{memory::{Heap, GCRef, StaticAtom}, symbol::SymbolInterner};
 
 pub struct VM {
     heap: Box<Heap>,
     pub hash_state: ahash::RandomState,
-    pub symbols: SymbolInterner
+    pub symbols: OnceCell<GCRef<SymbolInterner>>
 }
 
 impl VM {
@@ -16,7 +16,7 @@ impl VM {
             VM {
                 hash_state,
                 heap,
-                symbols: SymbolInterner::new(),
+                symbols: OnceCell::new(),
             }
         });
         vm
@@ -24,5 +24,10 @@ impl VM {
 
     pub fn heap(&self) -> &Heap {
         &self.heap
+    }
+
+    pub fn symbols(&self) -> GCRef<SymbolInterner> {
+        *self.symbols.get_or_init(
+            || StaticAtom::allocate(self.heap(), SymbolInterner::new()))
     }
 }

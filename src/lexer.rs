@@ -100,7 +100,7 @@ pub enum TokenKind {
     #[token("!")]
     Bang,
 
-    #[regex(r"[^\d\W]\w*", |lex| lex.extras.symbols.intern(TString::from_slice(&lex.extras, lex.slice())))]
+    #[regex(r"[^\d\W]\w*", |lex| lex.extras.symbols().intern(TString::from_slice(&lex.extras, lex.slice())))]
     Name(Symbol),
     #[regex(r"(?:0(?:_?0)*|[1-9](?:_?[0-9])*)", |lex| lex.slice().parse().ok())]
     Intnumber(u64),
