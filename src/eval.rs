@@ -1,34 +1,8 @@
 
-use std::{rc::Rc, hash::BuildHasher};
 
 use tlang_macros::decode;
 
-use crate::{memory::Heap, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register, CodeLabel}, symbol::SymbolInterner};
-
-pub struct VM {
-    heap: Box<Heap>,
-    pub hash_state: ahash::RandomState,
-    pub symbols: SymbolInterner
-}
-
-impl VM {
-    pub fn init() -> Rc<VM> {
-        let vm = Rc::new_cyclic(|me| {
-            let heap = Box::new(Heap::init(me.clone()));
-            let hash_state = ahash::RandomState::new();
-            VM {
-                hash_state,
-                heap,
-                symbols: SymbolInterner::new(),
-            }
-        });
-        vm
-    }
-
-    pub fn heap(&self) -> &Heap {
-        &self.heap
-    }
-}
+use crate::{vm::VM, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register, CodeLabel}};
 
 struct ExecutionEnvironment<'l> {
     stream: CodeStream<'l>,

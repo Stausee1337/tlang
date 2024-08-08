@@ -2,7 +2,7 @@ use std::{ops::Range, rc::Rc};
 
 use logos::Logos;
 
-use crate::{symbol::Symbol, eval::VM, tvalue::TString, memory::GCRef};
+use crate::{symbol::Symbol, vm::VM, tvalue::TString, memory::GCRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {

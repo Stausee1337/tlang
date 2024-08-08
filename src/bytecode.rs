@@ -4,7 +4,7 @@ use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCel
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, eval::VM};
+use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, vm::VM};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]

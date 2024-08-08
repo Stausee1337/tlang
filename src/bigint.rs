@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, ops::Index, fmt::Display};
 
-use crate::{tvalue::{TInteger, TType, Typed}, memory::GCRef, eval::VM};
+use crate::{tvalue::{TInteger, TType, Typed}, memory::GCRef, vm::VM};
 
 #[repr(u8)]
 #[derive(Clone, Copy)]

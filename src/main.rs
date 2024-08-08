@@ -12,6 +12,7 @@ mod codegen;
 mod bytecode;
 mod tvalue;
 mod eval;
+mod vm;
 mod memory;
 mod bigint;
 
@@ -67,7 +68,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let vm = eval::VM::init();
+    let vm = vm::VM::init();
     /*let result = allocator_api2::boxed::Box::<AlignedStruct, &Heap>::new_in(
         AlignedStruct {
             data: [0x55; 64]
