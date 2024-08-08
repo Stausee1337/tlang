@@ -82,8 +82,6 @@ fn main() -> ExitCode {
 
         let tokens = lexer::tokenize(vm.clone(), &contents).unwrap();
         
-        println!("Tokenized {}", vm.symbols().get(symbol::test()));
-
         let ctx = ParseContext::new(tokens);
         let module = ctx.parse().unwrap();
 

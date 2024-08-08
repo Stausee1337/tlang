@@ -1,38 +1,38 @@
-use std::{fmt::Debug, cell::RefCell, sync::Mutex};
+use std::{fmt::Debug, sync::Mutex};
 
 use hashbrown::raw::RawTable;
 
 use crate::{memory::GCRef, tvalue::{TString, GetHash}};
 
 struct Cache {
-    table: RawTable<(GCRef<TString>, u64)>
+    table: RawTable<usize>,
+    entries: Vec<(GCRef<TString>, u64)>
 }
 
 impl Cache {
     fn new() -> Self {
         Cache {
-            table: RawTable::new()
+            table: RawTable::new(),
+            entries: Vec::new()
         }
     }
 
     pub fn cache(&mut self, str: GCRef<TString>) -> usize {
         let hash = str.get_hash_code();
-        if let Some(bucket) = self.table.find(hash, |val| val.0 == str) {
-            return unsafe { self.table.bucket_index(&bucket) };
+        if let Some(bucket) = self.table.find(hash, |idx| {
+            self.entries[*idx].1 == hash
+        }) {
+            return unsafe { *bucket.as_ref() };
         }
         let str = str.make_static();
-        let bucket = self.table.insert(hash, (str, hash), |val| val.1);
-        unsafe { self.table.bucket_index(&bucket) }
+        let idx = self.entries.len();
+        self.entries.push((str, hash));
+        self.table.insert(hash, idx, |idx| self.entries[*idx].1);
+        idx
     }
 
     pub fn query(&self, idx: usize) -> Option<&(GCRef<TString>, u64)> {
-        if idx < self.table.buckets() {
-            unsafe {
-                let bucket = self.table.bucket(idx);
-                return Some(bucket.as_ref())
-            }
-        }
-        None
+        self.entries.get(idx)
     }
 }
 
@@ -71,10 +71,6 @@ impl SymbolInterner {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Symbol(u32);
-
-pub fn test() -> Symbol {
-    Symbol(0)
-}
 
 impl Debug for Symbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

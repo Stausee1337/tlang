@@ -1,4 +1,4 @@
-use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, fmt::Display, u64};
+use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, fmt::Display, u64, any::TypeId};
 
 
 use hashbrown::raw::RawTable;
@@ -460,7 +460,7 @@ impl std::fmt::Debug for TString {
 
 impl Typed for TString {
     fn ttype(vm: &VM) -> GCRef<TType> {
-        todo!()
+        vm.types().query(TypeId::of::<Self>())
     }
 }
 
