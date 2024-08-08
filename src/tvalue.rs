@@ -1,9 +1,9 @@
-use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, fmt::Display};
+use std::{mem::transmute, hash::{BuildHasher, Hash, Hasher}, fmt::Display, u64};
 
 
 use hashbrown::raw::RawTable;
 
-use crate::{memory::{self, GCRef, Atom, Heap}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, interpreter::VM};
+use crate::{memory::{self, GCRef, Atom, Heap}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, eval::VM};
 
 #[repr(u64)]
 #[derive(Debug)]
@@ -162,6 +162,10 @@ impl TValue {
 
 pub trait Typed {
     fn ttype(vm: &VM) -> GCRef<TType>;
+}
+
+pub trait GetHash {
+    fn get_hash_code(&self) -> u64;
 }
 
 #[repr(C)]
@@ -469,6 +473,12 @@ impl Typed for TString {
 impl Into<TValue> for memory::GCRef<TString> {
     fn into(self) -> TValue {
         TValue::string(self)
+    }
+}
+
+impl GetHash for GCRef<TString> {
+    fn get_hash_code(&self) -> u64 {
+        self.vm().hash_state.hash_one(self.as_slice())
     }
 }
 

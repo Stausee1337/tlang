@@ -7,7 +7,7 @@ use rustix::{
 use allocator_api2::alloc::{Allocator, AllocError};
 use static_assertions::const_assert_eq;
 
-use crate::interpreter::VM;
+use crate::eval::VM;
 
 struct State(u16);
 

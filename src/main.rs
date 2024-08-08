@@ -11,7 +11,7 @@ mod parse;
 mod codegen;
 mod bytecode;
 mod tvalue;
-mod interpreter;
+mod eval;
 mod memory;
 mod bigint;
 
@@ -67,7 +67,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let vm = interpreter::VM::init();
+    let vm = eval::VM::init();
     /*let result = allocator_api2::boxed::Box::<AlignedStruct, &Heap>::new_in(
         AlignedStruct {
             data: [0x55; 64]
@@ -97,6 +97,8 @@ fn main() -> ExitCode {
         };
 
         let tokens = lexer::tokenize(vm.clone(), &contents).unwrap();
+        
+        println!("Tokenized {}", vm.symbols.get(symbol::test()));
 
         let ctx = ParseContext::new(tokens);
         let module = ctx.parse().unwrap();
