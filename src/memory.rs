@@ -114,7 +114,7 @@ impl HeapBlock {
             tag: 0
         };
 
-        println!("{layout:?}, {alloc_size}, {}", self.allocated_bytes);
+        println!("{layout:?}, {alloc_size}, {} {:p}", self.allocated_bytes, body);
 
         Some(body)
     }
@@ -234,11 +234,12 @@ pub trait Atom: Send + Sync + 'static {
 
 #[repr(C)]
 struct AtomTrait<Atom: 'static = ()> {
+    test: &'static str,
     vtable: &'static AtomTraitVTable,
     atom: &'static Atom
 }
 
-const_assert_eq!(std::mem::size_of::<AtomTrait>(), 16);
+const_assert_eq!(std::mem::size_of::<AtomTrait>(), 32);
 
 impl<A: Atom> AtomTrait<A> {
     fn new(atom: &'static A) -> Self {
@@ -246,7 +247,7 @@ impl<A: Atom> AtomTrait<A> {
             atom_ref: atom_ref::<A>,
             atom_downcast: atom_downcast::<A>,
         };
-        AtomTrait { vtable, atom }
+        AtomTrait { test: "Hello, World", vtable, atom }
     }
 }
 
@@ -295,6 +296,10 @@ impl<T> GCRef<T> {
         GCRef(raw as *mut T)
     }
 
+    pub(crate) unsafe fn cast<U>(&self) -> GCRef<U> {
+        GCRef::<U>::from_raw(self.as_ptr() as *const U)
+    }
+
     pub const unsafe fn null() -> Self {
         GCRef(std::ptr::null_mut())
     }
@@ -304,7 +309,11 @@ impl<T> GCRef<T> {
     }
 
     pub fn kind<A: Atom>(&self) -> Option<&A> {
-        unsafe { self.atom().downcast() }
+        unsafe {
+            let atom = self.atom();
+            println!("calced atom {:p}", atom);
+            atom.downcast()
+        }
     }
 
     pub fn heap(&self) -> &Heap {
@@ -342,7 +351,7 @@ impl<T> GCRef<T> {
     }
 
     unsafe fn atom(&self) -> &AtomTrait {
-        &*(self.0.sub(std::mem::size_of::<AtomTrait>()) as *const AtomTrait)
+        &*(self.0.byte_sub(std::mem::size_of::<AtomTrait>()) as *const AtomTrait)
     }
 
     unsafe fn from_allocation<A: Atom>(allocation: *mut Allocation<A, T>) -> GCRef<T> {

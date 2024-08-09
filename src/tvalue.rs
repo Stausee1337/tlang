@@ -16,7 +16,6 @@ enum TValueKind {
     Float    = 0b100 << 49,
 }
 
-
 /// 64bit Float:
 /// S eeeeeeeeeee FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
 /// (S) 1bit sign
@@ -48,6 +47,10 @@ impl TValue {
             object.kind::<TType>().unwrap()
         ));
         Self::object_tagged(object, TValueKind::Object)
+    }
+
+    pub(crate) fn ttype_object(ttype: GCRef<TType>) -> Self {
+        Self::object_tagged(ttype, TValueKind::Object)
     }
 
     #[inline(always)]
@@ -169,7 +172,9 @@ impl TValue {
     }
 }
 
-pub trait Typed {
+pub trait Typed: 'static {
+    const NAME: &'static str;
+
     fn ttype(vm: &VM) -> GCRef<TType>;
 }
 
@@ -181,8 +186,11 @@ pub trait GetHash {
 pub struct TType(TAnonObject);
 
 impl TType {
-    pub(in self) fn empty(capacity: usize) -> Self {
-        todo!()
+    pub fn empty(vm: &VM, count: usize) -> GCRef<Self> {
+        unsafe {
+            let object = TAnonObject::make(vm, count);
+            object.cast()
+        }
     }
 }
 
@@ -349,6 +357,8 @@ impl Into<TValue> for TInteger {
 }
 
 impl Typed for TInteger {
+    const NAME: &'static str = "int";
+
     fn ttype(vm: &VM) -> GCRef<TType> {
         todo!()
     }
@@ -374,6 +384,8 @@ impl Into<TValue> for TFloat {
 }
 
 impl Typed for TFloat {
+    const NAME: &'static str = "float";
+
     fn ttype(vm: &VM) -> GCRef<TType> {
         todo!()
     }
@@ -395,6 +407,8 @@ impl TBool {
 }
 
 impl Typed for TBool {
+    const NAME: &'static str = "bool";
+
     fn ttype(vm: &VM) -> GCRef<TType> {
         todo!()
     }
@@ -480,6 +494,8 @@ impl std::fmt::Debug for TString {
 }
 
 impl Typed for TString {
+    const NAME: &'static str = "string";
+
     fn ttype(vm: &VM) -> GCRef<TType> {
         vm.types.query(TypeId::of::<Self>())
     }
@@ -535,16 +551,20 @@ pub mod prelude {
     }
 
     impl Typed for TFunction {
+        const NAME: &'static str = "function";
+
         fn ttype(vm: &VM) -> GCRef<TType> {
-            todo!()
+            vm.types.query(TypeId::of::<Self>())
         }
     }
 
-    pub fn module_init(module: GCRef<TModule>) {
-        println!("module_init");
+    pub fn module_init(mut module: GCRef<TModule>) {
+        let vm = module.vm();
+
+        module.set_rust_ttype::<TString>(TType::empty(&vm, 1)).unwrap();
         ttype! {
             name: "function",
-        }.build(&module.vm());
+        }.build(&vm);
     }
 }
 
@@ -557,30 +577,37 @@ struct TAnonObject {
 
 impl TAnonObject {
     fn create(vm: &VM, attributes: &[(Symbol, TValue)]) -> GCRef<Self> {
+        unsafe {
+            let mut object = Self::make(vm, attributes.len());
+            object.fill(attributes);
+            object
+        }
+    }
+
+    unsafe fn make(vm: &VM, count: usize) -> GCRef<Self> {
         let object = TAnonObject {
-            descriptor: RawTable::with_capacity(attributes.len()),
+            descriptor: RawTable::with_capacity(count),
             data: [0u8; 0]
         };
-        let mut object = vm.heap().allocate_var_atom(
+        vm.heap().allocate_var_atom(
             &TypeCollector,
             object,
-            attributes.len() * std::mem::size_of::<TValue>());
-
-        unsafe {
-            for (idx, (name, value)) in attributes.iter().enumerate() {
-                if let Some(bucket) = object.query_attribute(*name) {
-                    *bucket = *value;
-                    continue;
-                }
-                object.insert_attribute(idx, *name, *value);
-            }
-        }
-
-        object
+            count * std::mem::size_of::<TValue>())
     }
 }
 
 impl GCRef<TAnonObject> {
+    unsafe fn fill(&mut self, attributes: &[(Symbol, TValue)]) {
+        debug_assert!(self.descriptor.capacity() >= attributes.len());
+        for (idx, (name, value)) in attributes.iter().enumerate() {
+            if let Some(bucket) = self.query_attribute(*name) {
+                *bucket = *value;
+                continue;
+            }
+            self.insert_attribute(idx, *name, *value);
+        }
+    }
+
     unsafe fn insert_attribute(&mut self, idx: usize, attribute: Symbol, value: TValue) {
         let hash = self.vm().symbols.hash(attribute);
         self.descriptor.insert(

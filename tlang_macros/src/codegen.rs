@@ -534,7 +534,7 @@ pub fn generate_ttype(token_stream: TokenStream) -> Result<TokenStream, syn::Err
 
         code.extend(quote! {
             {
-                let name = symbols.intern_slice(stringify!(#ident), vm);
+                let name = symbols.intern_slice(stringify!(#ident));
                 let value = #expr;
             }
         });

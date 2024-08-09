@@ -51,11 +51,6 @@ impl SymbolInterner {
         Symbol(self.cache.cache(str) as u32)
     }
 
-    pub fn intern_slice(&mut self, str: &str, vm: &VM) -> Symbol {
-        println!("intern_slice {}", str);
-        self.intern(TString::from_slice_impl(vm, str, StaticAtom::atom()))
-    }
-
     pub fn hash(&self, symbol: Symbol) -> u64 {
         let Some(cached) = self.cache.query(symbol.0 as usize) else {
             panic!("Invalid symbol");
@@ -71,6 +66,13 @@ impl SymbolInterner {
     }
 }
 
+impl GCRef<SymbolInterner> {
+    pub fn intern_slice(&mut self, str: &str) -> Symbol {
+        println!("intern_slice {}", str);
+        let vm = self.vm();
+        self.intern(TString::from_slice(&vm, str))
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct InternedRef<'s>(&'s TString);

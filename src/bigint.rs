@@ -74,7 +74,10 @@ pub struct TBigint {
     bytes: [u8; 0]
 }
 
+/// FIXME: this is incorrect: BigInt should be stored using the TInteger type
 impl Typed for TBigint {
+    const NAME: &'static str = "int";
+
     fn ttype(vm: &VM) -> GCRef<TType> {
         todo!()
     }

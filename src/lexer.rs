@@ -181,6 +181,5 @@ pub fn tokenize<'source>(vm: Rc<VM>, source: &'source str) -> Result<Box<[Token]
 }
 
 fn make_symbol(lexer: &Lexer<TokenKind>) -> Symbol {
-    let mut symbols = lexer.extras.symbols; 
-    symbols.intern_slice(lexer.slice(), &lexer.extras)
+    lexer.extras.symbols().intern_slice(lexer.slice())
 }

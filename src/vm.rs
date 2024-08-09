@@ -1,6 +1,6 @@
-use std::{rc::Rc, cell::OnceCell, any::TypeId};
+use std::{rc::Rc, any::TypeId};
 
-use crate::{memory::{Heap, GCRef, StaticAtom}, symbol::{SymbolInterner, Symbol}, tvalue::{TType, self, TString, TValue}};
+use crate::{memory::{Heap, GCRef, StaticAtom}, symbol::{SymbolInterner, Symbol}, tvalue::{TType, self, TString, TValue, Typed}};
 
 pub struct VM {
     heap: Box<Heap>,
@@ -26,8 +26,8 @@ impl VM {
     fn create(heap: Box<Heap>) -> Self {
         let hash_state = ahash::RandomState::new();
 
-        let symbols = StaticAtom::allocate(&heap, SymbolInterner::new());
-        let types = StaticAtom::allocate(&heap, RustTypeInterner::new());
+        let symbols = StaticAtom::allocate(&heap, SymbolInterner::new()).make_static();
+        let types = StaticAtom::allocate(&heap, RustTypeInterner::new()).make_static();
 
         VM {
             heap,
@@ -41,6 +41,14 @@ impl VM {
     pub fn heap(&self) -> &Heap {
         &self.heap
     }
+
+    pub fn types(&self) -> GCRef<RustTypeInterner> {
+        self.types
+    }
+
+    pub fn symbols(&self) -> GCRef<SymbolInterner> {
+        self.symbols
+    }
 }
 
 pub struct RustTypeInterner(hashbrown::HashMap<TypeId, GCRef<TType>>);
@@ -49,6 +57,15 @@ impl RustTypeInterner {
     fn new() -> Self {
         RustTypeInterner(Default::default())
     }
+    
+    fn intern(&mut self, ty: TypeId, ttype: GCRef<TType>) {
+        let Some(ttype2) = self.0.insert(ty, ttype) else {
+            return;
+        };
+        if ttype2 != ttype {
+            panic!("{ty:?} was tried to be associated with two different ttypes");
+        }
+    }
 
     pub fn query(&self, id: TypeId) -> GCRef<TType> {
         *self.0.get(&id).expect(
@@ -56,6 +73,7 @@ impl RustTypeInterner {
     }
 }
 
+#[derive(Debug)]
 pub enum GlobalErr {
     Redeclared(Symbol),
     NotFound(Symbol),
@@ -86,6 +104,13 @@ impl TModule {
 }
 
 impl GCRef<TModule> {
+    pub fn set_rust_ttype<T: Typed>(&mut self, value: GCRef<TType>) -> Result<(), GlobalErr> {
+        let vm = self.vm();
+        vm.types().intern(std::any::TypeId::of::<T>(), value);
+        let name = vm.symbols().intern_slice(T::NAME);
+        self.set_global(name, TValue::ttype_object(value), true)
+    }
+
     pub fn set_global(&mut self, name: Symbol, value: TValue, constant: bool) -> Result<(), GlobalErr> {
         let symbols = self.vm().symbols;
 
