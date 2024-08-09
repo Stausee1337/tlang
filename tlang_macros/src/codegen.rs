@@ -516,14 +516,15 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
     })
 }
 
-pub fn generate_ttype(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+pub fn generate_tobject(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
     let fields_parser = Punctuated::<FieldValue, Token![,]>::parse_terminated;
     let fields = fields_parser.parse2(token_stream)?;
 
     let mut code = quote! {
         let mut symbols = vm.symbols;
     };
-    for field in &fields {
+
+    for field in fields {
         let ident = match &field.member {
             Member::Named(ident) => ident,
             Member::Unnamed(..) =>
@@ -535,23 +536,64 @@ pub fn generate_ttype(token_stream: TokenStream) -> Result<TokenStream, syn::Err
         code.extend(quote! {
             {
                 let name = symbols.intern_slice(stringify!(#ident));
-                let value = #expr;
+                let value = VMConvert::convert(#expr, builder.vm);
+                builder.insert_attribute(name, value);
             }
         });
     }
 
     let tokens = quote! {
-        struct TypeBuilder<F>(F);
+        |builder| {
+            #code
+        }
+    };
+    Ok(quote!(#tokens))
+}
 
-        impl<F: Fn(&crate::vm::VM)> TypeBuilder<F> {
-            pub fn build(&self, vm: &crate::vm::VM) {
-                (self.0)(vm)
+pub fn generate_ttype(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+    let fields_parser = Punctuated::<FieldValue, Token![,]>::parse_terminated;
+    let fields = fields_parser.parse2(token_stream)?;
+
+    let mut name = None;
+    let mut modname = None;
+
+    let mut remaining_fields = Punctuated::<FieldValue, Token![,]>::new();
+
+    for field in fields {
+        let ident = match &field.member {
+            Member::Named(ident) => ident,
+            Member::Unnamed(..) =>
+                unreachable!()
+        };
+        match ident.to_string().as_str() {
+            "name" => {
+                name = Some(field.expr);
+            },
+            "modname" => {
+                modname = Some(field.expr);
+            },
+            _ => {
+                remaining_fields.push(field)
             }
         }
+    }
 
-        TypeBuilder(|vm: &crate::vm::VM| {
-            #code
-        })
+    if name.is_none() || modname.is_none() {
+        return Err(syn::Error::new(Span::call_site(), "`name` and `modname` are required fields"));
+    }
+    
+    let tokens = quote! {
+        pub struct InternalBuilder;
+        impl InternalBuilder {
+            pub fn build(&self, vm: &VM) -> GCRef<TType> {
+                let mut builder = crate::tvalue::TTypeBuilder::new(vm, #name, #modname);
+                builder.extend(tlang_macros::tobject! {
+                    #remaining_fields
+                });
+                builder.build()
+            }
+        }
+        InternalBuilder
     };
     Ok(quote!( { #tokens } ))
 }

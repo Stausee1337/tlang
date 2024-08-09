@@ -29,3 +29,10 @@ pub fn ttype(item: TokenStream) -> TokenStream {
         .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
         .into()
 }
+
+#[proc_macro]
+pub fn tobject(item: TokenStream) -> TokenStream {
+    codegen::generate_tobject(item.into())
+        .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
+        .into()
+}

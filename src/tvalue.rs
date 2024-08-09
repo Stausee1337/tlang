@@ -1,4 +1,4 @@
-use std::{mem::transmute, fmt::Display, u64, any::TypeId};
+use std::{mem::transmute, fmt::Display, u64, any::TypeId, cell::OnceCell};
 
 
 use hashbrown::raw::RawTable;
@@ -178,15 +178,83 @@ pub trait Typed: 'static {
     fn ttype(vm: &VM) -> GCRef<TType>;
 }
 
+pub trait VMConvert {
+    fn convert(self, vm: &VM) -> TValue;
+}
+
+impl<T: Into<TValue>> VMConvert for T {
+    fn convert(self, _vm: &VM) -> TValue {
+        self.into()
+    }
+}
+
+impl VMConvert for &str {
+    fn convert(self, vm: &VM) -> TValue {
+        TString::from_slice(vm, self).into()
+    }
+}
+
 pub trait GetHash {
     fn get_hash_code(&self) -> u64;
+}
+
+/// FIXME: better TTypeBuilder 
+pub struct TTypeBuilder<'vm> {
+    vm: &'vm VM,
+    attributes: Vec<(Symbol, TValue)>,
+    empty: Option<GCRef<TType>>
+}
+
+impl<'vm> TTypeBuilder<'vm> {
+    pub fn new(vm: &'vm VM, name: impl VMConvert, modname: impl VMConvert) -> Self {
+        let mut attributes = Vec::new();
+        attributes.push((
+            vm.symbols().intern_slice("name"),
+            name.convert(vm)
+        ));
+        attributes.push((
+            vm.symbols().intern_slice("modname"),
+            modname.convert(vm)
+        ));
+        Self {
+            vm,
+            attributes,
+            empty: None
+        }
+    }
+
+    fn build_empty(vm: &'vm VM, name: impl VMConvert, modname: impl VMConvert, empty: GCRef<TType>) -> Self {
+        let mut builder = TTypeBuilder::new(vm, name, modname);
+        builder.empty = Some(empty);
+        builder
+    }
+
+    pub fn insert_attribute(&mut self, name: Symbol, value: TValue) {
+        self.attributes.push((name, value));
+    }
+
+    pub fn extend<F: Fn(&mut Self)>(&mut self, builder: F) {
+        builder(self);
+    }
+
+    pub fn build(self) -> GCRef<TType> {
+        unsafe {
+            if let Some(ttype) = self.empty {
+                let mut object = ttype.cast::<TAnonObject>();
+                object.fill(&self.attributes);
+                return ttype;
+            }
+            let object = TAnonObject::create(self.vm, &self.attributes);
+            object.cast()
+        }
+    }
 }
 
 #[repr(C)]
 pub struct TType(TAnonObject);
 
 impl TType {
-    pub fn empty(vm: &VM, count: usize) -> GCRef<Self> {
+    fn empty(vm: &VM, count: usize) -> GCRef<Self> {
         unsafe {
             let object = TAnonObject::make(vm, count);
             object.cast()
@@ -516,7 +584,7 @@ impl GetHash for GCRef<TString> {
 pub use prelude::{TFunction, TFnKind};
 
 pub mod prelude {
-    use tlang_macros::ttype;
+    use tlang_macros::{ttype, tobject};
 
     use super::*;
 
@@ -561,10 +629,23 @@ pub mod prelude {
     pub fn module_init(mut module: GCRef<TModule>) {
         let vm = module.vm();
 
-        module.set_rust_ttype::<TString>(TType::empty(&vm, 1)).unwrap();
-        ttype! {
-            name: "function",
+        module.set_rust_ttype::<TString>(TType::empty(&vm, 3)).unwrap();
+        
+        let mut builder = TTypeBuilder::build_empty(
+            &vm,
+            TString::NAME, "prelude",
+            TString::ttype(&vm),
+        );
+        builder.extend(tobject! {
+            hash: "hash"
+        });
+        builder.build();
+
+        let functy = ttype! {
+            name: TFunction::NAME,
+            modname: "prelude",
         }.build(&vm);
+        module.set_rust_ttype::<TFunction>(functy).unwrap();
     }
 }
 
