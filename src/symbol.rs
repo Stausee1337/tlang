@@ -2,7 +2,7 @@ use std::{fmt::Debug, sync::Mutex};
 
 use hashbrown::raw::RawTable;
 
-use crate::{memory::GCRef, tvalue::{TString, GetHash}};
+use crate::{memory::{GCRef, StaticAtom}, tvalue::{TString, GetHash}, vm::VM};
 
 struct Cache {
     table: RawTable<usize>,
@@ -51,6 +51,10 @@ impl SymbolInterner {
         Symbol(self.cache.cache(str) as u32)
     }
 
+    pub fn intern_slice(&mut self, str: &str, vm: &VM) -> Symbol {
+        self.intern(TString::from_slice_impl(vm, str, StaticAtom::atom()))
+    }
+
     pub fn hash(&self, symbol: Symbol) -> u64 {
         let Some(cached) = self.cache.query(symbol.0 as usize) else {
             panic!("Invalid symbol");
@@ -58,11 +62,29 @@ impl SymbolInterner {
         cached.1
     }
 
-    pub fn get(&self, symbol: Symbol) -> GCRef<TString> {
+    pub fn get(&self, symbol: Symbol) -> InternedRef {
         let Some(cached) = self.cache.query(symbol.0 as usize) else {
             panic!("Invalid symbol");
         };
-        cached.0
+        InternedRef(&cached.0)
+    }
+}
+
+
+#[derive(Clone, Copy)]
+pub struct InternedRef<'s>(&'s TString);
+
+impl<'s> InternedRef<'s> {
+    pub fn softcopy(self) -> GCRef<TString> {
+        let str = unsafe { GCRef::from_raw(self.0) };
+        if let Some(..) = str.kind::<StaticAtom>() {
+            return str.deepcopy(&str.vm())
+        }
+        str
+    }
+
+    pub fn slice(self) -> &'static str {
+        self.0.as_slice()
     }
 }
 

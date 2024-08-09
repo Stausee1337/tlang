@@ -594,7 +594,7 @@ impl TFunction {
             codesize += block.data.len();
         }
 
-        let name = func.name.map(|name| vm.symbols().get(name));
+        let name = func.name.map(|name| vm.symbols().get(name).softcopy());
         let (function, tcode) = TFunction::create_presized(
             vm,
             name,

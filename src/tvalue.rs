@@ -188,10 +188,14 @@ impl TType {
 }
 
 impl GCRef<TType> {
+    fn get_static(&self) -> &'static TType {
+        unsafe { &*self.as_ptr() }
+    }
+
     pub fn allocate_object<T: Typed>(self, object: T) -> GCRef<T> {
         debug_assert!(std::ptr::addr_eq(self.as_ptr(), T::ttype(&self.vm()).as_ptr()));
         self.heap().allocate_atom(
-            unsafe { &*self.as_ptr() },
+            self.get_static(),
             object
         )
     }
@@ -199,7 +203,7 @@ impl GCRef<TType> {
     pub fn allocate_var_object<T: Typed>(self, object: T, extra_bytes: usize) -> GCRef<T> {
         debug_assert!(std::ptr::addr_eq(self.as_ptr(), T::ttype(&self.vm()).as_ptr()));
         self.heap().allocate_var_atom(
-            unsafe { &*self.as_ptr() },
+            self.get_static(),
             object,
             extra_bytes
         )
@@ -438,11 +442,16 @@ impl TString {
     }
 
     pub fn from_slice(vm: &VM, slice: &str) -> GCRef<Self> {
+        Self::from_slice_impl(vm, slice, TString::ttype(vm).get_static())
+    }
+
+    pub(crate) fn from_slice_impl<A: Atom>(vm: &VM, slice: &str, atom: &'static A) -> GCRef<Self> {
         let size = TInteger::from_usize(slice.len());
 
         let length = TInteger::from_usize(slice.chars().count());
 
-        let mut string = Self::ttype(vm).allocate_var_object(
+        let mut string = vm.heap().allocate_var_atom(
+            atom,
             Self { size, length, data: [0u8; 0] },
             slice.len()
         );
@@ -452,6 +461,10 @@ impl TString {
         }
 
         string
+    }
+
+    pub fn deepcopy(&self, vm: &VM) -> GCRef<TString> {
+        Self::from_slice(vm, self.as_slice())
     }
 }
 

@@ -223,6 +223,10 @@ impl Atom for StaticAtom {
 }
 
 impl StaticAtom {
+    pub fn atom() -> &'static Self {
+        STATIC_ALLOCATOR
+    }
+
     pub fn allocate<T>(heap: &Heap, object: T) -> GCRef<T> {
         heap.allocate_atom(STATIC_ALLOCATOR, object)
     }

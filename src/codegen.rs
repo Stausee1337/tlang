@@ -16,8 +16,8 @@ pub enum CodegenErr {
 }
 
 impl BytecodeGenerator {
-    fn debug(&self, sym: Symbol) -> GCRef<TString> {
-        self.vm().symbols().get(sym)
+    fn debug(&self, sym: Symbol) -> &str {
+        self.vm().symbols().get(sym).slice()
     }
 }
 
