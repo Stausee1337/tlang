@@ -22,3 +22,10 @@ pub fn decode(item: TokenStream) -> TokenStream {
         .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
         .into()
 }
+
+#[proc_macro]
+pub fn ttype(item: TokenStream) -> TokenStream {
+    codegen::generate_ttype(item.into())
+        .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
+        .into()
+}

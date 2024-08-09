@@ -3,7 +3,7 @@ use std::{mem::transmute, fmt::Display, u64, any::TypeId};
 
 use hashbrown::raw::RawTable;
 
-use crate::{memory::{self, GCRef, Atom, Heap}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}};
+use crate::{memory::{GCRef, Atom}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}};
 
 #[repr(u64)]
 #[derive(Debug)]
@@ -37,7 +37,7 @@ impl TValue {
     
     #[inline(always)]
     pub const fn null() -> Self {
-        let null = unsafe { GCRef::<()>::from_raw(std::ptr::null()) };
+        let null = unsafe { GCRef::<()>::null() };
         Self::object_tagged(null, TValueKind::Object)
     }
 
@@ -178,12 +178,11 @@ pub trait GetHash {
 }
 
 #[repr(C)]
-pub struct TType { }
+pub struct TType(TAnonObject);
 
 impl TType {
-    pub fn create(heap: &Heap) -> GCRef<Self> {  
-        let object = TType { };
-        heap.allocate_atom(&TypeCollector, object) 
+    pub(in self) fn empty(capacity: usize) -> Self {
+        todo!()
     }
 }
 
@@ -482,7 +481,7 @@ impl std::fmt::Debug for TString {
 
 impl Typed for TString {
     fn ttype(vm: &VM) -> GCRef<TType> {
-        vm.types().query(TypeId::of::<Self>())
+        vm.types.query(TypeId::of::<Self>())
     }
 }
 
@@ -500,7 +499,9 @@ impl GetHash for GCRef<TString> {
 
 pub use prelude::{TFunction, TFnKind};
 
-mod prelude {
+pub mod prelude {
+    use tlang_macros::ttype;
+
     use super::*;
 
     #[repr(C)] 
@@ -538,38 +539,64 @@ mod prelude {
             todo!()
         }
     }
+
+    pub fn module_init(module: GCRef<TModule>) {
+        println!("module_init");
+        ttype! {
+            name: "function",
+        }.build(&module.vm());
+    }
 }
 
 
 #[repr(C)]
-struct TObjectHead {
-    ttype: TType,
-    descriptor: RawTable<Symbol, memory::Heap>,
-    data: [u8; 1]
+struct TAnonObject {
+    descriptor: RawTable<(Symbol, u64, usize)>,
+    data: [u8; 0]
 }
 
-impl TObjectHead {
-    fn getattr(&self, attribute: Symbol) -> Option<TValue> {
-        /*let builder = ahash::RandomState::new();
-        let mut hasher = builder.build_hasher();
-        attribute.get().hash(&mut hasher);
-        let hash = hasher.finish();
-
-        let bucket = self.descriptor.find(hash, |key| attribute == *key);
-        let Some(bucket) = bucket else {
-            return None;
+impl TAnonObject {
+    fn create(vm: &VM, attributes: &[(Symbol, TValue)]) -> GCRef<Self> {
+        let object = TAnonObject {
+            descriptor: RawTable::with_capacity(attributes.len()),
+            data: [0u8; 0]
         };
+        let mut object = vm.heap().allocate_var_atom(
+            &TypeCollector,
+            object,
+            attributes.len() * std::mem::size_of::<TValue>());
 
         unsafe {
-            let size = self.descriptor.len() * std::mem::size_of::<TValue>();
-            let values = std::slice::from_raw_parts(
-                self.data.as_ptr() as *const TValue,
-                size
-            );
-            let idx = self.descriptor.bucket_index(&bucket);
-            Some(values[idx])
-        }*/
-        todo!()
+            for (idx, (name, value)) in attributes.iter().enumerate() {
+                if let Some(bucket) = object.query_attribute(*name) {
+                    *bucket = *value;
+                    continue;
+                }
+                object.insert_attribute(idx, *name, *value);
+            }
+        }
+
+        object
+    }
+}
+
+impl GCRef<TAnonObject> {
+    unsafe fn insert_attribute(&mut self, idx: usize, attribute: Symbol, value: TValue) {
+        let hash = self.vm().symbols.hash(attribute);
+        self.descriptor.insert(
+            hash, (attribute, hash, idx),
+            |val| val.1
+        );
+        *(self.data.as_mut_ptr() as *mut TValue).add(idx) = value;
+    }
+
+    unsafe fn query_attribute(&mut self, attribute: Symbol) -> Option<&mut TValue> { 
+        let hash = self.vm().symbols.hash(attribute);
+        if let Some(&(_, _, idx)) = self.descriptor.get(hash, |val| val.0 == attribute) { 
+            let ptr = (self.data.as_mut_ptr() as *mut TValue).add(idx);
+            return Some(&mut *ptr)
+        }
+        None
     }
 }
 

@@ -17,7 +17,7 @@ pub enum CodegenErr {
 
 impl BytecodeGenerator {
     fn debug(&self, sym: Symbol) -> &str {
-        self.vm().symbols().get(sym).slice()
+        self.vm().symbols.get(sym).slice()
     }
 }
 

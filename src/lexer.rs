@@ -1,6 +1,6 @@
 use std::{ops::Range, rc::Rc};
 
-use logos::Logos;
+use logos::{Logos, Lexer};
 
 use crate::{symbol::Symbol, vm::VM, tvalue::TString, memory::GCRef};
 
@@ -100,7 +100,7 @@ pub enum TokenKind {
     #[token("!")]
     Bang,
 
-    #[regex(r"[^\d\W]\w*", |lex| lex.extras.symbols().intern_slice(lex.slice(), &lex.extras))]
+    #[regex(r"[^\d\W]\w*", make_symbol)]
     Name(Symbol),
     #[regex(r"(?:0(?:_?0)*|[1-9](?:_?[0-9])*)", |lex| lex.slice().parse().ok())]
     Intnumber(u64),
@@ -180,3 +180,7 @@ pub fn tokenize<'source>(vm: Rc<VM>, source: &'source str) -> Result<Box<[Token]
     Ok(tokens.into_boxed_slice())
 }
 
+fn make_symbol(lexer: &Lexer<TokenKind>) -> Symbol {
+    let mut symbols = lexer.extras.symbols; 
+    symbols.intern_slice(lexer.slice(), &lexer.extras)
+}

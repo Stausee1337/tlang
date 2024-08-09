@@ -1,7 +1,7 @@
 use convert_case::{Casing, Case};
 use proc_macro2::{TokenStream, Ident, Span};
 use quote::{quote, ToTokens};
-use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference};
+use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference, FieldValue, Member};
 
 pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
     let node: ItemEnum = syn::parse2(token_stream)?;
@@ -514,4 +514,44 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
             #decode_logic
         };
     })
+}
+
+pub fn generate_ttype(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+    let fields_parser = Punctuated::<FieldValue, Token![,]>::parse_terminated;
+    let fields = fields_parser.parse2(token_stream)?;
+
+    let mut code = quote! {
+        let mut symbols = vm.symbols;
+    };
+    for field in &fields {
+        let ident = match &field.member {
+            Member::Named(ident) => ident,
+            Member::Unnamed(..) =>
+                unreachable!()
+        };
+
+        let expr = &field.expr;
+
+        code.extend(quote! {
+            {
+                let name = symbols.intern_slice(stringify!(#ident), vm);
+                let value = #expr;
+            }
+        });
+    }
+
+    let tokens = quote! {
+        struct TypeBuilder<F>(F);
+
+        impl<F: Fn(&crate::vm::VM)> TypeBuilder<F> {
+            pub fn build(&self, vm: &crate::vm::VM) {
+                (self.0)(vm)
+            }
+        }
+
+        TypeBuilder(|vm: &crate::vm::VM| {
+            #code
+        })
+    };
+    Ok(quote!( { #tokens } ))
 }

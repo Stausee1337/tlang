@@ -1,4 +1,4 @@
-use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::NonNull, alloc::Layout, cell::Cell, any::TypeId, mem::transmute, rc::{Weak, Rc}};
+use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::NonNull, alloc::Layout, cell::Cell, any::TypeId, mem::{transmute, ManuallyDrop}, rc::{Weak, Rc}};
 use rustix::{
     io,
     mm::{mmap_anonymous, munmap, MapFlags, ProtFlags}
@@ -146,24 +146,24 @@ impl Heap {
 
     pub fn allocate_atom<A: Atom, T>(&self, kind: &'static A, object: T) -> GCRef<T> {
         let atom = AtomTrait::new(kind);
-        let allocation = Allocation(atom, object);
+        let mut allocation = ManuallyDrop::new(Allocation(atom, object));
         unsafe {
             let mut data = self.allocate(
                 Layout::new::<Allocation<A, T>>()).unwrap().cast::<Allocation<A, T>>();
-            *(data.as_mut()) = allocation;
+            *(data.as_mut()) = ManuallyDrop::take(&mut allocation);
             GCRef::from_allocation(data.as_ptr())
         }
     }
 
     pub fn allocate_var_atom<A: Atom, T>(&self, kind: &'static A, object: T, extra_bytes: usize) -> GCRef<T> {
         let atom = AtomTrait::new(kind);
-        let allocation = Allocation(atom, object);
+        let mut allocation = ManuallyDrop::new(Allocation(atom, object));
         unsafe {
             let layout = Layout::new::<Allocation<A, T>>();
             let layout = Layout::from_size_align_unchecked(layout.size() + extra_bytes, layout.align());
 
             let mut data = self.allocate(layout).unwrap().cast::<Allocation<A, T>>();
-            *(data.as_mut()) = allocation;
+            *(data.as_mut()) = ManuallyDrop::take(&mut allocation);
             GCRef::from_allocation(data.as_ptr())
         }
     }
@@ -171,25 +171,7 @@ impl Heap {
     pub fn vm(&self) -> Rc<VM> {
         self.vm.upgrade().expect("we should have dropped to")
     }
-}
 
-impl Drop for Heap {
-    fn drop(&mut self) {
-        let mut current_block: NonNull<HeapBlock> = self.current_block.get();
-        unsafe {
-            loop {
-                let block = current_block.as_mut();
-                let Some(previous) = block.previous() else {
-                    break;
-                };
-                block.unmap().unwrap(); 
-                current_block = previous;
-            }
-        }
-    }
-}
-
-unsafe impl Allocator for Heap {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         unsafe {
             let block = self.current_block.get().as_mut();
@@ -209,8 +191,22 @@ unsafe impl Allocator for Heap {
             Ok(NonNull::slice_from_raw_parts(raw, layout.size()))
         }
     }
+}
 
-    unsafe fn deallocate(&self, _ptr: NonNull<u8>, _layout: Layout) { }
+impl Drop for Heap {
+    fn drop(&mut self) {
+        let mut current_block: NonNull<HeapBlock> = self.current_block.get();
+        unsafe {
+            loop {
+                let block = current_block.as_mut();
+                let Some(previous) = block.previous() else {
+                    break;
+                };
+                block.unmap().unwrap(); 
+                current_block = previous;
+            }
+        }
+    }
 }
 
 pub struct StaticAtom;
@@ -297,6 +293,10 @@ pub struct GCRef<T>(*mut T);
 impl<T> GCRef<T> {
     pub(crate) const unsafe fn from_raw(raw: *const T) -> Self {
         GCRef(raw as *mut T)
+    }
+
+    pub const unsafe fn null() -> Self {
+        GCRef(std::ptr::null_mut())
     }
 
     pub const fn as_ptr(&self) -> *mut T {

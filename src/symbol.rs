@@ -52,6 +52,7 @@ impl SymbolInterner {
     }
 
     pub fn intern_slice(&mut self, str: &str, vm: &VM) -> Symbol {
+        println!("intern_slice {}", str);
         self.intern(TString::from_slice_impl(vm, str, StaticAtom::atom()))
     }
 
