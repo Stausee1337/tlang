@@ -1,9 +1,10 @@
-use std::{mem::transmute, fmt::Display, u64, any::TypeId, cell::OnceCell};
+use std::{mem::transmute, fmt::Display, u64, any::TypeId, cell::OnceCell, process::Output, marker::PhantomData};
 
 
 use hashbrown::raw::RawTable;
 
 use crate::{memory::{GCRef, Atom}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}};
+use tlang_macros::tmodule;
 
 #[repr(u64)]
 #[derive(Debug)]
@@ -178,19 +179,23 @@ pub trait Typed: 'static {
     fn ttype(vm: &VM) -> GCRef<TType>;
 }
 
-pub trait VMConvert {
-    fn convert(self, vm: &VM) -> TValue;
+pub trait VMCast {
+    fn vmcast(self, vm: &VM) -> TValue;
 }
 
-impl<T: Into<TValue>> VMConvert for T {
-    fn convert(self, _vm: &VM) -> TValue {
-        self.into()
+pub trait VMDowncast: Sized {
+    fn vmdowncast(value: TValue, vm: &VM) -> Option<Self>;
+}
+
+impl VMCast for &str {
+    fn vmcast(self, vm: &VM) -> TValue {
+        TString::from_slice(vm, self).into()
     }
 }
 
-impl VMConvert for &str {
-    fn convert(self, vm: &VM) -> TValue {
-        TString::from_slice(vm, self).into()
+impl<T: Into<TValue>> VMCast for T {
+    fn vmcast(self, _vm: &VM) -> TValue {
+        self.into()
     }
 }
 
@@ -206,15 +211,15 @@ pub struct TTypeBuilder<'vm> {
 }
 
 impl<'vm> TTypeBuilder<'vm> {
-    pub fn new(vm: &'vm VM, name: impl VMConvert, modname: impl VMConvert) -> Self {
+    pub fn new(vm: &'vm VM, name: impl VMCast, modname: impl VMCast) -> Self {
         let mut attributes = Vec::new();
         attributes.push((
             vm.symbols().intern_slice("name"),
-            name.convert(vm)
+            name.vmcast(vm)
         ));
         attributes.push((
             vm.symbols().intern_slice("modname"),
-            modname.convert(vm)
+            modname.vmcast(vm)
         ));
         Self {
             vm,
@@ -223,7 +228,7 @@ impl<'vm> TTypeBuilder<'vm> {
         }
     }
 
-    fn build_empty(vm: &'vm VM, name: impl VMConvert, modname: impl VMConvert, empty: GCRef<TType>) -> Self {
+    fn build_empty(vm: &'vm VM, name: impl VMCast, modname: impl VMCast, empty: GCRef<TType>) -> Self {
         let mut builder = TTypeBuilder::new(vm, name, modname);
         builder.empty = Some(empty);
         builder
@@ -295,139 +300,6 @@ pub struct TypeCollector;
 
 impl Atom for TypeCollector {
     fn iterate_children(&self, p: *const ()) -> Box<dyn Iterator<Item = *const ()>> {
-        todo!()
-    }
-}
-
-#[derive(Clone, Copy)]
-enum IntegerKind {
-    Int32(i32),
-    Bigint(GCRef<TBigint>),
-}
-
-#[derive(Clone, Copy)]
-pub struct TInteger(IntegerKind);
-
-impl TInteger {
-    pub fn as_usize(&self) -> Option<usize> {
-        match self.0 {
-            IntegerKind::Int32(int) => usize::try_from(int).ok(),
-            IntegerKind::Bigint(bigint) => bigint::try_as_usize(bigint)
-        }
-    }
-
-    pub fn as_isize(&self) -> Option<isize> {
-        match self.0 {
-            IntegerKind::Int32(int) => isize::try_from(int).ok(),
-            IntegerKind::Bigint(bigint) => bigint::try_as_isize(bigint)
-        }
-    }
-
-    #[inline(always)]
-    pub const fn from_int32(int: i32) -> Self {
-        TInteger(IntegerKind::Int32(int))
-    }
-
-    #[inline(always)]
-    pub const fn from_bigint(bigint: GCRef<TBigint>) -> Self {
-        TInteger(IntegerKind::Bigint(bigint))
-    }
-
-    #[inline(always)]
-    pub fn from_usize(size: usize) -> Self {
-        let Ok(size) = isize::try_from(size) else {
-            return Self::from_signed_bytes(&(size as i128).to_le_bytes());
-        };
-        if let Ok(int) = i32::try_from(size) {
-            return TInteger(IntegerKind::Int32(int));
-        }
-        Self::from_signed_bytes(&size.to_le_bytes()) 
-    }
-
-    pub fn from_signed_bytes(bytes: &[u8]) -> Self {
-        todo!("real bigint support")
-    }
-}
-
-impl Display for TInteger {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            IntegerKind::Int32(int) => f.write_fmt(format_args!("{int}")),
-            IntegerKind::Bigint(bigint) => bigint.fmt(f)
-        }
-    }
-}
-
-macro_rules! impl_int_safe {
-    ($lhs:ident, $rhs:ident, $fn:ident,) => {
-        Self::from_int32($lhs.$fn($rhs))
-    };
-    ($lhs:ident, $rhs:ident, $fn:ident, $checked_fn:ident) => {
-        $lhs.$checked_fn($rhs as _).map(Self::from_int32).unwrap_or_else(|| {
-            Self::from_bigint(bigint::$fn(&to_bigint($lhs), &to_bigint($rhs)))
-        })
-    };
-}
-
-macro_rules! impl_int_arithmetic {
-    ($op:ident, $ty:ident, $fn:ident, $($checked_fn:ident)?) => { 
-        impl std::ops::$op for $ty {
-            type Output = $ty;
-
-            #[inline(always)]
-            fn $fn(self, rhs: Self) -> Self::Output {
-                match (self.0, rhs.0) {
-                    (IntegerKind::Int32(lhs), IntegerKind::Int32(rhs)) =>
-                        impl_int_safe!(lhs, rhs, $fn, $($checked_fn)?),
-                    (IntegerKind::Int32(lhs), IntegerKind::Bigint(rhs)) =>
-                        Self::from_bigint(bigint::$fn(&to_bigint(lhs), rhs)),
-                    (IntegerKind::Bigint(lhs), IntegerKind::Int32(rhs)) =>
-                        Self::from_bigint(bigint::$fn(lhs, &to_bigint(rhs))),
-                    (IntegerKind::Bigint(lhs), IntegerKind::Bigint(rhs)) =>
-                        Self::from_bigint(bigint::$fn(lhs, rhs)),
-                }
-            }
-        }
-    };
-}
-
-macro_rules! iter_int_arithmetics {
-    ($(impl $op:ident for $ty:ident in ($fn:ident$(, $checked_fn:ident)?);)*) => {
-        $(impl_int_arithmetic!($op, $ty, $fn, $($checked_fn)?);)*
-    };
-}
-
-iter_int_arithmetics! {
-    impl Add for TInteger in (add, checked_add);
-    impl Sub for TInteger in (sub, checked_sub);
-    impl Mul for TInteger in (mul, checked_mul);
-    impl Div for TInteger in (div, checked_div);
-    impl Rem for TInteger in (rem, checked_rem);
-
-    impl Shl for TInteger in (shl, checked_shl);
-    impl Shr for TInteger in (shr, checked_shr);
-
-    impl BitAnd for TInteger in (bitand);
-    impl BitOr for TInteger in (bitor);
-    impl BitXor for TInteger in (bitxor);
-}
-
-
-impl Into<TValue> for TInteger {
-    #[inline(always)]
-    fn into(self) -> TValue {
-        match self.0 {
-            IntegerKind::Int32(int) => TValue::int32(int),
-            IntegerKind::Bigint(bigint) =>
-                TValue::object_tagged(bigint, TValueKind::Object)
-        }
-    }
-}
-
-impl Typed for TInteger {
-    const NAME: &'static str = "int";
-
-    fn ttype(vm: &VM) -> GCRef<TType> {
         todo!()
     }
 }
@@ -565,7 +437,7 @@ impl Typed for TString {
     const NAME: &'static str = "string";
 
     fn ttype(vm: &VM) -> GCRef<TType> {
-        vm.types.query(TypeId::of::<Self>())
+        vm.types.query::<Self>()
     }
 }
 
@@ -581,13 +453,148 @@ impl GetHash for GCRef<TString> {
     }
 }
 
-pub use prelude::{TFunction, TFnKind};
+use prelude::IntegerKind;
+pub use prelude::{TFunction, TFnKind, TInteger};
 
+#[tmodule("prelude")]
 pub mod prelude {
-    use tlang_macros::{ttype, tobject};
 
     use super::*;
 
+    #[derive(Clone, Copy)]
+    pub(super) enum IntegerKind {
+        Int32(i32),
+        Bigint(GCRef<TBigint>),
+    }
+
+    #[primitive("int")]
+    #[derive(Clone, Copy)]
+    pub struct TInteger(pub(super) IntegerKind);
+
+    impl TInteger {
+        pub fn as_usize(&self) -> Option<usize> {
+            match self.0 {
+                IntegerKind::Int32(int) => usize::try_from(int).ok(),
+                IntegerKind::Bigint(bigint) => bigint::try_as_usize(bigint)
+            }
+        }
+
+        pub fn as_isize(&self) -> Option<isize> {
+            match self.0 {
+                IntegerKind::Int32(int) => isize::try_from(int).ok(),
+                IntegerKind::Bigint(bigint) => bigint::try_as_isize(bigint)
+            }
+        }
+
+        #[inline(always)]
+        pub const fn from_int32(int: i32) -> Self {
+            TInteger(IntegerKind::Int32(int))
+        }
+
+        #[inline(always)]
+        pub const fn from_bigint(bigint: GCRef<TBigint>) -> Self {
+            TInteger(IntegerKind::Bigint(bigint))
+        }
+
+        #[inline(always)]
+        pub fn from_usize(size: usize) -> Self {
+            let Ok(size) = isize::try_from(size) else {
+                return Self::from_signed_bytes(&(size as i128).to_le_bytes());
+            };
+            if let Ok(int) = i32::try_from(size) {
+                return TInteger(IntegerKind::Int32(int));
+            }
+            Self::from_signed_bytes(&size.to_le_bytes()) 
+        }
+
+        pub fn from_signed_bytes(bytes: &[u8]) -> Self {
+            todo!("real bigint support")
+        }
+    }
+
+    impl VMDowncast for TInteger {
+        fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
+            value.query_integer(vm)
+        }
+    }
+
+    impl Display for TInteger {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self.0 {
+                IntegerKind::Int32(int) => f.write_fmt(format_args!("{int}")),
+                IntegerKind::Bigint(bigint) => bigint.fmt(f)
+            }
+        }
+    }
+
+    macro_rules! impl_int_safe {
+        ($lhs:ident, $rhs:ident, $fn:ident,) => {
+            Self::from_int32($lhs.$fn($rhs))
+        };
+        ($lhs:ident, $rhs:ident, $fn:ident, $checked_fn:ident) => {
+            $lhs.$checked_fn($rhs as _).map(Self::from_int32).unwrap_or_else(|| {
+                Self::from_bigint(bigint::$fn(&to_bigint($lhs), &to_bigint($rhs)))
+            })
+        };
+    }
+
+    macro_rules! impl_int_arithmetic {
+        ($op:ident, $ty:ident, $fn:ident, $($checked_fn:ident)?) => { 
+            use std::ops::$op;
+            impl $op for $ty {
+                type Output = $ty;
+
+                #[inline(always)]
+                fn $fn(self, rhs: Self) -> Self::Output {
+                    match (self.0, rhs.0) {
+                        (IntegerKind::Int32(lhs), IntegerKind::Int32(rhs)) =>
+                            impl_int_safe!(lhs, rhs, $fn, $($checked_fn)?),
+                        (IntegerKind::Int32(lhs), IntegerKind::Bigint(rhs)) =>
+                            Self::from_bigint(bigint::$fn(&to_bigint(lhs), rhs)),
+                        (IntegerKind::Bigint(lhs), IntegerKind::Int32(rhs)) =>
+                            Self::from_bigint(bigint::$fn(lhs, &to_bigint(rhs))),
+                        (IntegerKind::Bigint(lhs), IntegerKind::Bigint(rhs)) =>
+                            Self::from_bigint(bigint::$fn(lhs, rhs)),
+                    }
+                }
+            }
+        };
+    }
+
+    macro_rules! iter_int_arithmetics {
+        ($(impl $op:ident for $ty:ident in ($fn:ident$(, $checked_fn:ident)?);)*) => {
+            $(impl_int_arithmetic!($op, $ty, $fn, $($checked_fn)?);)*
+        };
+    }
+
+    iter_int_arithmetics! {
+        impl Add for TInteger in (add, checked_add);
+        impl Sub for TInteger in (sub, checked_sub);
+        impl Mul for TInteger in (mul, checked_mul);
+        impl Div for TInteger in (div, checked_div);
+        impl Rem for TInteger in (rem, checked_rem);
+
+        impl Shl for TInteger in (shl, checked_shl);
+        impl Shr for TInteger in (shr, checked_shr);
+
+        impl BitAnd for TInteger in (bitand);
+        impl BitOr for TInteger in (bitor);
+        impl BitXor for TInteger in (bitxor);
+    }
+
+
+    impl Into<TValue> for TInteger {
+        #[inline(always)]
+        fn into(self) -> TValue {
+            match self.0 {
+                IntegerKind::Int32(int) => TValue::int32(int),
+                IntegerKind::Bigint(bigint) =>
+                    TValue::object_tagged(bigint, TValueKind::Object)
+            }
+        }
+    }
+
+    #[primitive("function")]
     #[repr(C)] 
     pub struct TFunction {
         pub name: TValue, /// Optional<TString>
@@ -616,36 +623,6 @@ pub mod prelude {
         fn into(self) -> TValue {
             TValue::object_tagged(self, TValueKind::Function)
         }
-    }
-
-    impl Typed for TFunction {
-        const NAME: &'static str = "function";
-
-        fn ttype(vm: &VM) -> GCRef<TType> {
-            vm.types.query(TypeId::of::<Self>())
-        }
-    }
-
-    pub fn module_init(mut module: GCRef<TModule>) {
-        let vm = module.vm();
-
-        module.set_rust_ttype::<TString>(TType::empty(&vm, 3)).unwrap();
-        
-        let mut builder = TTypeBuilder::build_empty(
-            &vm,
-            TString::NAME, "prelude",
-            TString::ttype(&vm),
-        );
-        builder.extend(tobject! {
-            hash: "hash"
-        });
-        builder.build();
-
-        let functy = ttype! {
-            name: TFunction::NAME,
-            modname: "prelude",
-        }.build(&vm);
-        module.set_rust_ttype::<TFunction>(functy).unwrap();
     }
 }
 

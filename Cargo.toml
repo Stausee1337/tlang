@@ -20,6 +20,8 @@ indexmap = "2.2.6"
 lalrpop-util = "0.20.2"
 logos = "0.14.0"
 rustix = { version = "0.38.34", features = ["mm"], default-features = false }
+serde = "1.0.205"
+serde_closure = "0.3.3"
 snailquote = "0.3.1"
 static_assertions = "1.1.0"
 tlang_macros = { path = "./tlang_macros" }

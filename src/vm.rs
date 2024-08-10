@@ -17,8 +17,8 @@ impl VM {
             Self::create(heap)
         });
 
-        let prelude = TModule::new_from_rust(&vm, "prelude");
-        tvalue::prelude::module_init(prelude); 
+        // let prelude = TModule::new_from_rust(&vm, "prelude");
+        // tvalue::prelude::module_init(prelude); 
 
         vm
     }
@@ -67,7 +67,8 @@ impl RustTypeInterner {
         }
     }
 
-    pub fn query(&self, id: TypeId) -> GCRef<TType> {
+    pub fn query<T: 'static>(&self) -> GCRef<TType> {
+        let id = TypeId::of::<T>();
         *self.0.get(&id).expect(
             &format!("expected query of interned rust type"))
     }

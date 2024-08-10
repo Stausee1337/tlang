@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use convert_case::{Casing, Case};
 use proc_macro2::{TokenStream, Ident, Span};
-use quote::{quote, ToTokens};
-use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference, FieldValue, Member};
+use quote::{quote, ToTokens, quote_spanned};
+use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference, FieldValue, Member, ItemMod, Item, ItemStruct, LitStr, Path, PathArguments, GenericArgument};
 
 pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
     let node: ItemEnum = syn::parse2(token_stream)?;
@@ -536,7 +538,7 @@ pub fn generate_tobject(token_stream: TokenStream) -> Result<TokenStream, syn::E
         code.extend(quote! {
             {
                 let name = symbols.intern_slice(stringify!(#ident));
-                let value = VMConvert::convert(#expr, builder.vm);
+                let value = VMCast::vmcast(#expr, builder.vm);
                 builder.insert_attribute(name, value);
             }
         });
@@ -596,4 +598,197 @@ pub fn generate_ttype(token_stream: TokenStream) -> Result<TokenStream, syn::Err
         InternalBuilder
     };
     Ok(quote!( { #tokens } ))
+}
+
+enum DeclaredKind {
+    Primitive,
+    Record,
+}
+
+struct TypeDeclared {
+    display_name: LitStr,
+    item: ItemStruct,
+    kind: DeclaredKind,
+    impls_into: bool,
+    impls_downcast: bool
+}
+
+fn generic_path_with_argument<'l>(path: &'l Path, name: &'static str) -> Option<&'l Ident> {
+    let segment = path.segments.last()?;
+    if segment.ident.to_string() != name {
+        return None;
+    }
+    let args = match &segment.arguments {
+        PathArguments::AngleBracketed(arguments) => arguments,
+        _ => return None,
+    };
+    if args.args.len() != 1 {
+        return None;
+    }
+    let first = args.args.first().unwrap();
+    let ty = match first {
+        GenericArgument::Type(ty) => ty,
+        _ => return None,
+    };
+    match ty {
+        Type::Path(path) => path.path.get_ident(),
+        _ => None
+    }
+}
+
+pub fn generate_tmodule(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+    let mut module: ItemMod = syn::parse2(token_stream)?;
+
+    let Some(content) = module.content.as_mut() else {
+        return Err(syn::Error::new(Span::call_site(), "expected module with body"));
+    };
+
+    let mut types = HashMap::new();
+
+    for item in &mut content.1 {
+        let (ident, strc) = match item {
+            Item::Struct(s) => (s.ident.to_string(), s),
+            _ => continue,
+        };
+        let mut display_name: Option<LitStr> = None;
+        let mut kind: Option<DeclaredKind> = None;
+        let mut index = 0;
+
+        for (idx, attr) in strc.attrs.iter().enumerate() {
+            index = idx;
+
+            let Meta::List(list) = &attr.meta else {
+                continue;
+            };
+            let Some(ident) = list.path.get_ident() else {
+                continue;
+            };
+            kind = Some(match ident.to_string().as_str() {
+                "primitive" => DeclaredKind::Primitive,
+                "record" => DeclaredKind::Record,
+                _ => continue
+            });
+            display_name = Some(syn::parse2(list.tokens.clone())?);
+            break;
+        }
+        
+        let Some((kind, display_name)) = kind.zip(display_name) else {
+            continue;
+        };
+
+        strc.attrs.remove(index);
+
+        types.insert(ident, TypeDeclared {
+            display_name,
+            kind,
+            item: strc.clone(),
+            impls_into: false,
+            impls_downcast: false
+        });
+    }
+
+    let mut errors = quote!{};
+
+    for item in &content.1 {
+        let implem = match item {
+            Item::Impl(s) => s,
+            _ => continue,
+        };
+
+        let (ident, is_ref) = match implem.self_ty.as_ref() {
+            Type::Path(path) => {
+                if let Some(ident) = path.path.get_ident() {
+                    (ident, false)
+                } else if let Some(ident) = generic_path_with_argument(&path.path, "GCRef") {
+                    (ident, true)
+                } else {
+                    continue;
+                }
+            },
+            _ => continue
+        };
+
+        let Some(declared) = types.get_mut(&ident.to_string()) else {
+            continue;
+        };
+
+        if let Some((_, path, _)) = &implem.trait_ {
+            if let Some(ident) = generic_path_with_argument(&path, "Into") {
+                if ident.eq("TValue") {
+                    declared.impls_into = true;
+                }
+            } else if let Some(ident) = path.get_ident() {
+                if ident.eq("VMDowncast") {
+                    declared.impls_downcast = true;
+                }
+            }
+        }
+
+        /*let mut message = format!("implemented {ident}");
+        if is_ref {
+            message.push_str("  on GCRef");
+        }
+
+        let message = LitStr::new(
+            &message, Span::call_site()
+        );
+
+        let test = quote_spanned! { ident.span() =>
+            compile_error!(#message);
+        };
+
+        errors.extend(test);*/
+    }
+
+    let mut impls = Vec::new();
+
+    for (_, declared) in &types {
+        let display_name = &declared.display_name;
+        let ident = &declared.item.ident;
+
+        let typed_impl: Item = syn::parse2(quote! {
+            impl crate::tvalue::Typed for #ident {
+                const NAME: &'static str = #display_name;
+                
+                fn ttype(vm: &VM) -> crate::memory::GCRef<crate::tvalue::TType> {
+                    vm.types().query::<Self>()
+                }
+            }
+        }).unwrap();
+        impls.push(typed_impl);
+
+        if !declared.impls_into {
+            let into_impl: Item = syn::parse2(quote! {
+                impl Into<TValue> for crate::memory::GCRef<#ident> {
+                    #[inline(always)]
+                    fn into(self) -> TValue {
+                        TValue::object(self)
+                    }
+                }
+            }).unwrap();
+            impls.push(into_impl);
+        }
+
+        if !declared.impls_downcast {
+            let downcast_impl: Item = syn::parse2(quote! {
+                impl VMDowncast for crate::memory::GCRef<#ident> {
+                    #[inline(always)]
+                    fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
+                        value.query_object::<#ident>(vm)
+                    }
+                }
+            }).unwrap();
+            impls.push(downcast_impl);
+        }
+
+    }
+
+    for imp in impls {
+        content.1.push(imp);
+    }
+
+    Ok(quote! {
+        #module
+        #errors
+    })
 }
