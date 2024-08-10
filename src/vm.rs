@@ -17,8 +17,8 @@ impl VM {
             Self::create(heap)
         });
 
-        // let prelude = TModule::new_from_rust(&vm, "prelude");
-        // tvalue::prelude::module_init(prelude); 
+        let prelude = TModule::new_from_rust(&vm);
+        tvalue::prelude::module_init(prelude); 
 
         vm
     }
@@ -82,17 +82,16 @@ pub enum GlobalErr {
 }
 
 pub struct TModule {
-    // name: GCRef<TString>,
+    name: TValue,
     source: TValue,
     table: hashbrown::HashTable<(Symbol, TValue, bool)>
 }
 
 impl TModule {
-    pub fn new_from_rust(vm: &VM, modname: &str) -> GCRef<Self> {
-        // let modname = TString::from_slice(vm, modname);
+    pub fn new_from_rust(vm: &VM) -> GCRef<Self> {
         StaticAtom::allocate(vm.heap(), 
             Self {
-                // name: modname,
+                name: TValue::null(),
                 source: TValue::null(),
                 table: Default::default()
             }
@@ -105,6 +104,10 @@ impl TModule {
 }
 
 impl GCRef<TModule> {
+    pub fn set_name(&mut self, name: &str) {
+        self.name = TString::from_slice(&self.vm(), name).into();
+    }
+
     pub fn set_rust_ttype<T: Typed>(&mut self, value: GCRef<TType>) -> Result<(), GlobalErr> {
         let vm = self.vm();
         vm.types().intern(std::any::TypeId::of::<T>(), value);

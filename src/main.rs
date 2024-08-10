@@ -2,8 +2,6 @@ use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 
 use bumpalo::Bump;
 use getopts::{Options, ParsingStyle};
-use memory::GCRef;
-use parse::ParseContext;
 use tvalue::{TFunction, TValue, TString};
 use vm::TModule;
 
@@ -89,7 +87,8 @@ fn main() -> ExitCode {
             filename
         };
 
-        let mut module = TModule::new_from_rust(&vm, modname);
+        let mut module = TModule::new_from_rust(&vm);
+        module.set_name(modname);
         module.set_source(source.drop_static());
 
         let generator = BytecodeGenerator::new(module);

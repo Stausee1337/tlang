@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use convert_case::{Casing, Case};
 use proc_macro2::{TokenStream, Ident, Span};
 use quote::{quote, ToTokens, quote_spanned};
-use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference, FieldValue, Member, ItemMod, Item, ItemStruct, LitStr, Path, PathArguments, GenericArgument};
+use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference, FieldValue, Member, ItemMod, Item, ItemStruct, LitStr, Path, PathArguments, GenericArgument, LitInt};
 
 pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
     let node: ItemEnum = syn::parse2(token_stream)?;
@@ -636,7 +636,10 @@ fn generic_path_with_argument<'l>(path: &'l Path, name: &'static str) -> Option<
     }
 }
 
-pub fn generate_tmodule(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+pub fn generate_tmodule(
+    attr: TokenStream,
+    token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+    let modname: LitStr = syn::parse2(attr)?;
     let mut module: ItemMod = syn::parse2(token_stream)?;
 
     let Some(content) = module.content.as_mut() else {
@@ -677,6 +680,11 @@ pub fn generate_tmodule(token_stream: TokenStream) -> Result<TokenStream, syn::E
         };
 
         strc.attrs.remove(index);
+        if let DeclaredKind::Primitive = kind {
+            let repr_parser = Attribute::parse_outer;
+            let repr = repr_parser.parse2(quote!(#[repr(C)])).unwrap();
+            strc.attrs.extend(repr);
+        }
 
         types.insert(ident, TypeDeclared {
             display_name,
@@ -687,9 +695,7 @@ pub fn generate_tmodule(token_stream: TokenStream) -> Result<TokenStream, syn::E
         });
     }
 
-    let mut errors = quote!{};
-
-    for item in &content.1 {
+    for item in &mut content.1 {
         let implem = match item {
             Item::Impl(s) => s,
             _ => continue,
@@ -724,6 +730,27 @@ pub fn generate_tmodule(token_stream: TokenStream) -> Result<TokenStream, syn::E
             }
         }
 
+        let mut index = 0;
+        let mut vmimpl = false;
+        for (idx, attr) in implem.attrs.iter().enumerate() {
+            index = idx;
+            match &attr.meta {
+                Meta::Path(path) => {
+                    if let Some(ident) = path.get_ident() {
+                        if ident.eq("vmimpl") {
+                            vmimpl = true;
+                            break;
+                        }
+                    }
+                },
+                _ => continue
+            }
+        }
+        if !vmimpl {
+            continue;
+        }
+        implem.attrs.remove(index);
+
         /*let mut message = format!("implemented {ident}");
         if is_ref {
             message.push_str("  on GCRef");
@@ -741,6 +768,11 @@ pub fn generate_tmodule(token_stream: TokenStream) -> Result<TokenStream, syn::E
     }
 
     let mut impls = Vec::new();
+
+    let modname_const: Item = syn::parse2(quote! {
+        const MODNAME: &'static str = #modname;
+    }).unwrap();
+    impls.push(modname_const);
 
     for (_, declared) in &types {
         let display_name = &declared.display_name;
@@ -780,7 +812,25 @@ pub fn generate_tmodule(token_stream: TokenStream) -> Result<TokenStream, syn::E
             }).unwrap();
             impls.push(downcast_impl);
         }
+        
+        let initfunc_ident = Ident::new(&format!("initfunc_{ident}"), Span::call_site());
 
+        /*let priminit = if let DeclaredKind::Primitive = declared.kind {
+            Some(quote!( (#ident, 2) ))
+        } else {
+            None
+        };*/
+
+        let initfunc: Item = syn::parse2(quote! {
+            #[allow(non_camel_case_types)]
+            #[doc(hidden)]
+            #[initfunc(#ident, 2)]
+            fn #initfunc_ident(module: crate::memory::GCRef<crate::vm::TModule>) {
+                println!(stringify!(#ident));
+            }
+        }).unwrap();
+
+        impls.push(initfunc);
     }
 
     for imp in impls {
@@ -788,7 +838,113 @@ pub fn generate_tmodule(token_stream: TokenStream) -> Result<TokenStream, syn::E
     }
 
     Ok(quote! {
+        #[tlang_macros::tmodule_init]
         #module
-        #errors
+    })
+}
+
+struct InitPrimitive(Path, LitInt);
+
+struct GatheredInit {
+    funcident: Ident,
+    primitive: Option<InitPrimitive>
+}
+
+impl Parse for InitPrimitive {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let path = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let int = input.parse()?;
+        Ok(Self(
+            path, int
+        ))
+    }
+}
+
+pub fn generate_tmodule_init(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+    let mut module: ItemMod = syn::parse2(token_stream)?;
+
+    let Some(content) = module.content.as_mut() else {
+        return Err(syn::Error::new(Span::call_site(), "expected module with body"));
+    };
+
+    let mut gathered_inits = Vec::new();
+
+    for item in &mut content.1 {
+        let itemfn = match item {
+            Item::Fn(itemfn) => itemfn,
+            _ => continue
+        };
+
+        let mut index = 0;
+        let mut found = false;
+        let mut primitive = None;
+
+        for (idx, attr) in itemfn.attrs.iter().enumerate() {
+            index = idx;
+            match &attr.meta {
+                Meta::Path(path) => {
+                    if let Some(ident) = path.get_ident() {
+                        if ident.eq("initfunc") {
+                            found = true;
+                            break;
+                        }
+                    }
+                },
+                Meta::List(list) => {
+                    if let Some(ident) = list.path.get_ident() {
+                        if ident.eq("initfunc") {
+                            found = true;
+                            primitive = Some(syn::parse2(list.tokens.clone())?);
+                            break;
+                        }
+                    }
+                }
+                _ => continue,
+            }
+        }
+
+        if !found {
+            continue;
+        }
+        itemfn.attrs.remove(index);
+
+        gathered_inits.push(GatheredInit {
+            funcident: itemfn.sig.ident.clone(),
+            primitive
+        })
+    }
+
+    let mut fnpre = TokenStream::new();
+    let mut fnbody = TokenStream::new();
+
+    for init in gathered_inits {
+        let funcident = &init.funcident;
+        fnbody.extend(quote!{
+            #funcident(module);
+        });
+
+        if let Some(primitive) = init.primitive {
+            let path = primitive.0;
+            let count = primitive.1;
+            fnpre.extend(quote! {
+                module.set_rust_ttype::<#path>(crate::tvalue::TType::empty(&vm, #count)).unwrap();
+            });
+        }
+    }
+
+    let module_init_fn: Item = syn::parse2(quote! {
+        pub fn module_init(mut module: GCRef<TModule>) {
+            let vm = module.vm();
+            #fnpre
+            #fnbody
+            module.set_name(MODNAME);
+        }
+    }).unwrap();
+
+    content.1.push(module_init_fn);
+
+    Ok(quote! {
+        #module
     })
 }

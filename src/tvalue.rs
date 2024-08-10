@@ -377,89 +377,80 @@ impl std::fmt::Debug for TBool {
     }
 }
 
-#[repr(C)]
-pub struct TString {
-    pub size: TInteger,
-    pub length: TInteger,
-    pub data: [u8; 0]
-}
-
-impl TString {
-    pub fn as_slice<'a>(&self) -> &'a str {
-        let size = self.size.as_usize().expect("TString sensible size");
-        unsafe {
-            let bytes = std::slice::from_raw_parts(self.data.as_ptr(), size);
-            let str = std::str::from_utf8_unchecked(bytes);
-            str
-        }
-    }
-
-    pub fn from_slice(vm: &VM, slice: &str) -> GCRef<Self> {
-        Self::from_slice_impl(vm, slice, TString::ttype(vm).get_static())
-    }
-
-    pub(crate) fn from_slice_impl<A: Atom>(vm: &VM, slice: &str, atom: &'static A) -> GCRef<Self> {
-        let size = TInteger::from_usize(slice.len());
-
-        let length = TInteger::from_usize(slice.chars().count());
-
-        let mut string = vm.heap().allocate_var_atom(
-            atom,
-            Self { size, length, data: [0u8; 0] },
-            slice.len()
-        );
-
-        unsafe {
-            std::ptr::copy_nonoverlapping(slice.as_ptr(), string.data.as_mut_ptr(), slice.len());
-        }
-
-        string
-    }
-
-    pub fn deepcopy(&self, vm: &VM) -> GCRef<TString> {
-        Self::from_slice(vm, self.as_slice())
-    }
-}
-
-impl Display for TString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_slice())
-    }
-}
-
-impl std::fmt::Debug for TString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_slice())
-    }
-}
-
-impl Typed for TString {
-    const NAME: &'static str = "string";
-
-    fn ttype(vm: &VM) -> GCRef<TType> {
-        vm.types.query::<Self>()
-    }
-}
-
-impl Into<TValue> for GCRef<TString> {
-    fn into(self) -> TValue {
-        TValue::string(self)
-    }
-}
-
-impl GetHash for GCRef<TString> {
-    fn get_hash_code(&self) -> u64 {
-        self.vm().hash_state.hash_one(self.as_slice())
-    }
-}
-
 use prelude::IntegerKind;
-pub use prelude::{TFunction, TFnKind, TInteger};
+pub use prelude::{TFunction, TFnKind, TInteger, TString};
 
 #[tmodule("prelude")]
 pub mod prelude {
-
     use super::*;
+
+    #[primitive("string")]
+    pub struct TString {
+        size: TInteger,
+        length: TInteger,
+        data: [u8; 0]
+    }
+
+    impl TString {
+        pub fn as_slice<'a>(&self) -> &'a str {
+            let size = self.size.as_usize().expect("TString sensible size");
+            unsafe {
+                let bytes = std::slice::from_raw_parts(self.data.as_ptr(), size);
+                let str = std::str::from_utf8_unchecked(bytes);
+                str
+            }
+        }
+
+        pub fn from_slice(vm: &VM, slice: &str) -> GCRef<Self> {
+            Self::from_slice_impl(vm, slice, TString::ttype(vm).get_static())
+        }
+
+        pub(crate) fn from_slice_impl<A: Atom>(vm: &VM, slice: &str, atom: &'static A) -> GCRef<Self> {
+            let size = TInteger::from_usize(slice.len());
+
+            let length = TInteger::from_usize(slice.chars().count());
+
+            let mut string = vm.heap().allocate_var_atom(
+                atom,
+                Self { size, length, data: [0u8; 0] },
+                slice.len()
+            );
+
+            unsafe {
+                std::ptr::copy_nonoverlapping(slice.as_ptr(), string.data.as_mut_ptr(), slice.len());
+            }
+
+            string
+        }
+
+        pub fn deepcopy(&self, vm: &VM) -> GCRef<TString> {
+            Self::from_slice(vm, self.as_slice())
+        }
+    }
+
+    impl Display for TString {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.as_slice())
+        }
+    }
+
+    impl std::fmt::Debug for TString {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.as_slice())
+        }
+    }
+
+    impl Into<TValue> for GCRef<TString> {
+        fn into(self) -> TValue {
+            TValue::string(self)
+        }
+    }
+
+    impl GetHash for GCRef<TString> {
+        fn get_hash_code(&self) -> u64 {
+            self.vm().hash_state.hash_one(self.as_slice())
+        }
+    }
 
     #[derive(Clone, Copy)]
     pub(super) enum IntegerKind {
