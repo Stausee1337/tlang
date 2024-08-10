@@ -17,10 +17,10 @@ impl Cache {
         }
     }
 
-    pub fn cache(&mut self, str: GCRef<TString>) -> usize {
+    fn cache(&mut self, str: GCRef<TString>) -> usize {
         let hash = str.get_hash_code();
         if let Some(bucket) = self.table.find(hash, |idx| {
-            self.entries[*idx].1 == hash
+            self.entries[*idx].0 == str
         }) {
             return unsafe { *bucket.as_ref() };
         }
@@ -31,8 +31,18 @@ impl Cache {
         idx
     }
 
-    pub fn query(&self, idx: usize) -> Option<&(GCRef<TString>, u64)> {
+    fn query(&self, idx: usize) -> Option<&(GCRef<TString>, u64)> {
         self.entries.get(idx)
+    }
+
+    fn query_slice(&self, slice: &str, vm: &VM) -> Option<usize> {
+        let hash = vm.hash_state.hash_one(slice);
+        if let Some(bucket) = self.table.find(hash, |idx| {
+            self.entries[*idx].0.as_slice().eq(slice)
+        }) {
+            return Some(unsafe { *bucket.as_ref() });
+        }
+        None
     }
 }
 
@@ -68,8 +78,10 @@ impl SymbolInterner {
 
 impl GCRef<SymbolInterner> {
     pub fn intern_slice(&mut self, str: &str) -> Symbol {
-        println!("intern_slice {}", str);
         let vm = self.vm();
+        if let Some(sym) = self.cache.query_slice(str, &vm) {
+            return Symbol(sym as u32);
+        }
         self.intern(TString::from_slice(&vm, str))
     }
 }
