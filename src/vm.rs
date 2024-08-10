@@ -58,18 +58,17 @@ impl RustTypeInterner {
         RustTypeInterner(Default::default())
     }
     
-    fn intern(&mut self, ty: TypeId, ttype: GCRef<TType>) {
-        let Some(ttype2) = self.0.insert(ty, ttype) else {
+    fn intern<T: Typed>(&mut self, ttype: GCRef<TType>) {
+        let Some(ttype2) = self.0.insert(TypeId::of::<T>(), ttype) else {
             return;
         };
         if ttype2 != ttype {
-            panic!("{ty:?} was tried to be associated with two different ttypes");
+            panic!("{:?} was tried to be associated with two different types", TypeId::of::<T>());
         }
     }
 
-    pub fn query<T: 'static>(&self) -> GCRef<TType> {
-        let id = TypeId::of::<T>();
-        *self.0.get(&id).expect(
+    pub fn query<T: Typed>(&self) -> GCRef<TType> {
+        *self.0.get(&TypeId::of::<T>()).expect(
             &format!("expected query of interned rust type"))
     }
 }
@@ -108,9 +107,12 @@ impl GCRef<TModule> {
         self.name = TString::from_slice(&self.vm(), name).into();
     }
 
-    pub fn set_rust_ttype<T: Typed>(&mut self, value: GCRef<TType>) -> Result<(), GlobalErr> {
+    pub fn set_rust_ttype<T: Typed>(
+        &mut self,
+        value: GCRef<TType>,
+    ) -> Result<(), GlobalErr> {
         let vm = self.vm();
-        vm.types().intern(std::any::TypeId::of::<T>(), value);
+        vm.types().intern::<T>(value);
         let name = vm.symbols().intern_slice(T::NAME);
         self.set_global(name, TValue::ttype_object(value), true)
     }

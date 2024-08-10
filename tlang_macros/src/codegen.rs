@@ -610,7 +610,8 @@ struct TypeDeclared {
     item: ItemStruct,
     kind: DeclaredKind,
     impls_into: bool,
-    impls_downcast: bool
+    impls_downcast: bool,
+    fields: Punctuated<FieldValue, Token![,]>
 }
 
 fn generic_path_with_argument<'l>(path: &'l Path, name: &'static str) -> Option<&'l Ident> {
@@ -647,6 +648,7 @@ pub fn generate_tmodule(
     };
 
     let mut types = HashMap::new();
+    let mut types_names = Vec::new();
 
     for item in &mut content.1 {
         let (ident, strc) = match item {
@@ -686,12 +688,14 @@ pub fn generate_tmodule(
             strc.attrs.extend(repr);
         }
 
+        types_names.push(ident.clone());
         types.insert(ident, TypeDeclared {
             display_name,
             kind,
             item: strc.clone(),
             impls_into: false,
-            impls_downcast: false
+            impls_downcast: false,
+            fields: Punctuated::<FieldValue, Token![,]>::new()
         });
     }
 
@@ -750,21 +754,6 @@ pub fn generate_tmodule(
             continue;
         }
         implem.attrs.remove(index);
-
-        /*let mut message = format!("implemented {ident}");
-        if is_ref {
-            message.push_str("  on GCRef");
-        }
-
-        let message = LitStr::new(
-            &message, Span::call_site()
-        );
-
-        let test = quote_spanned! { ident.span() =>
-            compile_error!(#message);
-        };
-
-        errors.extend(test);*/
     }
 
     let mut impls = Vec::new();
@@ -774,14 +763,15 @@ pub fn generate_tmodule(
     }).unwrap();
     impls.push(modname_const);
 
-    for (_, declared) in &types {
+    for name in &types_names {
+        let declared = types.get(name).unwrap();
         let display_name = &declared.display_name;
         let ident = &declared.item.ident;
 
         let typed_impl: Item = syn::parse2(quote! {
             impl crate::tvalue::Typed for #ident {
                 const NAME: &'static str = #display_name;
-                
+
                 fn ttype(vm: &VM) -> crate::memory::GCRef<crate::tvalue::TType> {
                     vm.types().query::<Self>()
                 }
@@ -814,19 +804,39 @@ pub fn generate_tmodule(
         }
         
         let initfunc_ident = Ident::new(&format!("initfunc_{ident}"), Span::call_site());
+        let fields = &declared.fields;
+        let size = fields.len();
 
-        /*let priminit = if let DeclaredKind::Primitive = declared.kind {
-            Some(quote!( (#ident, 2) ))
+        let priminit = if let DeclaredKind::Primitive = declared.kind {
+            Some(quote!( (#ident, #size) ))
         } else {
             None
-        };*/
+        };
 
+
+        let tyinit = match declared.kind {
+            DeclaredKind::Primitive => quote! {
+                let vm = module.vm();
+                let mut builder = TTypeBuilder::build_empty(
+                    &vm, #ident::NAME, MODNAME, #ident::ttype(&vm));
+                builder.extend(tlang_macros::tobject! { #fields });
+                builder.build();
+            },
+            DeclaredKind::Record => quote! {
+                let ttype = tlang_macros::ttype! {
+                    name: #ident::NAME,
+                    modname: MODNAME,
+                    #fields
+                }.build(&module.vm());
+                module.set_rust_ttype::<#ident>(ttype);
+            }
+        };
         let initfunc: Item = syn::parse2(quote! {
             #[allow(non_camel_case_types)]
             #[doc(hidden)]
-            #[initfunc(#ident, 2)]
+            #[initfunc #priminit]
             fn #initfunc_ident(module: crate::memory::GCRef<crate::vm::TModule>) {
-                println!(stringify!(#ident));
+                #tyinit
             }
         }).unwrap();
 
@@ -928,6 +938,7 @@ pub fn generate_tmodule_init(token_stream: TokenStream) -> Result<TokenStream, s
             let path = primitive.0;
             let count = primitive.1;
             fnpre.extend(quote! {
+                println!(stringify!(#path));
                 module.set_rust_ttype::<#path>(crate::tvalue::TType::empty(&vm, #count)).unwrap();
             });
         }

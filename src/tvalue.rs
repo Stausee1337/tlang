@@ -261,7 +261,7 @@ pub struct TType(TAnonObject);
 impl TType {
     fn empty(vm: &VM, count: usize) -> GCRef<Self> {
         unsafe {
-            let object = TAnonObject::make(vm, count);
+            let object = TAnonObject::make(vm, count + 2);
             object.cast()
         }
     }
