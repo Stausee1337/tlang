@@ -214,6 +214,12 @@ impl<T: VMCast> VMCast for Option<T> {
     }
 }
 
+impl VMDowncast for TValue {
+    fn vmdowncast(value: TValue, _vm: &VM) -> Option<Self> {
+        Some(value)
+    }
+}
+
 pub trait GetHash {
     fn get_hash_code(&self) -> u64;
 }
@@ -450,24 +456,6 @@ pub mod prelude {
         }
     }
 
-    pub fn print(module: GCRef<TModule>, message: GCRef<TString>) {
-
-    }
-
-    pub fn test(module: GCRef<TModule>) {
-        tlang_macros::tfunction!(module, GCRef::<TString>::replace, 3, Some("string.replace"), false);
-        tlang_macros::tfunction!(module, print, 1, Some("print"), true);
-
-        /*let vm = module.vm();
-        let test: fn(
-            _,
-            _,
-            _) -> _ = GCRef::<TString>::replace as _;
-        let arg0 = VMDowncast::vmdowncast(args[0], &vm).unwrap();
-        let arg1 = VMDowncast::vmdowncast(args[1], &vm).unwrap();
-        let arg2 = VMDowncast::vmdowncast(args[2], &vm).unwrap();
-        VMCast::vmcast(test(arg0, arg1, arg2), &vm)*/
-    }
 
     impl Display for TString {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -674,6 +662,11 @@ pub mod prelude {
         fn into(self) -> TValue {
             TValue::object_tagged(self, TValueKind::Function)
         }
+    }
+
+    #[vmcall]
+    pub fn print(#[module] module: GCRef<TModule>, message: TValue) {
+        println!("Execution directed to print()");
     }
 }
 

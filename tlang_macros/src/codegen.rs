@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use convert_case::{Casing, Case};
 use proc_macro2::{TokenStream, Ident, Span};
 use quote::{quote, ToTokens, quote_spanned, TokenStreamExt};
-use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference, FieldValue, Member, ItemMod, Item, ItemStruct, LitStr, Path, PathArguments, GenericArgument, LitInt, ExprLit, Lit};
+use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference, FieldValue, Member, ItemMod, Item, ItemStruct, LitStr, Path, PathArguments, GenericArgument, LitInt, ExprLit, Lit, FnArg};
 
 pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
     let node: ItemEnum = syn::parse2(token_stream)?;
@@ -843,6 +843,62 @@ pub fn generate_tmodule(
         implem.attrs.remove(index);
     }
 
+    let mut modulefuncs = TokenStream::new();
+
+    for item in &mut content.1 {
+        let func = match item {
+            Item::Fn(s) => s,
+            _ => continue,
+        };
+
+        let mut index = 0;
+        let mut vmimpl = false;
+        for (idx, attr) in func.attrs.iter().enumerate() {
+            index = idx;
+            match &attr.meta {
+                Meta::Path(path) => {
+                    if let Some(ident) = path.get_ident() {
+                        if ident.eq("vmcall") {
+                            vmimpl = true;
+                            break;
+                        }
+                    }
+                },
+                _ => continue
+            }
+        }
+        if !vmimpl {
+            continue;
+        }
+        func.attrs.remove(index);
+
+        let mut modparam = false;
+        if let Some(param) = func.sig.inputs.first_mut() {
+            let attrs = match param {
+                FnArg::Typed(typed) => &mut typed.attrs,
+                _ => unreachable!()
+            };
+            if let Some(Meta::Path(path)) = attrs.first().map(|attr| &attr.meta) {
+                modparam = path.get_ident().map(|ident| ident.eq("module")).unwrap_or(false);
+            }
+            if modparam {
+                attrs.remove(0);
+            }
+        }
+
+        let ident = &func.sig.ident;
+        let args = func.sig.inputs.len() - (modparam as usize);
+
+        modulefuncs.extend(quote! {
+            let name = vm.symbols().intern_slice(stringify!(#ident));
+            let function = tlang_macros::tfunction!(module, #ident, #args, Some(stringify!(#ident)), #modparam);
+            module.set_global(
+                name,
+                function.into(),
+                true).unwrap();
+        });
+    }
+
     let mut impls = Vec::new();
 
     let modname_const: Item = syn::parse2(quote! {
@@ -929,6 +985,15 @@ pub fn generate_tmodule(
 
         impls.push(initfunc);
     }
+
+    let modulefuncs_init: Item = syn::parse2(quote! {
+        #[initfunc]
+        fn modulefuncs_init(mut module: crate::memory::GCRef<TModule>) {
+            let vm = module.vm();
+            #modulefuncs
+        }
+    }).unwrap();
+    impls.push(modulefuncs_init);
 
     for imp in impls {
         content.1.push(imp);
