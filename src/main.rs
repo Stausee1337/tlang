@@ -1,5 +1,7 @@
 use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 
+extern crate self as tlang;
+
 use bumpalo::Bump;
 use getopts::{Options, ParsingStyle};
 use tvalue::{TFunction, TValue, TString};
@@ -57,7 +59,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let vm = vm::VM::init();
+    let (vm, prelude) = vm::VM::init();
 
     let input = if !matches.free.is_empty() {
         matches.free
@@ -87,12 +89,14 @@ fn main() -> ExitCode {
             filename
         };
 
-        let mut module = TModule::new_from_rust(&vm);
-        module.set_name(modname);
-        module.set_source(source.drop_static());
+        // let mut module = TModule::new_from_rust(&vm);
+        // module.set_name(modname);
+        // module.set_source(source.drop_static());
 
-        let generator = BytecodeGenerator::new(module);
+        let generator = BytecodeGenerator::new(prelude);
         let gen_fn = codegen::generate_module(ast, generator).unwrap();
+
+        gen_fn.call(&mut []);
 
         drop(vm);
 

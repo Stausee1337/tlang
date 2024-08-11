@@ -7,13 +7,11 @@ use crate::{memory::{GCRef, Atom}, symbol::Symbol, bytecode::TRawCode, bigint::{
 use tlang_macros::tmodule;
 
 #[repr(u64)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum TValueKind {
     Object   = 0b101 << 49,
     Int32    = 0b001 << 49,
     Bool     = 0b010 << 49,
-    String   = 0b110 << 49,
-    Function = 0b000 << 49,
     Float    = 0b100 << 49,
 }
 
@@ -38,20 +36,20 @@ impl TValue {
     #[inline(always)]
     pub const fn null() -> Self {
         let null = unsafe { GCRef::<()>::null() };
-        Self::object_tagged(null, TValueKind::Object)
+        Self::object_impl(null)
     }
 
     #[inline(always)]
     pub fn object<T: Typed>(object: GCRef<T>) -> Self {
         debug_assert!(std::ptr::addr_eq(
-            &T::ttype(&object.vm()),
+            T::ttype(&object.vm()).as_ptr(),
             object.kind::<TType>().unwrap()
         ));
-        Self::object_tagged(object, TValueKind::Object)
+        Self::object_impl(object)
     }
 
     pub(crate) fn ttype_object(ttype: GCRef<TType>) -> Self {
-        Self::object_tagged(ttype, TValueKind::Object)
+        Self::object_impl(ttype)
     }
 
     #[inline(always)]
@@ -72,16 +70,11 @@ impl TValue {
     }
 
     #[inline(always)]
-    const fn object_tagged<T>(object: GCRef<T>, kind: TValueKind) -> Self {
+    const fn object_impl<T>(object: GCRef<T>) -> Self {
         // TODO: use object.as_ptr() instead
         let object: u64 = unsafe { transmute(object) };
         assert!(object & (!Self::NAN_VALUE_MASK) == 0);
-        TValue(Self::FLOAT_NAN_TAG | kind as u64 | object)
-    }
-
-    #[inline(always)]
-    const fn string(string: GCRef<TString>) -> Self {
-        Self::object_tagged(string, TValueKind::String)
+        TValue(Self::FLOAT_NAN_TAG | TValueKind::Object as u64 | object)
     }
 
     /// Public Helpers 
@@ -89,6 +82,9 @@ impl TValue {
     #[inline(always)]
     pub fn query_object<T: Typed>(&self, vm: &VM) -> Option<GCRef<T>> {
         if let TValueKind::Object = self.kind() {
+            if self.as_object::<()>().as_ptr().is_null() {
+                return None;
+            }
             let object_type = self.ttype(vm);
             if std::ptr::addr_eq(object_type.as_ptr(), T::ttype(vm).as_ptr()) {
                 return Some(self.as_object::<T>());
@@ -134,6 +130,9 @@ impl TValue {
             TValueKind::Float => TFloat::ttype(vm),
             _ => {
                 let object = self.as_object::<()>();
+                if object.as_ptr().is_null() {
+                    panic!("Dont call ttype() on TValue::null");
+                }
                 let object_type = object.kind::<TType>()
                     .expect("TValue have TType");
                 unsafe { GCRef::from_raw(&*object_type) }
@@ -469,12 +468,6 @@ pub mod prelude {
         }
     }
 
-    impl Into<TValue> for GCRef<TString> {
-        fn into(self) -> TValue {
-            TValue::string(self)
-        }
-    }
-
     impl GetHash for GCRef<TString> {
         fn get_hash_code(&self) -> u64 {
             self.vm().hash_state.hash_one(self.as_slice())
@@ -608,8 +601,7 @@ pub mod prelude {
         fn into(self) -> TValue {
             match self.0 {
                 IntegerKind::Int32(int) => TValue::int32(int),
-                IntegerKind::Bigint(bigint) =>
-                    TValue::object_tagged(bigint, TValueKind::Object)
+                IntegerKind::Bigint(bigint) => TValue::object(bigint)
             }
         }
     }
@@ -647,8 +639,8 @@ pub mod prelude {
         pub fn call<'a>(&self, arguments: &'a mut [TValue]) -> TValue {
             match &self.kind {
                 TFnKind::Function(code) => {
-                    // TODO: check len(arguments) == len(params)
-                    code.evaluate(&self.vm(), arguments)
+                    assert!(arguments.len() == code.params());
+                    code.evaluate(self.module, arguments)
                 }
                 TFnKind::Nativefunc(func) => {
                     func(self.module, arguments)
@@ -660,7 +652,7 @@ pub mod prelude {
     impl Into<TValue> for GCRef<TFunction> {
         #[inline(always)]
         fn into(self) -> TValue {
-            TValue::object_tagged(self, TValueKind::Function)
+            TValue::object(self)
         }
     }
 

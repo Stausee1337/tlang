@@ -469,38 +469,51 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
     let stmt: DecodeStmt = syn::parse2(token_stream)?;
 
     let mut fields = Punctuated::<Ident, Token![,]>::new();
+    let mut outputs = Punctuated::<Ident, Token![,]>::new();
     let mut locals = Punctuated::<PatIdent, Token![,]>::new();
 
     let ident = &stmt.decodable.ident;
     let environment = &stmt.environment;
 
     let mut decode_logic = TokenStream::new(); 
+    let mut deref_decode_logic = TokenStream::new(); 
     for field in &stmt.decodable.fields.named {
         let ident = &field.ident;
         let local = PatIdent {
             attrs: vec![],
             ident: ident.clone(),
             by_ref: None,
-            mutability: None,
+            mutability: if let DecodeKind::Deref(..) = field.kind {
+                Some(Token![mut](Span::call_site()))
+            } else { None },
             subpat: None
         };
         
         let decoding = match field.kind {
             DecodeKind::Copy => quote!(Decode::decode(&#ident, #environment)),
-            DecodeKind::Deref(_) => quote!(DecodeDeref::decode_deref(&#ident, unsafe { &*codenv })),
+            DecodeKind::Deref(_) => {
+                let decode_deref_fn = Ident::new(&format!("decode_deref_{ident}"), Span::call_site());
+                deref_decode_logic.extend(quote! {
+                    let #local = instruction.#decode_deref_fn(unsafe { &*codenv });
+                });
+                locals.push(local);
+                outputs.push(ident.clone());
+                continue;
+            },
             DecodeKind::Mutable(_) => quote!(DecodeMut::decode_mut(&#ident, #environment)),
         };
 
         decode_logic.extend(quote!(let #local = #decoding; ));
 
         fields.push(ident.clone());
+        outputs.push(ident.clone());
         locals.push(local);
     }
 
-    decode_logic.extend(quote!((#fields)));
+    decode_logic.extend(quote!((#outputs,)));
 
     Ok(quote! {
-        let (#locals) = {
+        let (#locals,) = {
             use std::ops::Deref;
             use crate::bytecode::Instruction;
 
@@ -510,6 +523,7 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
                 &mut #environment.stream
             ).unwrap();
 
+            #deref_decode_logic
 
             let crate::bytecode::instructions::#ident { #fields, .. } = *instruction;
 

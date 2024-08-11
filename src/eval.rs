@@ -1,15 +1,22 @@
-
-
 use tlang_macros::decode;
 
-use crate::{vm::VM, tvalue::{TInteger, TValue, TBool}, bytecode::{TRawCode, OpCode, CodeStream, Operand, OperandKind, Descriptor, Register, CodeLabel}};
+use crate::{
+    bytecode::{
+        CodeLabel, CodeStream, Descriptor, OpCode, Operand, OperandKind, Register, TRawCode,
+    },
+    memory::GCRef,
+    symbol::Symbol,
+    tvalue::{TBool, TFunction, TInteger, TValue, VMDowncast},
+    vm::{TModule, VM},
+};
 
 struct ExecutionEnvironment<'l> {
     stream: CodeStream<'l>,
+    module: GCRef<TModule>,
     vm: &'l VM,
     descriptors: &'l [TValue],
     arguments: &'l mut [TValue],
-    registers: &'l mut [TValue]
+    registers: &'l mut [TValue],
 }
 
 trait Decode {
@@ -20,32 +27,49 @@ trait Decode {
 
 trait DecodeMut {
     #[inline(always)]
-    fn decode_mut<'l>(&self, env: &'l mut ExecutionEnvironment) -> &'l mut TValue {
-        panic!("{} cannot be decoded as mutable", std::any::type_name_of_val(self))
+    fn decode_mut<'l>(&self, _env: &'l mut ExecutionEnvironment) -> &'l mut TValue {
+        panic!(
+            "{} cannot be decoded as mutable",
+            std::any::type_name_of_val(self)
+        )
     }
 }
 
 trait DecodeDeref {
-    fn decode_deref<'l>(&self, env: &'l ExecutionEnvironment) -> &'l impl Iterator<Item = &'l TValue>;
+    fn decode_deref<'l>(
+        &self,
+        env: &'l ExecutionEnvironment,
+    ) -> &'l impl Iterator<Item = &'l TValue>;
 }
 
 impl TRawCode {
-    pub fn evaluate<'a>(&self, vm: &VM, arguments: &'a mut [TValue]) -> TValue {
-        self.with_environment(vm, arguments, |env| {
+    pub fn evaluate<'a>(&self, module: GCRef<TModule>, args: &'a mut [TValue]) -> TValue {
+        self.with_environment(module, args, |env| {
             loop {
-                match OpCode::decode(env.stream.current()) {
+                let opcode = OpCode::decode(env.stream.current());
+                println!("{opcode:?}");
+                match opcode {
                     OpCode::Mov => {
                         decode!(Mov { src, mut dst } in env);
                         *dst = src;
                     }
-                    OpCode::Add => impls::add(env), OpCode::Sub => impls::sub(env),
-                    OpCode::Mul => impls::mul(env), OpCode::Div => impls::mul(env),
+                    OpCode::Add => impls::add(env),
+                    OpCode::Sub => impls::sub(env),
+                    OpCode::Mul => impls::mul(env),
+                    OpCode::Div => impls::mul(env),
                     OpCode::Mod => impls::rem(env),
 
-                    OpCode::LeftShift => impls::shl(env), OpCode::RightShift => impls::shr(env),
+                    OpCode::LeftShift => impls::shl(env),
+                    OpCode::RightShift => impls::shr(env),
 
-                    OpCode::BitwiseAnd => impls::bitand(env), OpCode::BitwiseOr => impls::bitor(env),
+                    OpCode::BitwiseAnd => impls::bitand(env),
+                    OpCode::BitwiseOr => impls::bitor(env),
                     OpCode::BitwiseXor => impls::bitxor(env),
+
+                    OpCode::GetGlobal => {
+                        decode!(GetGlobal { symbol, mut dst } in env);
+                        *dst = module.get_global(symbol).unwrap();
+                    }
 
                     OpCode::Branch => {
                         decode!(Branch { target } in env);
@@ -66,25 +90,47 @@ impl TRawCode {
                     }
 
                     OpCode::Fallthrough => (),
-                    _ => todo!()
+
+                    OpCode::Call => {
+                        decode!(Call { &arguments, callee, mut dst } in env);
+                        let callee: GCRef<TFunction> = VMDowncast::vmdowncast(callee, &module.vm()).unwrap();
+                        *dst = callee.call(&mut arguments);
+                    }
+                    _ => todo!(),
                 }
             }
         })
     }
 
     fn with_environment<'a, F: FnOnce(&mut ExecutionEnvironment) -> TValue>(
-        &self, vm: &VM, arguments: &'a mut [TValue], executor: F) -> TValue {
+        &self,
+        module: GCRef<TModule>,
+        arguments: &'a mut [TValue],
+        executor: F,
+    ) -> TValue {
         debug_assert!(arguments.len() == self.params());
+        let vm = module.vm();
 
         let mut registers = vec![TValue::null(); self.registers()];
         let mut env = ExecutionEnvironment {
-            vm,
+            vm: &vm,
+            module,
             stream: CodeStream::from_raw(self),
             descriptors: self.descriptors(),
             arguments,
-            registers: registers.as_mut_slice()
+            registers: registers.as_mut_slice(),
         };
         executor(&mut env)
+    }
+}
+
+impl crate::bytecode::instructions::Call {
+    fn decode_deref_arguments(&self, env: &ExecutionEnvironment) -> Vec<TValue> {
+        let mut arguments = Vec::new();
+        for op in self.arguments() {
+            arguments.push(Decode::decode(op, env));
+        }
+        arguments
     }
 }
 
@@ -142,6 +188,7 @@ impl Decode for Register {
     #[inline(always)]
     fn decode(&self, env: &ExecutionEnvironment) -> TValue {
         let idx = self.index();
+        println!("  -> Decode {idx}");
         idx.checked_sub(env.arguments.len())
             .map(|idx| env.registers[idx])
             .unwrap_or_else(|| env.arguments[idx])
@@ -150,8 +197,9 @@ impl Decode for Register {
 
 impl DecodeMut for Register {
     #[inline(always)]
-    fn decode_mut<'l>(&self, env: &'l mut ExecutionEnvironment) -> &'l mut TValue { 
+    fn decode_mut<'l>(&self, env: &'l mut ExecutionEnvironment) -> &'l mut TValue {
         let idx = self.index();
+        println!("  -> DecodeMut {idx}");
         idx.checked_sub(env.arguments.len())
             .map(|idx| env.registers.get_mut(idx).unwrap())
             .unwrap_or_else(|| env.arguments.get_mut(idx).unwrap())
@@ -163,7 +211,7 @@ impl Decode for i32 {
 
     #[inline(always)]
     fn decode(&self, _env: &ExecutionEnvironment) -> TValue {
-        TInteger::from_int32(*self).into() 
+        TInteger::from_int32(*self).into()
     }
 }
 
@@ -171,6 +219,14 @@ impl DecodeMut for i32 {}
 
 impl Decode for CodeLabel {
     type Output = CodeLabel;
+
+    fn decode(&self, _env: &ExecutionEnvironment) -> Self::Output {
+        *self
+    }
+}
+
+impl Decode for Symbol {
+    type Output = Symbol;
 
     fn decode(&self, _env: &ExecutionEnvironment) -> Self::Output {
         *self
@@ -210,7 +266,6 @@ mod impls {
             $(arithmetic_impl!($fnname, $inname);)*
         };
     }
-
 
     iterate_arithmetics! {
         impl add for Add; impl sub for Sub;

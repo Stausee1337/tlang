@@ -488,7 +488,7 @@ impl<'ast> GeneratorNode for CallExpr<'ast> {
         }
 
         let dst = generator.allocate_reg();
-        generator.emit_call(dst, callee, &arguments as &[_]);
+        generator.emit_call(callee, dst, &arguments as &[_]);
         Ok(Some(dst))
     }
 }

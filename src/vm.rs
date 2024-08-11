@@ -11,7 +11,7 @@ pub struct VM {
 }
 
 impl VM {
-    pub fn init() -> Rc<VM> {
+    pub fn init() -> (Rc<VM>, GCRef<TModule>) {
         let vm = Rc::new_cyclic(|me| {
             let heap = Box::new(Heap::init(me.clone()));
             Self::create(heap)
@@ -20,7 +20,7 @@ impl VM {
         let prelude = TModule::new_from_rust(&vm);
         tvalue::prelude::module_init(prelude); 
 
-        vm
+        (vm, prelude)
     }
 
     fn create(heap: Box<Heap>) -> Self {
