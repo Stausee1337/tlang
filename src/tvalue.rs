@@ -193,9 +193,24 @@ impl VMCast for &str {
     }
 }
 
+impl VMCast for () {
+    fn vmcast(self, _vm: &VM) -> TValue {
+        TValue::null()
+    }
+}
+
 impl<T: Into<TValue>> VMCast for T {
     fn vmcast(self, _vm: &VM) -> TValue {
         self.into()
+    }
+}
+
+impl<T: VMCast> VMCast for Option<T> {
+    fn vmcast(self, vm: &VM) -> TValue {
+        if let Some(value) = self {
+            return value.vmcast(vm);
+        }
+        TValue::null()
     }
 }
 
@@ -428,6 +443,32 @@ pub mod prelude {
         }
     }
 
+    #[vmimpl]
+    impl GCRef<TString> {
+        pub fn replace(self, old: GCRef<TString>, new: GCRef<TString>) -> GCRef<TString> {
+            todo!()
+        }
+    }
+
+    pub fn print(module: GCRef<TModule>, message: GCRef<TString>) {
+
+    }
+
+    pub fn test(module: GCRef<TModule>) {
+        tlang_macros::tfunction!(module, GCRef::<TString>::replace, 3, Some("string.replace"), false);
+        tlang_macros::tfunction!(module, print, 1, Some("print"), true);
+
+        /*let vm = module.vm();
+        let test: fn(
+            _,
+            _,
+            _) -> _ = GCRef::<TString>::replace as _;
+        let arg0 = VMDowncast::vmdowncast(args[0], &vm).unwrap();
+        let arg1 = VMDowncast::vmdowncast(args[1], &vm).unwrap();
+        let arg2 = VMDowncast::vmdowncast(args[2], &vm).unwrap();
+        VMCast::vmcast(test(arg0, arg1, arg2), &vm)*/
+    }
+
     impl Display for TString {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str(self.as_slice())
@@ -595,6 +636,22 @@ pub mod prelude {
 
     pub enum TFnKind {
         Function(TRawCode),
+        Nativefunc(fn(GCRef<TModule>, &[TValue]) -> TValue),
+    }
+
+    impl TFunction {
+        pub fn nativefunc(
+            name: Option<&str>,
+            module: GCRef<TModule>,
+            nativefunc: fn(GCRef<TModule>, &[TValue]) -> TValue
+        ) -> GCRef<TFunction> {
+            let vm = module.vm();
+            Self::ttype(&vm).allocate_object(Self {
+                name: name.vmcast(&vm),
+                module,
+                kind: TFnKind::Nativefunc(nativefunc)
+            })
+        }
     }
 
     impl GCRef<TFunction> {
@@ -604,6 +661,9 @@ pub mod prelude {
                 TFnKind::Function(code) => {
                     // TODO: check len(arguments) == len(params)
                     code.evaluate(&self.vm(), arguments)
+                }
+                TFnKind::Nativefunc(func) => {
+                    func(self.module, arguments)
                 }
             }
         }

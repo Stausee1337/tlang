@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use convert_case::{Casing, Case};
 use proc_macro2::{TokenStream, Ident, Span};
-use quote::{quote, ToTokens, quote_spanned};
-use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference, FieldValue, Member, ItemMod, Item, ItemStruct, LitStr, Path, PathArguments, GenericArgument, LitInt};
+use quote::{quote, ToTokens, quote_spanned, TokenStreamExt};
+use syn::{Fields, spanned::Spanned, ItemEnum, punctuated::Punctuated, Token, FieldsNamed, Expr, parse::{Parse, Parser}, Visibility, token::Brace, Attribute, Meta, MacroDelimiter, LitBool, braced, PatIdent, Lifetime, Type, TypeReference, FieldValue, Member, ItemMod, Item, ItemStruct, LitStr, Path, PathArguments, GenericArgument, LitInt, ExprLit, Lit};
 
 pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
     let node: ItemEnum = syn::parse2(token_stream)?;
@@ -550,6 +550,93 @@ pub fn generate_tobject(token_stream: TokenStream) -> Result<TokenStream, syn::E
         }
     };
     Ok(quote!(#tokens))
+}
+
+struct ShadowArgs(&'static str, usize, bool);
+
+impl ToTokens for ShadowArgs {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let base_ident = Ident::new(&format!("{}", self.0), Span::call_site());
+        for idx in 0..self.1 {
+            if idx != 0 {
+                tokens.extend(quote!(,));
+            }
+            let ident = if self.2 {
+                Ident::new(&format!("{}{idx}", self.0), Span::call_site())
+            } else {
+                base_ident.clone()
+            };
+            tokens.extend(quote!(#ident));
+        }
+    }
+}
+
+pub fn generate_tfunction(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+    // let fields = fields_parser.parse2(token_stream)?;
+    let argsparser = Punctuated::<Expr, Token![,]>::parse_terminated;
+    let arguments = argsparser.parse2(token_stream)?;
+
+    let module = arguments.get(0)
+        .ok_or_else(|| syn::Error::new(Span::call_site(), "expected `module` argument"))?;
+
+    let function = arguments.get(1)
+        .ok_or_else(|| syn::Error::new(Span::call_site(), "expected `function` argument"))?;
+
+    let count = arguments.get(2)
+        .ok_or_else(|| syn::Error::new(Span::call_site(), "expected `count` argument"))?;
+
+    let name = arguments.get(3)
+        .ok_or_else(|| syn::Error::new(Span::call_site(), "expected `name` argument"))?;
+
+    let modulefunc = arguments.get(4)
+        .ok_or_else(|| syn::Error::new(Span::call_site(), "expected `modulefunc` argument"))?;
+
+    let count = match count {
+        Expr::Lit(ExprLit { lit: Lit::Int(litint), .. }) => litint.clone(),
+        _ => {
+            return Err(syn::Error::new(Span::call_site(), "expected `count` to be a literal int"));
+        }
+    };
+
+    let modulefunc = match modulefunc {
+        Expr::Lit(ExprLit { lit: Lit::Bool(litbool), .. }) => litbool.value(),
+        _ => {
+            return Err(syn::Error::new(Span::call_site(), "expected `modulefunc` to be a literal bool"));
+        }
+    };
+
+    let modtoken = if modulefunc {
+        Some(quote!( module, ))
+    } else {
+        None
+    };
+
+    let count: usize = count.base10_parse()?;
+
+    let shadow_params = ShadowArgs("_", count + (modulefunc as usize), false);
+    let fntype = quote!(fn(#shadow_params) -> _);
+
+    let mut converters = TokenStream::new();
+    for idx in 0..count {
+        let arg = Ident::new(&format!("arg{idx}"), Span::call_site());
+        converters.extend(quote! {
+            let #arg = VMDowncast::vmdowncast(args[#idx], &vm).unwrap();
+        });
+    }
+
+    let shadow_args = ShadowArgs("arg", count, true);
+
+    let tokens = quote! {
+        fn inner(module: crate::memory::GCRef<crate::vm::TModule>, args: &[TValue]) -> TValue {
+            let vm = module.vm();
+            let function: #fntype = #function as _;
+            #converters
+            VMCast::vmcast(function( #modtoken #shadow_args), &vm)
+        }
+        crate::tvalue::TFunction::nativefunc(#name, #module, inner as _)
+    };
+
+    Ok(quote!( { #tokens } ))
 }
 
 pub fn generate_ttype(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {

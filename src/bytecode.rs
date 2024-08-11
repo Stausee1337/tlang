@@ -657,7 +657,8 @@ impl TFunction {
         match function.kind {
             TFnKind::Function(ref mut code) => {
                 (function2, unsafe { std::mem::transmute(code) })
-            }
+            },
+            _ => unreachable!()
         }
     }
 }
