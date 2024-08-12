@@ -325,33 +325,6 @@ impl Atom for TypeCollector {
 }
 
 #[derive(Clone, Copy)]
-pub struct TFloat(pub(super) f64);
-
-impl TFloat {
-    pub const fn as_float(self) -> f64 {
-        self.0
-    }
-
-    pub const fn from_float(float: f64) -> Self {
-        TFloat(float)
-    }
-}
-
-impl Into<TValue> for TFloat {
-    fn into(self) -> TValue {
-        TValue::float(self.0)
-    }
-}
-
-impl Typed for TFloat {
-    const NAME: &'static str = "float";
-
-    fn ttype(vm: &VM) -> GCRef<TType> {
-        todo!()
-    }
-}
-
-#[derive(Clone, Copy)]
 pub struct TBool(bool);
 
 impl TBool {
@@ -398,7 +371,7 @@ impl std::fmt::Debug for TBool {
 }
 
 use prelude::IntegerKind;
-pub use prelude::{TFunction, TFnKind, TInteger, TString};
+pub use prelude::{TFunction, TFnKind, TInteger, TFloat, TString};
 
 #[tmodule("prelude")]
 pub mod prelude {
@@ -606,8 +579,80 @@ pub mod prelude {
         }
     }
 
+    #[vmimpl]
+    impl TInteger {
+        pub fn to_float(&self) -> TFloat {
+            todo!()
+        }
+
+        pub fn add(&self, rhs: TValue,  vm: &VM) -> TValue {
+            if let Some(rhs) = TInteger::vmdowncast(rhs, vm) {
+                return Add::add(*self, rhs).vmcast(vm);
+            } else if let Some(rhs) = TFloat::vmdowncast(rhs, vm) {
+                let lhs = self.to_float();
+                return Add::add(lhs, rhs).vmcast(vm);
+            }
+            todo!()
+        }
+    }
+
+
+    #[derive(Clone, Copy)]
+    #[primitive("float")]
+    pub struct TFloat(pub(super) f64);
+
+    impl TFloat {
+        pub const fn as_float(self) -> f64 {
+            self.0
+        }
+
+        pub const fn from_float(float: f64) -> Self {
+            TFloat(float)
+        }
+    }
+
+    impl Into<TValue> for TFloat {
+        fn into(self) -> TValue {
+            TValue::float(self.0)
+        }
+    }
+
+    impl VMDowncast for TFloat {
+        #[inline(always)]
+        fn vmdowncast(value: TValue, _vm: &VM) -> Option<Self> {
+            value.query_float()
+        }
+    }
+
+
+    macro_rules! impl_float_arithmetic {
+        ($op:ident, $ty:ident, $fn:ident) => { 
+            impl $op for $ty {
+                type Output = $ty;
+
+                #[inline(always)]
+                fn $fn(self, rhs: Self) -> Self::Output {
+                    Self(self.0.$fn(rhs.0))
+                }
+            }
+        };
+    }
+
+    macro_rules! iter_float_arithmetics {
+        ($(impl $op:ident for $ty:ident in $fn:ident;)*) => {
+            $(impl_float_arithmetic!($op, $ty, $fn);)*
+        };
+    }
+
+    iter_float_arithmetics! {
+        impl Add for TFloat in add;
+        impl Sub for TFloat in sub;
+        impl Mul for TFloat in mul;
+        impl Div for TFloat in div;
+        impl Rem for TFloat in rem;
+    }
+
     #[primitive("function")]
-    #[repr(C)] 
     pub struct TFunction {
         pub name: TValue, /// Optional<TString>
         pub module: GCRef<TModule>,

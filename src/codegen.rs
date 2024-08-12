@@ -487,6 +487,10 @@ impl<'ast> GeneratorNode for CallExpr<'ast> {
             arguments.push(arg);
         }
 
+        // FIXME: Because of serialization issue the `callee` and `dst`
+        // operands end up swaped. This is more of a general issue to
+        // address in serialization, other than here
+
         let dst = generator.allocate_reg();
         generator.emit_call(callee, dst, &arguments as &[_]);
         Ok(Some(dst))

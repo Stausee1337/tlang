@@ -253,7 +253,7 @@ mod impls {
                 let lhs_int: Option<TInteger> = lhs.query_integer(vm);
                 let rhs_int: Option<TInteger> = rhs.query_integer(vm);
                 if let Some((lhs, rhs)) = lhs_int.zip(rhs_int) {
-                    *dst = TInteger::$fnname(lhs, rhs).into();
+                    *dst = lhs.$fnname(rhs).into();
                     return;
                 }
                 todo!()
