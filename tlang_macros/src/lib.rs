@@ -44,16 +44,3 @@ pub fn tfunction(item: TokenStream) -> TokenStream {
         .into()
 }
 
-#[proc_macro_attribute]
-pub fn tmodule(attr: TokenStream, item: TokenStream) -> TokenStream {
-    codegen::generate_tmodule(attr.into(), item.into())
-        .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
-        .into()
-}
-
-#[proc_macro_attribute]
-pub fn tmodule_init(_: TokenStream, item: TokenStream) -> TokenStream {
-    codegen::generate_tmodule_init(item.into())
-        .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
-        .into()
-}

@@ -4,7 +4,6 @@ use std::{mem::transmute, fmt::Display, u64, any::TypeId, cell::OnceCell, proces
 use hashbrown::raw::RawTable;
 
 use crate::{memory::{GCRef, Atom}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}};
-use tlang_macros::tmodule;
 
 #[repr(u64)]
 #[derive(Debug, PartialEq, Eq)]
@@ -373,16 +372,55 @@ impl std::fmt::Debug for TBool {
 use prelude::IntegerKind;
 pub use prelude::{TFunction, TFnKind, TInteger, TFloat, TString};
 
-#[tmodule("prelude")]
 pub mod prelude {
     use super::*;
 
-    #[primitive("string")]
+    pub const MODNAME: &'static str = "prelude";
+
+    macro_rules! impl_typed {
+        (for $ty:ty as $name:ident) => {
+            impl Typed for $ty {
+                const NAME: &'static str = stringify!($name);
+
+                fn ttype(vm: &VM) -> GCRef<TType> {
+                    vm.types().query::<Self>()
+                }
+            }
+        };
+    }
+    
+    macro_rules! into_object {
+        (for $ty:ty) => {
+            impl Into<TValue> for GCRef<$ty> {
+                #[inline(always)]
+                fn into(self) -> TValue {
+                    TValue::object(self)
+                }
+            }
+        };
+    }
+
+    macro_rules! query_object {
+        (for $ty:ty) => {
+            impl VMDowncast for GCRef<$ty> {
+                #[inline(always)]
+                fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
+                    value.query_object::<$ty>(vm)
+                }
+            }
+        };
+    }
+
+    #[repr(C)]
     pub struct TString {
         size: TInteger,
         length: TInteger,
         data: [u8; 0]
     }
+
+    impl_typed!(for TString as string);
+    into_object!(for TString);
+    query_object!(for TString);
 
     impl TString {
         pub fn as_slice<'a>(&self) -> &'a str {
@@ -421,14 +459,6 @@ pub mod prelude {
         }
     }
 
-    #[vmimpl]
-    impl GCRef<TString> {
-        pub fn replace(self, old: GCRef<TString>, new: GCRef<TString>) -> GCRef<TString> {
-            todo!()
-        }
-    }
-
-
     impl Display for TString {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str(self.as_slice())
@@ -453,9 +483,11 @@ pub mod prelude {
         Bigint(GCRef<TBigint>),
     }
 
-    #[primitive("int")]
+    #[repr(C)]
     #[derive(Clone, Copy)]
     pub struct TInteger(pub(super) IntegerKind);
+
+    impl_typed!(for TInteger as int);
 
     impl TInteger {
         pub fn as_usize(&self) -> Option<usize> {
@@ -579,27 +611,11 @@ pub mod prelude {
         }
     }
 
-    #[vmimpl]
-    impl TInteger {
-        pub fn to_float(&self) -> TFloat {
-            todo!()
-        }
-
-        pub fn add(&self, rhs: TValue,  vm: &VM) -> TValue {
-            if let Some(rhs) = TInteger::vmdowncast(rhs, vm) {
-                return Add::add(*self, rhs).vmcast(vm);
-            } else if let Some(rhs) = TFloat::vmdowncast(rhs, vm) {
-                let lhs = self.to_float();
-                return Add::add(lhs, rhs).vmcast(vm);
-            }
-            todo!()
-        }
-    }
-
-
+    #[repr(C)]
     #[derive(Clone, Copy)]
-    #[primitive("float")]
     pub struct TFloat(pub(super) f64);
+
+    impl_typed!(for TFloat as float);
 
     impl TFloat {
         pub const fn as_float(self) -> f64 {
@@ -652,12 +668,16 @@ pub mod prelude {
         impl Rem for TFloat in rem;
     }
 
-    #[primitive("function")]
+    #[repr(C)]
     pub struct TFunction {
         pub name: TValue, /// Optional<TString>
         pub module: GCRef<TModule>,
         pub kind: TFnKind
     }
+
+    impl_typed!(for TFunction as function);
+    into_object!(for TFunction);
+    query_object!(for TFunction);
 
     pub enum TFnKind {
         Function(TRawCode),
@@ -694,16 +714,25 @@ pub mod prelude {
         }
     }
 
-    impl Into<TValue> for GCRef<TFunction> {
-        #[inline(always)]
-        fn into(self) -> TValue {
-            TValue::object(self)
-        }
+    pub fn print(module: GCRef<TModule>, message: TValue) {
+        println!("Execution directed to print()");
     }
 
-    #[vmcall]
-    pub fn print(#[module] module: GCRef<TModule>, message: TValue) {
-        println!("Execution directed to print()");
+    macro_rules! iter_primitives {
+        ($module:expr, [$($ty:ty),*]) => {
+            let vm = $module.vm(); 
+            $($module.set_rust_ttype::<$ty>(TType::empty(&vm, 0)).unwrap();)*
+
+            $({
+                let builder = TTypeBuilder::build_empty(
+                    &vm, <$ty as Typed>::NAME, MODNAME, <$ty as Typed>::ttype(&vm));
+                builder.build();
+            })*
+        };
+    }
+
+    pub fn module_init(mut module: GCRef<TModule>) {
+        iter_primitives!(module, [TString, TInteger, TFloat, TFunction]);
     }
 }
 
