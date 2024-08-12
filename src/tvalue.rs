@@ -373,6 +373,8 @@ use prelude::IntegerKind;
 pub use prelude::{TFunction, TFnKind, TInteger, TFloat, TString};
 
 pub mod prelude {
+    use crate::eval::TArgsBuffer;
+
     use super::*;
 
     pub const MODNAME: &'static str = "prelude";
@@ -456,6 +458,13 @@ pub mod prelude {
 
         pub fn deepcopy(&self, vm: &VM) -> GCRef<TString> {
             Self::from_slice(vm, self.as_slice())
+        }
+    }
+
+
+    impl PartialEq for GCRef<TString> {
+        fn eq(&self, other: &Self) -> bool {
+            self.as_slice().eq(other.as_slice())
         }
     }
 
@@ -681,14 +690,14 @@ pub mod prelude {
 
     pub enum TFnKind {
         Function(TRawCode),
-        Nativefunc(fn(GCRef<TModule>, &[TValue]) -> TValue),
+        Nativefunc(fn(GCRef<TModule>, TArgsBuffer) -> TValue),
     }
 
     impl TFunction {
         pub fn nativefunc(
-            name: Option<&str>,
             module: GCRef<TModule>,
-            nativefunc: fn(GCRef<TModule>, &[TValue]) -> TValue
+            name: Option<&str>,
+            nativefunc: fn(GCRef<TModule>, TArgsBuffer) -> TValue
         ) -> GCRef<TFunction> {
             let vm = module.vm();
             Self::ttype(&vm).allocate_object(Self {
@@ -701,21 +710,23 @@ pub mod prelude {
 
     impl GCRef<TFunction> {
         #[inline(always)]
-        pub fn call<'a>(&self, arguments: &'a mut [TValue]) -> TValue {
+        pub fn call(&self, arguments: TArgsBuffer) -> TValue {
             match &self.kind {
-                TFnKind::Function(code) => {
-                    assert!(arguments.len() == code.params());
-                    code.evaluate(self.module, arguments)
-                }
-                TFnKind::Nativefunc(func) => {
-                    func(self.module, arguments)
-                }
+                TFnKind::Function(code) =>
+                    code.evaluate(self.module, arguments),
+                TFnKind::Nativefunc(func) =>
+                    func(self.module, arguments),
             }
         }
     }
 
-    pub fn print(module: GCRef<TModule>, message: TValue) {
-        println!("Execution directed to print()");
+    pub fn print_impl(module: GCRef<TModule>, args: TArgsBuffer) -> TValue {
+        let vm = module.vm();
+        let mut iter = args.into_iter(1, false);
+
+        let message: GCRef<TString> = iter.next().and_then(|value| VMDowncast::vmdowncast(value, &vm)).unwrap();
+        println!("{}", message);
+        TValue::null()
     }
 
     macro_rules! iter_primitives {
@@ -733,6 +744,9 @@ pub mod prelude {
 
     pub fn module_init(mut module: GCRef<TModule>) {
         iter_primitives!(module, [TString, TInteger, TFloat, TFunction]);
+
+        let print_function = TFunction::nativefunc(module, Some("print"), print_impl);
+        module.set_global(module.vm().symbols().intern_slice("print"), print_function.into(), true).unwrap();
     }
 }
 

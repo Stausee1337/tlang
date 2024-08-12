@@ -3,11 +3,11 @@ use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 extern crate self as tlang;
 
 use bumpalo::Bump;
+use eval::TArgsBuffer;
 use getopts::{Options, ParsingStyle};
-use tvalue::{TFunction, TValue, TString};
-use vm::TModule;
+use tvalue::TString;
 
-use crate::bytecode::{BytecodeGenerator, FunctionDisassembler};
+use crate::bytecode::BytecodeGenerator;
 
 mod lexer;
 mod symbol;
@@ -96,7 +96,7 @@ fn main() -> ExitCode {
         let generator = BytecodeGenerator::new(prelude);
         let gen_fn = codegen::generate_module(ast, generator).unwrap();
 
-        gen_fn.call(&mut []);
+        gen_fn.call(TArgsBuffer::empty());
 
         drop(vm);
 

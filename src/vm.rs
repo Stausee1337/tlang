@@ -62,7 +62,7 @@ impl RustTypeInterner {
         let Some(ttype2) = self.0.insert(TypeId::of::<T>(), ttype) else {
             return;
         };
-        if ttype2 != ttype {
+        if ttype2.refrence_eq(ttype) {
             panic!("{:?} was tried to be associated with two different types", TypeId::of::<T>());
         }
     }

@@ -12,11 +12,51 @@ use crate::{
 
 struct ExecutionEnvironment<'l> {
     stream: CodeStream<'l>,
-    module: GCRef<TModule>,
     vm: &'l VM,
     descriptors: &'l [TValue],
     arguments: &'l mut [TValue],
     registers: &'l mut [TValue],
+}
+
+pub struct TArgsBuffer(Vec<TValue>);
+
+impl TArgsBuffer {
+    pub fn empty() -> Self {
+        TArgsBuffer(vec![])
+    }
+
+    pub fn into_iter(self, min: usize, varags: bool) -> TArgsIterator {
+        if !varags {
+            assert!(min == self.0.len());
+        } else {
+            assert!(min <= self.0.len());
+        }
+        TArgsIterator { inner: self.0, current: 0 }
+    }
+}
+
+pub struct TArgsIterator {
+    inner: Vec<TValue>,
+    current: usize
+}
+
+impl Iterator for TArgsIterator {
+    type Item = TValue;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current >= self.inner.len() {
+            return None; 
+        }
+        let argument = self.inner[self.current];
+        self.current += 1;
+        Some(argument)
+    }
+}
+
+impl TArgsIterator {
+    fn remaining(&mut self) -> &mut [TValue] {
+        &mut self.inner[self.current..]
+    }
 }
 
 trait Decode {
@@ -43,7 +83,7 @@ trait DecodeDeref {
 }
 
 impl TRawCode {
-    pub fn evaluate<'a>(&self, module: GCRef<TModule>, args: &'a mut [TValue]) -> TValue {
+    pub fn evaluate<'a>(&self, module: GCRef<TModule>, args: TArgsBuffer) -> TValue {
         self.with_environment(module, args, |env| {
             loop {
                 let opcode = OpCode::decode(env.stream.current());
@@ -94,7 +134,7 @@ impl TRawCode {
                     OpCode::Call => {
                         decode!(Call { &arguments, callee, mut dst } in env);
                         let callee: GCRef<TFunction> = VMDowncast::vmdowncast(callee, &module.vm()).unwrap();
-                        *dst = callee.call(&mut arguments);
+                        *dst = callee.call(arguments);
                     }
                     _ => todo!(),
                 }
@@ -105,19 +145,17 @@ impl TRawCode {
     fn with_environment<'a, F: FnOnce(&mut ExecutionEnvironment) -> TValue>(
         &self,
         module: GCRef<TModule>,
-        arguments: &'a mut [TValue],
+        mut arguments: TArgsBuffer,
         executor: F,
     ) -> TValue {
-        debug_assert!(arguments.len() == self.params());
         let vm = module.vm();
 
         let mut registers = vec![TValue::null(); self.registers()];
         let mut env = ExecutionEnvironment {
             vm: &vm,
-            module,
             stream: CodeStream::from_raw(self),
             descriptors: self.descriptors(),
-            arguments,
+            arguments: &mut arguments.0,
             registers: registers.as_mut_slice(),
         };
         executor(&mut env)
@@ -125,12 +163,12 @@ impl TRawCode {
 }
 
 impl crate::bytecode::instructions::Call {
-    fn decode_deref_arguments(&self, env: &ExecutionEnvironment) -> Vec<TValue> {
+    fn decode_deref_arguments(&self, env: &ExecutionEnvironment) -> TArgsBuffer {
         let mut arguments = Vec::new();
         for op in self.arguments() {
             arguments.push(Decode::decode(op, env));
         }
-        arguments
+        TArgsBuffer(arguments)
     }
 }
 

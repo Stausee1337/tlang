@@ -288,7 +288,6 @@ unsafe fn refcast<Src, Dst>(a: &Src) -> &Dst {
 #[repr(C)]
 struct Allocation<A: 'static, T>(AtomTrait<A>, T);
 
-#[derive(Eq)]
 pub struct GCRef<T>(*mut T);
 
 impl<T> GCRef<T> {
@@ -357,16 +356,15 @@ impl<T> GCRef<T> {
     unsafe fn from_allocation<A: Atom>(allocation: *mut Allocation<A, T>) -> GCRef<T> {
         GCRef(&mut (*allocation).1)
     }
-}
 
-unsafe impl<T> Sync for GCRef<T> {}
-unsafe impl<T> Send for GCRef<T> {}
-
-impl<T> PartialEq for GCRef<T> {
-    fn eq(&self, other: &Self) -> bool {
+    pub fn refrence_eq(&self, other: Self) -> bool {
         std::ptr::addr_eq(self.0, other.0)
     }
 }
+
+
+unsafe impl<T> Sync for GCRef<T> {}
+unsafe impl<T> Send for GCRef<T> {}
 
 impl<T> Clone for GCRef<T> {
     fn clone(&self) -> Self {
