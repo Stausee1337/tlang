@@ -1,4 +1,4 @@
-use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
+use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode, rc::Rc};
 
 extern crate self as tlang;
 
@@ -31,11 +31,6 @@ fn read_entire_file(filename: &Path) -> Result<String, io::Error> {
         .read_to_string(&mut result)?;
     Ok(result)
 }
-
-/*#[repr(align(32))]
-struct AlignedStruct {
-    data: [u8; 64],
-}*/
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();

@@ -144,27 +144,25 @@ impl Heap {
         }
     }
 
-    pub fn allocate_atom<A: Atom, T>(&self, kind: &'static A, object: T) -> GCRef<T> {
-        let atom = AtomTrait::new(kind);
-        let mut allocation = ManuallyDrop::new(Allocation(atom, object));
+    pub fn allocate_atom<A: Atom>(&self, atom: A) -> GCRef<A> {
+        let mut atom = ManuallyDrop::new(AtomTrait::new(atom));
         unsafe {
             let mut data = self.allocate(
-                Layout::new::<Allocation<A, T>>()).unwrap().cast::<Allocation<A, T>>();
-            *(data.as_mut()) = ManuallyDrop::take(&mut allocation);
-            GCRef::from_allocation(data.as_ptr())
+                Layout::new::<AtomTrait<A>>()).unwrap().cast::<AtomTrait<A>>();
+            *(data.as_mut()) = ManuallyDrop::take(&mut atom);
+            GCRef::from_raw(data.as_ptr() as *mut _)
         }
     }
 
-    pub fn allocate_var_atom<A: Atom, T>(&self, kind: &'static A, object: T, extra_bytes: usize) -> GCRef<T> {
-        let atom = AtomTrait::new(kind);
-        let mut allocation = ManuallyDrop::new(Allocation(atom, object));
+    pub fn allocate_var_atom<A: Atom>(&self, atom: A, extra_bytes: usize) -> GCRef<A> {
+        let mut atom = ManuallyDrop::new(AtomTrait::new(atom));
         unsafe {
-            let layout = Layout::new::<Allocation<A, T>>();
+            let layout = Layout::new::<AtomTrait<A>>();
             let layout = Layout::from_size_align_unchecked(layout.size() + extra_bytes, layout.align());
 
-            let mut data = self.allocate(layout).unwrap().cast::<Allocation<A, T>>();
-            *(data.as_mut()) = ManuallyDrop::take(&mut allocation);
-            GCRef::from_allocation(data.as_ptr())
+            let mut data = self.allocate(layout).unwrap().cast::<AtomTrait<A>>();
+            *(data.as_mut()) = ManuallyDrop::take(&mut atom);
+            GCRef::from_raw(data.as_ptr() as *mut _)
         }
     }
 
@@ -210,44 +208,35 @@ impl Drop for Heap {
 }
 
 pub struct StaticAtom;
-static STATIC_ALLOCATOR: &'static StaticAtom = &StaticAtom;
-
-impl Atom for StaticAtom {
-    fn iterate_children(&self, _p: *const ()) -> Box<dyn Iterator<Item = *const ()>> {
-        Box::new(std::iter::empty())
-    }
-}
 
 impl StaticAtom {
     pub fn atom() -> &'static Self {
-        STATIC_ALLOCATOR
+        &Self
     }
 
     pub fn allocate<T>(heap: &Heap, object: T) -> GCRef<T> {
-        heap.allocate_atom(STATIC_ALLOCATOR, object)
+        todo!("StaticAtom is getting deprecated out");
     }
 }
 
-pub trait Atom: Send + Sync + 'static {
-    fn iterate_children(&self, p: *const ()) -> Box<dyn Iterator<Item = *const ()>>;
+pub struct Visitor;
+
+pub trait Atom: Send + Sync {
+    fn visit(&self, visitor: &Visitor);
 }
 
 #[repr(C)]
-struct AtomTrait<Atom: 'static = ()> {
-    test: &'static str,
+struct AtomTrait<Atom = ()> {
     vtable: &'static AtomTraitVTable,
-    atom: &'static Atom
+    atom: Atom
 }
 
-const_assert_eq!(std::mem::size_of::<AtomTrait>(), 32);
-
 impl<A: Atom> AtomTrait<A> {
-    fn new(atom: &'static A) -> Self {
+    fn new(atom: A) -> Self {
         let vtable = &AtomTraitVTable {
-            atom_ref: atom_ref::<A>,
             atom_downcast: atom_downcast::<A>,
         };
-        AtomTrait { test: "Hello, World", vtable, atom }
+        AtomTrait { vtable, atom }
     }
 }
 
@@ -266,17 +255,13 @@ impl AtomTrait {
 #[repr(C)]
 struct AtomTraitVTable {
     atom_downcast: unsafe fn(&'_ AtomTrait, TypeId) -> Option<&'_ ()>,
-    atom_ref: unsafe fn(&'_ AtomTrait) -> &'_ dyn Atom,
-}
-
-unsafe fn atom_ref<A: Atom>(a: &AtomTrait) -> &dyn Atom {
-    let unerased_a = refcast::<AtomTrait, AtomTrait<A>>(a);
-    unerased_a.atom
 }
 
 unsafe fn atom_downcast<A: Atom>(a: &'_ AtomTrait, target: TypeId) -> Option<&'_ ()> {
     if TypeId::of::<A>() == target {
-        return Some(a.atom);
+        let unerased_type: &'_ AtomTrait<A> = refcast(a);
+        let atom = std::ptr::addr_of!(unerased_type.atom);
+        return Some(&*(atom as *const ()));
     }
     None
 }
@@ -285,14 +270,11 @@ unsafe fn refcast<Src, Dst>(a: &Src) -> &Dst {
     transmute::<&Src, &Dst>(a)
 }
 
-#[repr(C)]
-struct Allocation<A: 'static, T>(AtomTrait<A>, T);
-
-pub struct GCRef<T>(*mut T);
+pub struct GCRef<T>(NonNull<T>);
 
 impl<T> GCRef<T> {
     pub(crate) const unsafe fn from_raw(raw: *const T) -> Self {
-        GCRef(raw as *mut T)
+        GCRef(NonNull::new_unchecked(raw as *mut T))
     }
 
     pub(crate) unsafe fn cast<U>(&self) -> GCRef<U> {
@@ -300,11 +282,11 @@ impl<T> GCRef<T> {
     }
 
     pub const unsafe fn null() -> Self {
-        GCRef(std::ptr::null_mut())
+        GCRef::from_raw(std::ptr::null_mut())
     }
 
     pub const fn as_ptr(&self) -> *mut T {
-        self.0
+        self.0.as_ptr()
     }
 
     pub fn kind<A: Atom>(&self) -> Option<&A> {
@@ -350,15 +332,11 @@ impl<T> GCRef<T> {
     }
 
     unsafe fn atom(&self) -> &AtomTrait {
-        &*(self.0.byte_sub(std::mem::size_of::<AtomTrait>()) as *const AtomTrait)
-    }
-
-    unsafe fn from_allocation<A: Atom>(allocation: *mut Allocation<A, T>) -> GCRef<T> {
-        GCRef(&mut (*allocation).1)
+        &*(self.0.as_ptr().byte_sub(std::mem::size_of::<AtomTrait>()) as *const AtomTrait)
     }
 
     pub fn refrence_eq(&self, other: Self) -> bool {
-        std::ptr::addr_eq(self.0, other.0)
+        std::ptr::addr_eq(self.0.as_ptr(), other.0.as_ptr())
     }
 }
 
@@ -389,13 +367,13 @@ impl<T> Deref for GCRef<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { &*self.0 }
+        unsafe { self.0.as_ref() }
     }
 }
 
 impl<T> DerefMut for GCRef<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.0 }
+        unsafe { self.0.as_mut() }
     }
 }
 

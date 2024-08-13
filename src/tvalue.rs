@@ -14,6 +14,44 @@ enum TValueKind {
     Float    = 0b100 << 49,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SmallString {
+    size: u8,
+    data: [u8; std::mem::size_of::<&()>() - std::mem::size_of::<u8>()]
+}
+
+union StringData {
+    small_string: SmallString,
+    data: *const char
+}
+
+static_assertions::const_assert!(std::mem::size_of::<StringData>() == 8);
+
+/// This is a _marker_ trait for polymorphic Objects use `tobject!` to implement
+///
+/// Marking a struct means it obeys 2 main criteria
+///     * the first attribute is a struct implementig `TPolymorphicObject`
+///     * the struct layout is `#[repr(C)]`
+/// This ensures that the first N attributes are the same as those in
+/// `TObject`, furthermore it allows any base types to directly extend the
+/// inheritance hirachy for decendent objects.
+/// Most importantly it allows for our type queries, as the first field now
+/// always points to a TType
+unsafe trait TPolymorphicObject {
+    type Base: TPolymorphicObject;
+}
+
+#[repr(C)]
+pub struct TObject {
+    pub ty: GCRef<TType>
+}
+
+unsafe impl TPolymorphicObject for TObject {
+    type Base = TObject;
+}
+
+
 /// 64bit Float:
 /// S eeeeeeeeeee FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
 /// (S) 1bit sign
