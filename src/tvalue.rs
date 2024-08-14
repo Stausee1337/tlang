@@ -1,7 +1,8 @@
-use std::{mem::transmute, fmt::Display, alloc::Layout};
+use std::{mem::{transmute, MaybeUninit}, fmt::Display, alloc::Layout};
 
 
 use hashbrown::raw::RawTable;
+use tlang_macros::SelfWithBase;
 
 use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer};
 
@@ -289,7 +290,7 @@ impl TValue {
     }
 
     #[inline(always)]
-     const fn as_object<T>(&self) -> Option<GCRef<T>> {
+    const fn as_object<T>(&self) -> Option<GCRef<T>> {
         // This will still yield None, if the GCRef<..>,
         // which contains a NonNull, actually is null
         // So `TValue::null()` -> None
@@ -840,12 +841,12 @@ impl TFunction {
         nativefunc: fn(GCRef<TModule>, TArgsBuffer) -> TValue
     ) -> GCRef<TFunction> {
         let vm = module.vm();
-        /*vm.heap().allocate_atom(Self {
+        vm.heap().allocate_atom(SelfWithBase! {
+            base.ty: vm.types().query::<Self>(),
             name: name.vmcast(&vm),
             module,
             kind: TFnKind::Nativefunc(nativefunc)
-        })*/
-        todo!()
+        })
     }
 }
 

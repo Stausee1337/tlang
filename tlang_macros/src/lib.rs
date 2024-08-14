@@ -44,3 +44,10 @@ pub fn tfunction(item: TokenStream) -> TokenStream {
         .into()
 }
 
+#[proc_macro]
+pub fn SelfWithBase(item: TokenStream) -> TokenStream {
+    codegen::generate_struct_init(item.into())
+        .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
+        .into()
+}
+

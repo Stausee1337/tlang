@@ -701,3 +701,93 @@ pub fn generate_ttype(token_stream: TokenStream) -> Result<TokenStream, syn::Err
     Ok(quote!( { #tokens } ))
 }
 
+pub struct MyFieldValue {
+    pub member_path: Punctuated<Ident, Token![.]>,
+
+    pub colon_token: Option<Token![:]>,
+
+    pub expr: Expr,
+}
+
+impl Parse for MyFieldValue {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let member_path = Punctuated::<Ident, Token![.]>::parse_separated_nonempty(input)?;
+        let colon_token: Option<Token![:]> = if input.peek(Token![:]) {
+            Some(input.parse()?)
+        } else { None };
+        
+        let expr = if colon_token.is_some() {
+            input.parse()?
+        } else {
+            syn::parse2(quote! { #member_path })?
+        };
+
+        Ok(Self {
+            member_path,
+            colon_token,
+            expr
+        })
+    }
+}
+
+impl ToTokens for MyFieldValue {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.member_path.to_tokens(tokens);
+        tokens.extend(quote!(:));
+        self.expr.to_tokens(tokens);
+    }
+}
+
+fn remove_first(member_path: Punctuated<Ident, Token![.]>) -> Punctuated<Ident, Token![.]> {
+    let mut path = Punctuated::<Ident, Token![.]>::new();
+    for idx in 1..member_path.len() {
+        path.push(member_path.get(idx).unwrap().clone());
+    }
+    path
+}
+
+pub fn recursive_gen_tokens(ident: TokenStream, fields: Punctuated<MyFieldValue, Token![,]>) -> Result<TokenStream, syn::Error> {
+    let mut this_fields = Punctuated::<MyFieldValue, Token![,]>::new();
+    let mut base_fields = Punctuated::<MyFieldValue, Token![,]>::new();
+
+    for mut field in fields {
+        if field.member_path.first().map(|path| path.eq("base")).unwrap_or(true) && field.member_path.len() > 1 {
+            field.member_path = remove_first(field.member_path);
+            base_fields.push(field);
+            continue;
+        }
+        this_fields.push(field);
+    }
+
+    if base_fields.is_empty() {
+        return Ok(quote! {
+            #ident {
+                #this_fields
+            }
+        });
+    }
+
+    let base_tokens = recursive_gen_tokens(
+        quote!(<#ident as tlang::tvalue::TPolymorphicObject>::Base),
+        base_fields)?;
+
+    Ok(quote! {
+        {
+            let base = #base_tokens;
+            #ident {
+                base,
+                #this_fields
+            }
+        }
+    })
+}
+
+pub fn generate_struct_init(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+    let fields_parser = Punctuated::<MyFieldValue, Token![,]>::parse_terminated;
+    let fields = fields_parser.parse2(token_stream)?;
+
+    let self_ident = Ident::new("Self", Span::call_site());
+
+    Ok(recursive_gen_tokens(quote!(#self_ident), fields)?)
+}
+

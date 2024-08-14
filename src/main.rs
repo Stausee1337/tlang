@@ -1,4 +1,6 @@
-use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode, rc::Rc};
+#![feature(more_qualified_paths)]
+
+use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 
 extern crate self as tlang;
 
