@@ -150,7 +150,7 @@ impl Heap {
             let mut data = self.allocate(
                 Layout::new::<AtomTrait<A>>()).unwrap().cast::<AtomTrait<A>>();
             *(data.as_mut()) = ManuallyDrop::take(&mut atom);
-            GCRef::from_raw(data.as_ptr() as *mut _)
+            GCRef::from_raw(std::ptr::addr_of!(data.as_mut().atom))
         }
     }
 
@@ -162,7 +162,7 @@ impl Heap {
 
             let mut data = self.allocate(layout).unwrap().cast::<AtomTrait<A>>();
             *(data.as_mut()) = ManuallyDrop::take(&mut atom);
-            GCRef::from_raw(data.as_ptr() as *mut _)
+            GCRef::from_raw(std::ptr::addr_of!(data.as_mut().atom))
         }
     }
 
@@ -207,22 +207,10 @@ impl Drop for Heap {
     }
 }
 
-pub struct StaticAtom;
-
-impl StaticAtom {
-    pub fn atom() -> &'static Self {
-        &Self
-    }
-
-    pub fn allocate<T>(heap: &Heap, object: T) -> GCRef<T> {
-        todo!("StaticAtom is getting deprecated out");
-    }
-}
-
 pub struct Visitor;
 
-pub trait Atom: Send + Sync {
-    fn visit(&self, visitor: &Visitor);
+pub trait Atom: Send + Sync + 'static {
+    fn visit(&self, visitor: &mut Visitor);
 }
 
 #[repr(C)]

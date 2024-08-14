@@ -1,40 +1,39 @@
 use std::{rc::Rc, any::TypeId};
 
-use crate::{memory::{Heap, GCRef, StaticAtom}, symbol::{SymbolInterner, Symbol}, tvalue::{TType, self, TString, TValue, Typed}};
+use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, self, TString, TValue, Typed}};
 
 pub struct VM {
     heap: Box<Heap>,
 
-    pub symbols: GCRef<SymbolInterner>,
+    pub symbols: GCRef<SymbolCache>,
     pub types: GCRef<RustTypeInterner>,
     pub hash_state: ahash::RandomState,
+
+    pub primitives: Primitives
 }
 
 impl VM {
-    pub fn init() -> (Rc<VM>, GCRef<TModule>) {
+    pub fn init() -> Rc<VM> {
         let vm = Rc::new_cyclic(|me| {
             let heap = Box::new(Heap::init(me.clone()));
             Self::create(heap)
         });
-
-        let prelude = TModule::new_from_rust(&vm);
-        tvalue::prelude::module_init(prelude); 
-
-        (vm, prelude)
+        vm
     }
 
     fn create(heap: Box<Heap>) -> Self {
         let hash_state = ahash::RandomState::new();
 
-        let symbols = StaticAtom::allocate(&heap, SymbolInterner::new()).make_static();
-        let types = StaticAtom::allocate(&heap, RustTypeInterner::new()).make_static();
+        let symbols = heap.allocate_atom(SymbolCache::new());
+        let types = heap.allocate_atom(RustTypeInterner::new());
 
         VM {
             heap,
-            symbols,
 
+            symbols,
             hash_state,
-            types
+            types,
+            primitives: Primitives::lazy(),
         }
     }
 
@@ -42,12 +41,41 @@ impl VM {
         &self.heap
     }
 
+    pub fn primitives(&self) -> &Primitives {
+        &self.primitives
+    }
+
     pub fn types(&self) -> GCRef<RustTypeInterner> {
         self.types
     }
 
-    pub fn symbols(&self) -> GCRef<SymbolInterner> {
+    pub fn symbols(&self) -> GCRef<SymbolCache> {
         self.symbols
+    }
+}
+
+pub struct Primitives {
+}
+
+impl Primitives {
+    fn lazy() -> Self {
+        Primitives {}
+    }
+
+    pub fn float_type(&self) -> GCRef<TType> {
+        todo!()
+    }
+
+    pub fn int_type(&self) -> GCRef<TType> {
+        todo!()
+    }
+
+    pub fn bool_type(&self) -> GCRef<TType> {
+        todo!()
+    }
+
+    pub fn string_type(&self) -> GCRef<TType> {
+        todo!()
     }
 }
 
@@ -73,6 +101,12 @@ impl RustTypeInterner {
     }
 }
 
+impl Atom for RustTypeInterner {
+    fn visit(&self, visitor: &mut Visitor) {
+        todo!()
+    }
+}
+
 #[derive(Debug)]
 pub enum GlobalErr {
     Redeclared(Symbol),
@@ -81,16 +115,22 @@ pub enum GlobalErr {
 }
 
 pub struct TModule {
-    name: TValue,
+    name: GCRef<TString>,
     source: TValue,
     table: hashbrown::HashTable<(Symbol, TValue, bool)>
 }
 
+impl Atom for TModule {
+    fn visit(&self, visitor: &mut Visitor) {
+        todo!()
+    }
+}
+
 impl TModule {
-    pub fn new_from_rust(vm: &VM) -> GCRef<Self> {
-        StaticAtom::allocate(vm.heap(), 
+    pub fn new_from_rust(vm: &VM, name: GCRef<TString>) -> GCRef<Self> {
+        vm.heap().allocate_atom(
             Self {
-                name: TValue::null(),
+                name,
                 source: TValue::null(),
                 table: Default::default()
             }
@@ -107,42 +147,30 @@ impl GCRef<TModule> {
         self.name = TString::from_slice(&self.vm(), name).into();
     }
 
-    pub fn set_rust_ttype<T: Typed>(
-        &mut self,
-        value: GCRef<TType>,
-    ) -> Result<(), GlobalErr> {
-        let vm = self.vm();
-        vm.types().intern::<T>(value);
-        let name = vm.symbols().intern_slice(T::NAME);
-        self.set_global(name, TValue::ttype_object(value), true)
-    }
-
     pub fn set_global(&mut self, name: Symbol, value: TValue, constant: bool) -> Result<(), GlobalErr> {
-        let symbols = self.vm().symbols;
-
         let Err(..) = self.get_global(name) else {
             return Err(GlobalErr::Redeclared(name));
         };
 
         self.table.insert_unique(
-            symbols.hash(name),
+            name.hash(),
             (name, value, constant),
-            |value| symbols.hash(value.0)
+            |value| value.0.hash()
         );
         Ok(())
     }
 
     pub fn get_global(&self, name: Symbol) -> Result<TValue, GlobalErr> {
+        println!("{name:?} {}", self.vm().symbols().get(name));
         self.table.find(
-            self.vm().symbols.hash(name),
+            name.hash(),
             |entry| entry.0 == name
         ).map(|entry| entry.1).ok_or(GlobalErr::NotFound(name))
     }
 
     pub fn get_global_mut(&mut self, name: Symbol) -> Result<&mut TValue, GlobalErr> {
-        let symbols = self.vm().symbols;
         let Some(entry) = self.table.find_mut(
-            symbols.hash(name),
+            name.hash(),
             |entry| entry.0 == name
         ) else {
             return Err(GlobalErr::NotFound(name))

@@ -1,114 +1,125 @@
-use std::{fmt::Debug, sync::Mutex};
+use std::fmt::Debug;
 
+use ahash::RandomState;
 use hashbrown::raw::RawTable;
 
-use crate::{memory::{GCRef, StaticAtom}, tvalue::{TString, GetHash}, vm::VM};
+use crate::{memory::{GCRef, Atom}, tvalue::{TString, GetHash}, vm::VM};
 
-struct Cache {
-    table: RawTable<usize>,
-    entries: Vec<(GCRef<TString>, u64)>
+const HASH0: RandomState = RandomState::with_seeds(
+    0x6735611e020820df,
+    0x43abdc326e8e3a2c,
+    0x80a2f5f207cf871e,
+    0x43d1fac44245c038
+);
+
+const HASH1: RandomState = RandomState::with_seeds(
+    0xb15ceb7218c4c1b5,
+    0xae5bd30505b9c17e,
+    0xb1c5d5e97339544a,
+    0xedae3f360619d8f6
+);
+
+const HASH2: RandomState = RandomState::with_seeds(
+    0x229533896b4d1f57,
+    0x82d963a13dca2bb5,
+    0x51a9b15708317482,
+    0x382e6f20e2020ddf
+);
+
+const HASH3: RandomState = RandomState::with_seeds(
+    0xd6cc5b074c253c8e,
+    0x591a296cf00ad299,
+    0x47848ccc54e51f03,
+    0x29e940477b79df10
+);
+
+pub struct SymbolCache {
+    table: RawTable<(Symbol, GCRef<TString>)>,
 }
 
-impl Cache {
-    fn new() -> Self {
-        Cache {
+impl SymbolCache {
+    pub fn new() -> Self {
+        SymbolCache {
             table: RawTable::new(),
-            entries: Vec::new()
         }
     }
 
-    fn cache(&mut self, str: GCRef<TString>) -> usize {
-        let hash = str.get_hash_code();
-        if let Some(bucket) = self.table.find(hash, |idx| {
-            self.entries[*idx].0 == str
-        }) {
-            return unsafe { *bucket.as_ref() };
+    #[inline]
+    fn mkhash(&self, str: &str) -> u64 {
+        HASH0.hash_one(str)
+    }
+
+    #[inline]
+    fn mkid(&self, str: &str) -> u64 {
+        HASH1.hash_one(str) ^ HASH2.hash_one(str) ^ HASH3.hash_one(str)
+    }
+
+    #[inline]
+    fn mksym(&self, str: &str) -> Symbol {
+        Symbol {
+            id: self.mkid(str),
+            hash: self.mkhash(str),
         }
-        let str = str.make_static();
-        let idx = self.entries.len();
-        self.entries.push((str, hash));
-        self.table.insert(hash, idx, |idx| self.entries[*idx].1);
-        idx
     }
 
-    fn query(&self, idx: usize) -> Option<&(GCRef<TString>, u64)> {
-        self.entries.get(idx)
+    /// Inserts a string into the cache, without checking for
+    /// uniqness of the string
+    fn cache_insert(&mut self, str: GCRef<TString>) -> Symbol {
+        let symbol = self.mksym(str.as_slice());
+        self.table.insert(symbol.hash, (symbol, str), |val| val.0.hash);
+        symbol
     }
 
-    fn query_slice(&self, slice: &str, vm: &VM) -> Option<usize> {
-        let hash = vm.hash_state.hash_one(slice);
-        if let Some(bucket) = self.table.find(hash, |idx| {
-            self.entries[*idx].0.as_slice().eq(slice)
-        }) {
-            return Some(unsafe { *bucket.as_ref() });
+    fn cache_find(&self, str: &str) -> Option<Symbol> {
+        let hash = self.mkhash(str);
+        if let Some(bucket) = self.table.find(hash, 
+            |val| val.1.as_slice().eq(str)) {
+            return Some(unsafe { bucket.as_ref().0 });
         }
         None
     }
-}
-
-pub struct SymbolInterner {
-    cache: Cache
-}
-
-impl SymbolInterner {
-    pub fn new() -> Self {
-        Self {
-            cache: Cache::new()
-        }
-    }
 
     pub fn intern(&mut self, str: GCRef<TString>) -> Symbol {
-        Symbol(self.cache.cache(str) as u32)
+        if let Some(sym) = self.cache_find(str.as_slice()) {
+            return sym;
+        }
+        self.cache_insert(str)
     }
 
-    pub fn hash(&self, symbol: Symbol) -> u64 {
-        let Some(cached) = self.cache.query(symbol.0 as usize) else {
-            panic!("Invalid symbol");
-        };
-        cached.1
-    }
-
-    pub fn get(&self, symbol: Symbol) -> InternedRef {
-        let Some(cached) = self.cache.query(symbol.0 as usize) else {
-            panic!("Invalid symbol");
-        };
-        InternedRef(&cached.0)
+    pub fn get(&self, sym: Symbol) -> GCRef<TString> {
+        if let Some(bucket) = self.table.find(sym.hash,
+            |val| val.0 == sym) {
+            return unsafe { bucket.as_ref().1 };
+        }
+        panic!("tried to get unknown symbol");
     }
 }
 
-impl GCRef<SymbolInterner> {
+impl GCRef<SymbolCache> {
     pub fn intern_slice(&mut self, str: &str) -> Symbol {
         let vm = self.vm();
-        if let Some(sym) = self.cache.query_slice(str, &vm) {
-            return Symbol(sym as u32);
+        if let Some(sym) = self.cache_find(str) {
+            return sym;
         }
-        self.intern(TString::from_slice(&vm, str))
+        self.cache_insert(TString::from_slice(&vm, str))
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct InternedRef<'s>(&'s TString);
-
-impl<'s> InternedRef<'s> {
-    pub fn softcopy(self) -> GCRef<TString> {
-        let str = unsafe { GCRef::from_raw(self.0) };
-        if let Some(..) = str.kind::<StaticAtom>() {
-            return str.deepcopy(&str.vm())
-        }
-        str
-    }
-
-    pub fn slice(self) -> &'static str {
-        self.0.as_slice()
+impl Atom for SymbolCache {
+    fn visit(&self, visitor: &mut crate::memory::Visitor) {
+        todo!()
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Symbol(u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Symbol {
+    id: u64,
+    hash: u64,
+}
 
-impl Debug for Symbol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "`{}`", self.0)
+impl Symbol {
+    pub fn hash(&self) -> u64 {
+        self.id
     }
 }
 

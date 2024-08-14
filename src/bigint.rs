@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, ops::Index, fmt::Display};
 
-use crate::{tvalue::{TInteger, TType, Typed}, memory::GCRef, vm::VM};
+use crate::memory::GCRef;
 
 #[repr(u8)]
 #[derive(Clone, Copy)]
@@ -44,7 +44,7 @@ impl<'a> SignedSlice<'a> {
 impl<'l> From<GCRef<TBigint>> for SignedSlice<'l> {
     fn from(value: GCRef<TBigint>) -> Self {
         Self {
-            len: value.size.as_isize().unwrap(),
+            len: value.size,
             data: value.bytes.as_ptr(),
             _phantom: Default::default()
         }
@@ -70,18 +70,11 @@ impl<'a, const LENGTH: usize> From<&'a (Sign, [u8; LENGTH])> for SignedSlice<'a>
 
 #[repr(C)]
 pub struct TBigint {
-    size: TInteger,
+    size: isize,
     bytes: [u8; 0]
 }
 
 /// FIXME: this is incorrect: BigInt should be stored using the TInteger type
-impl Typed for TBigint {
-    const NAME: &'static str = "int";
-
-    fn ttype(vm: &VM) -> GCRef<TType> {
-        todo!()
-    }
-}
 
 impl Display for TBigint {
     fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

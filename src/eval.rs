@@ -288,8 +288,8 @@ mod impls {
             pub fn $fnname(env: &mut ExecutionEnvironment) {
                 let vm = env.vm;
                 decode!($inname { lhs, rhs, mut dst } in env);
-                let lhs_int: Option<TInteger> = lhs.query_integer(vm);
-                let rhs_int: Option<TInteger> = rhs.query_integer(vm);
+                let lhs_int: Option<TInteger> = lhs.query_integer();
+                let rhs_int: Option<TInteger> = rhs.query_integer();
                 if let Some((lhs, rhs)) = lhs_int.zip(rhs_int) {
                     *dst = lhs.$fnname(rhs).into();
                     return;

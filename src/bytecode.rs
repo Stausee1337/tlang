@@ -594,7 +594,7 @@ impl TFunction {
             codesize += block.data.len();
         }
 
-        let name = func.name.map(|name| vm.symbols.get(name).softcopy());
+        let name = func.name.map(|name| vm.symbols.get(name));
         let (function, tcode) = TFunction::create_presized(
             vm,
             name,
@@ -645,7 +645,7 @@ impl TFunction {
         };
         let code = TRawCode::new(codesize, params, registers, descriptors, blocks);
 
-        let mut function = Self::ttype(vm).allocate_var_object(
+        let mut function = vm.heap().allocate_var_atom(
             Self {
                 name,
                 module,
@@ -665,44 +665,44 @@ impl TFunction {
 
 #[repr(C)]
 pub struct TRawCode {
-    code_size: TInteger,
-    num_params: TInteger,
-    num_registers: TInteger,
-    num_descriptors: TInteger,
-    num_blocks: TInteger,
+    num_params: u32,
+    num_registers: u32,
+    num_descriptors: u32,
+    num_blocks: u32,
+    codesize: usize,
     data: [u8; 0]
 }
 
 impl TRawCode {
     fn new(
         codesize: usize,
-        params: u32,
-        registers: u32,
-        descriptors: u32,
-        blocks: u32
+        num_params: u32,
+        num_registers: u32,
+        num_descriptors: u32,
+        num_blocks: u32
     ) -> Self {
         Self {
-            code_size: TInteger::from_usize(codesize),
-            num_params: TInteger::from_usize(params as usize),
-            num_registers: TInteger::from_usize(registers as usize),
-            num_descriptors: TInteger::from_usize(descriptors as usize),
-            num_blocks: TInteger::from_usize(blocks as usize),
+            codesize,
+            num_params,
+            num_registers,
+            num_descriptors,
+            num_blocks,
             data: [0u8; 0]
         }
     }
 
     pub fn registers(&self) -> usize {
-        self.num_registers.as_usize().expect("TRawCode sensible num_registers")
+        self.num_registers as usize
     }
 
     pub fn params(&self) -> usize {
-        self.num_params.as_usize().expect("TRawCode sensible num_params")
+        self.num_params as usize
     }
 
     pub fn blocks(&self) -> &[u32] {
         unsafe {
-            let len = self.num_blocks.as_usize().expect("TRawCode sensible num_blocks");
-            let offset = self.num_descriptors.as_usize().expect("TRawCode sensible num_descriptors")
+            let len = self.num_blocks as usize;
+            let offset = self.num_descriptors as usize
                 * std::mem::size_of::<TValue>();
             std::slice::from_raw_parts(
                 self.data.as_ptr().add(offset) as *const u32,
@@ -713,8 +713,8 @@ impl TRawCode {
 
     pub fn blocks_mut(&mut self) -> &mut [u32] {
         unsafe {
-            let len = self.num_blocks.as_usize().expect("TRawCode sensible num_blocks");
-            let offset = self.num_descriptors.as_usize().expect("TRawCode sensible num_descriptors")
+            let len = self.num_blocks as usize;
+            let offset = self.num_descriptors as usize
                 * std::mem::size_of::<TValue>();
             std::slice::from_raw_parts_mut(
                 self.data.as_mut_ptr().add(offset) as *mut u32,
@@ -725,10 +725,10 @@ impl TRawCode {
 
     pub fn code(&self) -> &[u8] {
         unsafe {
-            let len = self.code_size.as_usize().expect("TRawCode sensible code_size");
-            let offset = self.num_descriptors.as_usize().expect("TRawCode sensible num_descriptors")
+            let len = self.codesize;
+            let offset = self.num_descriptors as usize
                 * std::mem::size_of::<TValue>()
-                + self.num_blocks.as_usize().expect("TRawCode sensible num_blocks")
+                + self.num_blocks as usize
                 * std::mem::size_of::<u32>();
             std::slice::from_raw_parts(
                 self.data.as_ptr().add(offset),
@@ -739,10 +739,10 @@ impl TRawCode {
 
     pub fn code_mut(&mut self) -> &mut [u8] {
         unsafe {
-            let len = self.code_size.as_usize().expect("TRawCode sensible code_size");
-            let offset = self.num_descriptors.as_usize().expect("TRawCode sensible num_descriptors")
+            let len = self.codesize as usize;
+            let offset = self.num_descriptors as usize
                 * std::mem::size_of::<TValue>()
-                + self.num_blocks.as_usize().expect("TRawCode sensible num_blocks")
+                + self.num_blocks as usize
                 * std::mem::size_of::<u32>();
             std::slice::from_raw_parts_mut(
                 self.data.as_mut_ptr().add(offset),
@@ -753,17 +753,17 @@ impl TRawCode {
 
     pub fn descriptors(&self) -> &[TValue] {
         unsafe {
-            let len = self.num_descriptors.as_usize().expect("TRawCode sensible num_descriptors");
+            let len = self.num_descriptors as usize;
             std::slice::from_raw_parts(
                 self.data.as_ptr() as *const TValue,
-                len
+                len as usize
             )
         }
     }
 
     pub fn descriptors_mut(&mut self) -> &mut [TValue] {
         unsafe {
-            let len = self.num_descriptors.as_usize().expect("TRawCode sensible num_descriptors");
+            let len = self.num_descriptors as usize;
             std::slice::from_raw_parts_mut(
                 self.data.as_mut_ptr() as *mut TValue,
                 len
