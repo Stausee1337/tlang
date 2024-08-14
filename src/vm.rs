@@ -94,10 +94,16 @@ impl RustTypeInterner {
             panic!("{:?} was tried to be associated with two different types", TypeId::of::<T>());
         }
     }
+}
 
-    pub fn query<T: Typed>(&self) -> GCRef<TType> {
-        *self.0.get(&TypeId::of::<T>()).expect(
-            &format!("expected query of interned rust type"))
+impl GCRef<RustTypeInterner> {
+    pub fn query<T: Typed>(mut self) -> GCRef<TType> {
+        if let Some(ty) = self.0.get(&TypeId::of::<T>()) {
+            return *ty;
+        }
+        let ty = T::initialize(&self.vm());
+        self.intern::<T>(ty);
+        ty
     }
 }
 

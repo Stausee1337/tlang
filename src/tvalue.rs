@@ -192,8 +192,11 @@ impl TValue {
     #[inline(always)]
     pub fn query_object<T: Typed>(&self, vm: &VM) -> Option<GCRef<T>> {
         if let TValueKind::Object = self.kind() {
-            vm.types().query::<T>();
-            todo!()
+            let ty = vm.types().query::<T>();
+            if !self.ttype(vm)?.refrence_eq(ty) {
+                return None;
+            }
+            return self.as_object();
         }
         None
     }
@@ -201,7 +204,7 @@ impl TValue {
     #[inline(always)]
     pub fn query_string(&self) -> Option<GCRef<TString>> {
         if let TValueKind::String = self.kind() {
-            return Some(self.as_object());
+            return Some(self.as_gcref());
         }
         None
     }
@@ -212,7 +215,7 @@ impl TValue {
             TValueKind::Int32 =>
                 Some(TInteger(IntegerKind::Int32(self.as_int32()))),
             TValueKind::BigInt =>
-                Some(TInteger(IntegerKind::Bigint(self.as_object()))),
+                Some(TInteger(IntegerKind::Bigint(self.as_gcref()))),
             _ => None,
         }
     }
@@ -236,15 +239,22 @@ impl TValue {
     }
 
     #[inline(always)]
-    pub fn ttype(&self, vm: &VM) -> GCRef<TType> {
-        match self.kind() {
+    pub fn ttype(&self, vm: &VM) -> Option<GCRef<TType>> {
+        Some(match self.kind() {
             TValueKind::Bool => vm.primitives().bool_type(),
-            TValueKind::Int32 => vm.primitives().int_type(),
+            TValueKind::Int32 | TValueKind::BigInt => vm.primitives().int_type(),
             TValueKind::Float => vm.primitives().float_type(),
-            _ => {
-                todo!()
+            TValueKind::String => vm.primitives().string_type(),
+            TValueKind::Object => {
+                let Some(object) = self.as_object::<TObject>() else {
+                    return None; // TValue::null() doesn't have a type
+                };
+                // `object` should be (at least) a subtype of `TObject`, because the
+                // object constructor `TValue::object` requires object to be `TPolymorphicObject`,
+                // which when implemented safely, keeps up polymorphism.
+                object.ty
             }
-        }
+        })
     }
 
     /// Private Helpers
@@ -274,8 +284,16 @@ impl TValue {
     }
 
     #[inline(always)]
-    const fn as_object<T>(&self) -> GCRef<T> {
+    const fn as_gcref<T>(&self) -> GCRef<T> {
         unsafe { GCRef::from_raw((self.0 & Self::NAN_VALUE_MASK) as *mut T) }
+    }
+
+    #[inline(always)]
+     const fn as_object<T>(&self) -> Option<GCRef<T>> {
+        // This will still yield None, if the GCRef<..>,
+        // which contains a NonNull, actually is null
+        // So `TValue::null()` -> None
+        Some(self.as_gcref())
     }
 }
 
