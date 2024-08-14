@@ -645,14 +645,14 @@ impl TFunction {
         };
         let code = TRawCode::new(codesize, params, registers, descriptors, blocks);
 
-        let mut function = vm.heap().allocate_var_atom(
+        let mut function: GCRef<Self> = /*vm.heap().allocate_var_atom(
             Self {
                 name,
                 module,
                 kind: TFnKind::Function(code)
             },
             extra_size
-        );
+        );*/ todo!();
         let function2 = function.clone();
         match function.kind {
             TFnKind::Function(ref mut code) => {

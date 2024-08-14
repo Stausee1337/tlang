@@ -16,6 +16,90 @@ enum TValueKind {
     BigInt   = 0b110 << 49,
 }
 
+macro_rules! __tobject_struct {
+    ($vis:vis, $name:ident, [], { $($fields:tt)* }) => {
+        #[repr(C)]
+        $vis struct $name {
+            #[doc(hidden)]
+            pub base: TObject,
+            $($fields)*
+        }
+    };
+    ($vis:vis, $name:ident, [$base:ident], { $($fields:tt)* }) => {
+        #[repr(C)]
+        $vis struct $name {
+            #[doc(hidden)]
+            pub base: $base,
+            $($fields)*
+        }
+    };
+    ($vis:vis, $name:ident, [()], { $($fields:tt)* }) => {
+        #[repr(C)]
+        $vis struct $name {
+            $($fields)*
+        }
+    };
+}
+
+macro_rules! __tobject_marker {
+    ($name:ident,) => {
+        unsafe impl TPolymorphicObject for $name {
+            type Base = TObject;
+        }
+    };
+    ($name:ident, ()) => {
+        unsafe impl TPolymorphicObject for $name {
+            type Base = TObject;
+        }
+    };
+    ($name:ident, $base:ident) => {
+        unsafe impl TPolymorphicObject for $name {
+            type Base = $base;
+        }
+    };
+}
+
+macro_rules! tobject {
+    (
+        $(#[$outer:meta])*
+        $vis:vis struct $name:ident $(: $base:tt)?
+        {
+            $(
+                $(#[$inner:ident $($args:tt)*])*
+                $fvis:vis $fname:ident: $fty:ty
+            ),*
+        }
+    ) => {
+        __tobject_struct!(
+            $vis, $name,
+            [$($base)?],
+            {
+                $(
+                    $(#[$inner $($args )*])*
+                    $fvis $fname : $fty
+                ),*
+            }
+        );
+
+        __tobject_marker!($name, $($base)?);
+
+        impl Into<TValue> for GCRef<$name> {
+            #[inline(always)]
+            fn into(self) -> TValue {
+                TValue::object(self)
+            }
+        }
+
+        impl VMDowncast for GCRef<$name> {
+            #[inline(always)]
+            fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
+                value.query_object::<$name>(vm)
+            }
+        }
+    };
+    () => {};
+}
+
 /// This is a _marker_ trait for polymorphic Objects use `tobject!` to implement
 ///
 /// Marking a struct means it obeys 2 main criteria
@@ -26,22 +110,17 @@ enum TValueKind {
 /// inheritance hirachy for decendent objects.
 /// Most importantly it allows for our type queries, as the first field now
 /// always points to a TType
-unsafe trait TPolymorphicObject: Typed {
+pub unsafe trait TPolymorphicObject: Typed {
     type Base: TPolymorphicObject;
 }
 
-#[repr(C)]
-pub struct TObject {
+tobject! {
+pub struct TObject: () {
     pub ty: GCRef<TType>
 }
-
-impl Typed for TObject {
-    const NAME: &'static str = "object";
 }
 
-unsafe impl TPolymorphicObject for TObject {
-    type Base = TObject;
-}
+impl Typed for TObject {}
 
 
 /// 64bit Float:
@@ -70,10 +149,6 @@ impl TValue {
 
     #[inline(always)]
     pub const fn object<T: TPolymorphicObject>(object: GCRef<T>) -> Self {
-        /*debug_assert!(std::ptr::addr_eq(
-            T::ttype(&object.vm()).as_ptr(),
-            object.kind::<TType>().unwrap()
-        ));*/
         Self::object_impl(object, TValueKind::Object)
     }
 
@@ -205,7 +280,9 @@ impl TValue {
 }
 
 pub trait Typed: Atom + 'static {
-    const NAME: &'static str;
+    fn initialize(vm: &VM) -> GCRef<TType> {
+        todo!()
+    }
 
     fn visit_override(&self, visitor: &mut Visitor) {
         todo!()
@@ -349,7 +426,6 @@ impl TBool {
 }
 
 impl Typed for TBool {
-    const NAME: &'static str = "bool";
 }
 
 impl Into<TValue> for TBool {
@@ -373,36 +449,6 @@ impl std::fmt::Debug for TBool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }
-}
-
-macro_rules! impl_typed {
-    (for $ty:ty as $name:ident) => {
-        impl Typed for $ty {
-            const NAME: &'static str = stringify!($name);
-        }
-    };
-}
-
-macro_rules! into_object {
-    (for $ty:ty) => {
-        impl Into<TValue> for GCRef<$ty> {
-            #[inline(always)]
-            fn into(self) -> TValue {
-                TValue::object(self)
-            }
-        }
-    };
-}
-
-macro_rules! query_object {
-    (for $ty:ty) => {
-        impl VMDowncast for GCRef<$ty> {
-            #[inline(always)]
-            fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
-                value.query_object::<$ty>(vm)
-            }
-        }
-    };
 }
 
 #[repr(C)]
@@ -576,8 +622,6 @@ pub(super) enum IntegerKind {
 #[derive(Clone, Copy)]
 pub struct TInteger(pub(super) IntegerKind);
 
-impl_typed!(for TInteger as int);
-
 impl TInteger {
     pub fn as_usize(&self) -> Option<usize> {
         match self.0 {
@@ -704,7 +748,6 @@ impl Into<TValue> for TInteger {
 #[derive(Clone, Copy)]
 pub struct TFloat(pub(super) f64);
 
-impl_typed!(for TFloat as float);
 
 impl TFloat {
     pub const fn as_float(self) -> f64 {
@@ -757,16 +800,15 @@ iter_float_arithmetics! {
     impl Rem for TFloat in rem;
 }
 
-#[repr(C)]
+tobject! {
 pub struct TFunction {
     pub name: TValue, /// Optional<TString>
     pub module: GCRef<TModule>,
     pub kind: TFnKind
 }
+}
 
-impl_typed!(for TFunction as function);
-into_object!(for TFunction);
-query_object!(for TFunction);
+impl Typed for TFunction {}
 
 pub enum TFnKind {
     Function(TRawCode),
@@ -780,11 +822,12 @@ impl TFunction {
         nativefunc: fn(GCRef<TModule>, TArgsBuffer) -> TValue
     ) -> GCRef<TFunction> {
         let vm = module.vm();
-        vm.heap().allocate_atom(Self {
+        /*vm.heap().allocate_atom(Self {
             name: name.vmcast(&vm),
             module,
             kind: TFnKind::Nativefunc(nativefunc)
-        })
+        })*/
+        todo!()
     }
 }
 

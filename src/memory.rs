@@ -9,19 +9,14 @@ use static_assertions::const_assert_eq;
 
 use crate::vm::VM;
 
-struct State(u16);
-
-impl State {
+#[repr(u16)]
+enum State {
     /// The region of memory does not contain any
     /// used object and is free for allocation
-    const DEAD:   State = State(0);
+    DEAD  = 0,
     /// The region of memory is considered a live object
     /// it can be moved or collected (and become DEAD)
-    const ALIVE:  State = State(1);
-    /// The region of memory is considered a live object
-    /// it can be moved but never be collected. It is considered
-    /// an entry point for finding live objects
-    const STATIC: State = State(2);
+    ALIVE = 1,
 }
 
 #[repr(C)]
@@ -219,9 +214,13 @@ struct AtomTrait<Atom = ()> {
     atom: Atom
 }
 
+static_assertions::const_assert!(std::mem::size_of::<AtomTrait>() == 8);
+
 impl<A: Atom> AtomTrait<A> {
     fn new(atom: A) -> Self {
         let vtable = &AtomTraitVTable {
+            atom_drop: atom_drop::<A>,
+            atom_visit: atom_visit::<A>,
             atom_downcast: atom_downcast::<A>,
         };
         AtomTrait { vtable, atom }
@@ -238,11 +237,31 @@ impl AtomTrait {
             None
         }
     }
+
+    fn visit(&self, visitor: &mut Visitor) {
+        unsafe { (self.vtable.atom_visit)(self, visitor); }
+    }
+
+    fn drop(&mut self) {
+        unsafe { (self.vtable.atom_drop)(self.into()); }
+    }
 }
 
 #[repr(C)]
 struct AtomTraitVTable {
+    atom_drop: unsafe fn(NonNull<AtomTrait>),
+    atom_visit: unsafe fn(&'_ AtomTrait, &'_ mut Visitor),
     atom_downcast: unsafe fn(&'_ AtomTrait, TypeId) -> Option<&'_ ()>,
+}
+
+unsafe fn atom_drop<A: Atom>(mut a: NonNull<AtomTrait>) {
+    let unerased_type: &mut AtomTrait<A> = mutcast(a.as_mut());
+    std::ptr::drop_in_place(unerased_type);
+}
+
+unsafe fn atom_visit<A: Atom>(a: &'_ AtomTrait, visitor: &'_ mut Visitor) {
+    let unerased_type: &AtomTrait<A> = refcast(a);
+    unerased_type.atom.visit(visitor);
 }
 
 unsafe fn atom_downcast<A: Atom>(a: &'_ AtomTrait, target: TypeId) -> Option<&'_ ()> {
@@ -256,6 +275,10 @@ unsafe fn atom_downcast<A: Atom>(a: &'_ AtomTrait, target: TypeId) -> Option<&'_
 
 unsafe fn refcast<Src, Dst>(a: &Src) -> &Dst {
     transmute::<&Src, &Dst>(a)
+}
+
+unsafe fn mutcast<Src, Dst>(a: &mut Src) -> &mut Dst {
+    transmute::<&mut Src, &mut Dst>(a)
 }
 
 pub struct GCRef<T>(NonNull<T>);
@@ -277,14 +300,6 @@ impl<T> GCRef<T> {
         self.0.as_ptr()
     }
 
-    pub fn kind<A: Atom>(&self) -> Option<&A> {
-        unsafe {
-            let atom = self.atom();
-            println!("calced atom {:p}", atom);
-            atom.downcast()
-        }
-    }
-
     pub fn heap(&self) -> &Heap {
         unsafe {
             let block = HeapBlock::from_allocation(self.as_ptr());
@@ -294,22 +309,6 @@ impl<T> GCRef<T> {
 
     pub fn vm(&self) -> Rc<VM> {
         self.heap().vm().clone()
-    }
-
-    pub fn drop_static(&self) -> GCRef<T> {
-        unsafe {
-            let head = self.head();
-            (&mut *head).state = State::ALIVE;
-        }
-        *self
-    }
-
-    pub fn make_static(&self) -> GCRef<T> {
-        unsafe {
-            let head = self.head();
-            (&mut *head).state = State::STATIC;
-        }
-        *self
     }
 
     unsafe fn head(&self) -> *mut AllocHead {

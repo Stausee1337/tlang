@@ -74,7 +74,7 @@ fn main() -> ExitCode {
             }
         };
 
-        let source = TString::from_slice(&vm, &contents).make_static();
+        let source = TString::from_slice(&vm, &contents);
 
         let arena = Bump::new();
         let ast = parse::parse_from_tstring(vm.clone(), source, &arena).unwrap();
@@ -86,7 +86,7 @@ fn main() -> ExitCode {
         };
 
         let mut module = TModule::new_from_rust(&vm, TString::from_slice(&vm, modname));
-        module.set_source(source.drop_static());
+        module.set_source(source);
 
         let generator = BytecodeGenerator::new(module);
         let gen_fn = codegen::generate_module(ast, generator).unwrap();

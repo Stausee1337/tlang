@@ -106,7 +106,7 @@ pub enum TokenKind {
     Intnumber(u64),
     #[regex(r"(([0-9](?:_?[0-9])*\.(?:[0-9](?:_?[0-9])*)?|\.[0-9](?:_?[0-9])*)([eE][-+]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*[eE][-+]?[0-9](?:_?[0-9])*)", |lex| lex.slice().parse().ok())]
     Floatnumber(f64),
-    #[regex("\"[^\\n\"\\\\]*(?:\\\\.[^\\n\"\\\\]*)*\"", |lex| TString::from_slice(&lex.extras, lex.slice()).make_static())]
+    #[regex("\"[^\\n\"\\\\]*(?:\\\\.[^\\n\"\\\\]*)*\"", |lex| TString::from_slice(&lex.extras, lex.slice()))]
     String(GCRef<TString>),
 
     #[token("const")]
@@ -168,9 +168,9 @@ pub fn tokenize<'source>(vm: Rc<VM>, source: &'source str) -> Result<Box<[Token]
             TokenKind::Comment =>
                 continue,
             TokenKind::String(s) => {
-                let lit = snailquote::unescape(s.drop_static().as_slice())
+                let lit = snailquote::unescape(s.as_slice())
                     .map_err(|_| SyntaxError(span))?;
-                *s = TString::from_slice(&lexer.extras, &lit).make_static();
+                *s = TString::from_slice(&lexer.extras, &lit);
             }
             _ => ()
         }
