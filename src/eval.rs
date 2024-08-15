@@ -25,6 +25,11 @@ impl TArgsBuffer {
         TArgsBuffer(vec![])
     }
 
+    #[cfg(debug_assertions)]
+    pub fn debug(v: Vec<TValue>) -> Self {
+        TArgsBuffer(v)
+    }
+
     pub fn into_iter(self, min: usize, varags: bool) -> TArgsIterator {
         if !varags {
             assert!(min == self.0.len());

@@ -273,11 +273,11 @@ unsafe fn atom_downcast<A: Atom>(a: &'_ AtomTrait, target: TypeId) -> Option<&'_
     None
 }
 
-unsafe fn refcast<Src, Dst>(a: &Src) -> &Dst {
+pub(crate) unsafe fn refcast<Src, Dst>(a: &Src) -> &Dst {
     transmute::<&Src, &Dst>(a)
 }
 
-unsafe fn mutcast<Src, Dst>(a: &mut Src) -> &mut Dst {
+pub(crate) unsafe fn mutcast<Src, Dst>(a: &mut Src) -> &mut Dst {
     transmute::<&mut Src, &mut Dst>(a)
 }
 

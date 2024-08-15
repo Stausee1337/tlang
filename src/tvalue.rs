@@ -1,10 +1,10 @@
-use std::{mem::{transmute, MaybeUninit}, fmt::Display, alloc::Layout, marker::PhantomData, ptr::NonNull};
+use std::{mem::{transmute, MaybeUninit}, fmt::Display, alloc::Layout, marker::PhantomData, ptr::NonNull, any::TypeId};
 
 
 use hashbrown::raw::RawTable;
 use tlang_macros::SelfWithBase;
 
-use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer};
+use crate::{memory::{GCRef, Atom, Visitor, self}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer};
 
 #[repr(u64)]
 #[derive(Debug, PartialEq, Eq)]
@@ -208,6 +208,10 @@ impl TValue {
     const FLOAT_NAN_TAG:  u64 = 0x7ff0000000000000;
     const NAN_VALUE_MASK: u64 = 0x0001ffffffffffff;
 
+    pub fn encoded(&self) -> u64 {
+        return self.0;
+    }
+
     /// Constructors
     
     #[inline(always)]
@@ -238,8 +242,8 @@ impl TValue {
     }
 
     #[inline(always)]
-    const fn int32(int: i32) -> Self {
-        let int = int as u64;
+    fn int32(int: i32) -> Self {
+        let int = int as u32 as u64;
         TValue(Self::FLOAT_NAN_TAG | TValueKind::Int32 as u64 | int)
     }
 
@@ -878,12 +882,13 @@ impl Typed for TType {
         ttype.basety = Some(object_ty);
         ttype.base = TObject::base(vm, ttype);
 
-        ttype.define_property(
+        /*ttype.define_property(
             Symbol![basety], TProperty::offset(vm, Accessor::GET, std::mem::offset_of!(Self, basety)));
         ttype.define_property(
             Symbol![name], TProperty::offset(vm, Accessor::GET, std::mem::offset_of!(Self, name)));
         ttype.define_property(
             Symbol![modname], TProperty::offset(vm, Accessor::GET, std::mem::offset_of!(Self, modname)));
+        */
 
         ttype
     }
@@ -945,14 +950,27 @@ pub struct TFunction {
 
 impl Typed for TFunction {
     fn initialize(vm: &VM) -> GCRef<TType> {
-        todo!()
+        vm.heap().allocate_atom(TType {
+            base: TObject::base(vm, vm.types().query::<TType>()),
+            basety: None,
+            basesize: std::mem::size_of::<Self>(),
+            name: TString::from_slice(vm, "function"),
+            modname: TString::from_slice(vm, "prelude"),
+            variable: false
+        })
     }
+}
+
+struct Fastcall {
+    id: TypeId,
+    ptr: NonNull<()>,
 }
 
 pub enum TFnKind {
     Function(TRawCode),
     Nativefunc {
-        fastcall: Option<NonNull<()>>,
+        fastcall: Option<Fastcall>,
+        traitfn: Box<FnOnceTrait>
     }
 }
 
@@ -960,7 +978,7 @@ unsafe impl std::marker::Sync for TFnKind {}
 unsafe impl std::marker::Send for TFnKind {}
 
 impl TFunction {
-    pub fn rustfunc<In: VMArgs, R: VMCast, F: FnOnce<In, Output = R>>(
+    pub fn rustfunc<In: VMArgs + 'static, R: VMCast + 'static, F: FnOnce<In, Output = R> + Copy>(
         module: GCRef<TModule>,
         name: Option<&str>,
         func: F
@@ -970,13 +988,40 @@ impl TFunction {
             let decoded_args = In::try_decode(&vm, args).unwrap();
             func.call_once(decoded_args).vmcast(&vm)
         };
+
+        let mut fastcall = None;
+        if std::mem::size_of::<F>() == 0 { // no closure
+            let fastfunc = |args: In| func.call_once(args);
+            assert!(std::mem::size_of_val(&fastfunc) == std::mem::size_of::<&()>());
+
+            let ptr = unsafe {
+                NonNull::new(*transmute::<&_, &*mut ()>(&fastfunc)).unwrap()
+            };
+
+            fastcall = Some(Fastcall {
+                id: std::any::TypeId::of::<(In, R)>(),
+                ptr,
+            });
+        }
+
+        let traitfn = FnOnceTrait::new(closure);
+
         let vm = module.vm();
-        vm.heap().allocate_atom(Self {
+        let traitfn: &'_ mut FnOnceTrait = unsafe {
+            memory::mutcast(Box::leak(Box::new(traitfn)))
+        };
+
+        let mut func = vm.heap().allocate_atom(Self {
             base: TObject::base(&vm, vm.types().query::<Self>()),
             name: name.vmcast(&vm),
             module,
-            kind: todo!() 
-        })
+            kind: TFnKind::Nativefunc {
+                fastcall,
+                traitfn: unsafe { Box::from_raw(&mut *traitfn) }
+            }
+        });
+
+        func
     }
 
     pub fn nativefunc<F>(
@@ -996,10 +1041,69 @@ impl GCRef<TFunction> {
         match &self.kind {
             TFnKind::Function(code) =>
                 code.evaluate(self.module, arguments),
-            TFnKind::Nativefunc(func) =>
-                func(self.module, arguments),
+            TFnKind::Nativefunc { traitfn, .. } =>
+                traitfn.call(self.module, arguments)
         }
     }
+}
+
+#[repr(C)]
+struct FnOnceTrait<F = ()> {
+    vtable: &'static FnOnceTable,
+    func: F,
+}
+
+#[repr(C)]
+struct FnOnceTable {
+    func_drop: unsafe fn(NonNull<FnOnceTrait>),
+    func_call: unsafe fn(&'_ FnOnceTrait, GCRef<TModule>, TArgsBuffer) -> TValue,
+}
+
+impl<F: FnOnce(GCRef<TModule>, TArgsBuffer) -> TValue + Copy> FnOnceTrait<F> {
+    fn new(func: F) -> Self {
+        let vtable = &FnOnceTable {
+            func_drop: func_drop::<F>,
+            func_call: func_call::<F>
+        };
+        Self {
+            vtable,
+            func,
+        }
+    }
+}
+
+impl FnOnceTrait {
+    fn call(&self, module: GCRef<TModule>, args: TArgsBuffer) -> TValue {
+        unsafe {
+            (self.vtable.func_call)(self, module, args)
+        }
+    }
+}
+
+impl<T> Drop for FnOnceTrait<T> {
+    fn drop(&mut self) {
+        unsafe {
+            let erased_ref: &mut FnOnceTrait<()> = memory::mutcast(self);
+            let erased_owned = erased_ref.into();
+            (self.vtable.func_drop)(erased_owned)
+        }
+    }
+}
+
+unsafe fn func_drop<F>(mut f: NonNull<FnOnceTrait>)
+where
+    F: FnOnce(GCRef<TModule>, TArgsBuffer) -> TValue + Copy
+{
+    let unerased_type: &mut FnOnceTrait<F> = memory::mutcast(f.as_mut());
+    std::ptr::drop_in_place(unerased_type);
+}
+
+unsafe fn func_call<F>(f: &'_ FnOnceTrait, module: GCRef<TModule>, args: TArgsBuffer) -> TValue
+where
+    F: FnOnce(GCRef<TModule>, TArgsBuffer) -> TValue + Copy
+{
+    let unerased_type: &'_ FnOnceTrait<F> = memory::refcast(f);
+    (unerased_type.func)(module, args)
 }
 
 pub fn print_impl(module: GCRef<TModule>, args: TArgsBuffer) -> TValue {

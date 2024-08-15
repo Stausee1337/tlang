@@ -10,10 +10,10 @@ extern crate self as tlang;
 use bumpalo::Bump;
 use eval::TArgsBuffer;
 use getopts::{Options, ParsingStyle};
-use tvalue::TString;
+use tvalue::{TString, TFunction, TInteger};
 use vm::TModule;
 
-use crate::bytecode::BytecodeGenerator;
+use crate::{bytecode::BytecodeGenerator, tvalue::TValue};
 
 mod lexer;
 mod symbol;
@@ -92,6 +92,18 @@ fn main() -> ExitCode {
 
         let mut module = TModule::new_from_rust(&vm, TString::from_slice(&vm, modname));
         module.set_source(source);
+
+        let rustfunc = TFunction::rustfunc(module, None, |int: TInteger| {
+            println!("{:?}", int.as_isize());
+        });
+
+        let res = rustfunc.call(
+            TArgsBuffer::debug(vec![
+                TInteger::from_int32(-12).into(),
+            ]
+        ));
+
+        assert!(res.encoded() == TValue::null().encoded());
 
         let generator = BytecodeGenerator::new(module);
         let gen_fn = codegen::generate_module(ast, generator).unwrap();
