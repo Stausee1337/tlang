@@ -1,4 +1,4 @@
-use std::{mem::{transmute, MaybeUninit}, fmt::Display, alloc::Layout};
+use std::{mem::{transmute, MaybeUninit}, fmt::Display, alloc::Layout, marker::PhantomData, ptr::NonNull};
 
 
 use hashbrown::raw::RawTable;
@@ -101,6 +101,30 @@ macro_rules! tobject {
     () => {};
 }
 
+pub struct TPolymorphicWrapper<T: TPolymorphicObject> {
+    object: GCRef<TObject>,
+    _phantom: PhantomData<T>
+}
+
+impl<T: TPolymorphicObject> VMCast for TPolymorphicWrapper<T> {
+    fn vmcast(self, vm: &VM) -> TValue {
+        TValue::object(self.object)
+    }
+}
+
+impl<T: TPolymorphicObject> VMDowncast for TPolymorphicWrapper<T> {
+    fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
+        let object = value.as_object::<TObject>()?;
+        if !object.ty.is_subclass(vm.types().query::<T>()) {
+            return None;
+        }
+        Some(TPolymorphicWrapper {
+            object,
+            _phantom: PhantomData::default()
+        })
+    }
+}
+
 /// This is a _marker_ trait for polymorphic Objects use `tobject!` to implement
 ///
 /// Marking a struct means it obeys 2 main criteria
@@ -115,13 +139,57 @@ pub unsafe trait TPolymorphicObject: Typed {
     type Base: TPolymorphicObject;
 }
 
+impl Atom for RawTable<(Symbol, TValue)> {
+    fn visit(&self, visitor: &mut Visitor) {
+        todo!()
+    }
+}
+
 tobject! {
 pub struct TObject: () {
-    pub ty: GCRef<TType>
+    pub ty: GCRef<TType>,
+    descriptor: Option<GCRef<RawTable<(Symbol, TValue)>>>
 }
 }
 
-impl Typed for TObject {}
+impl TObject {
+    pub fn new(vm: &VM) -> GCRef<Self> {
+        let descriptor = vm.heap().allocate_atom(RawTable::new());
+        vm.heap().allocate_atom(Self {
+            ty: vm.types().query::<Self>(),
+            descriptor: Some(descriptor),
+        })
+    }
+
+    pub fn base(vm: &VM, ty: GCRef<TType>) -> Self {
+        let descriptor = if ty.variable {
+            Some(vm.heap().allocate_atom(RawTable::new()))
+        } else {
+            None
+        };
+        Self {
+            ty: vm.types().query::<Self>(),
+            descriptor,
+        }
+    }
+
+    fn uninit() -> Self {
+        unsafe { MaybeUninit::uninit().assume_init() }
+    }
+}
+
+impl Typed for TObject {
+    fn initialize(vm: &VM) -> GCRef<TType> {
+        vm.heap().allocate_atom(TType {
+            base: Self::uninit(),
+            basesize: std::mem::size_of::<Self>(),
+            basety: None, // There's nothing above Object in the hierarchy
+            name: TString::from_slice(vm, "object"),
+            modname: TString::from_slice(vm, "prelude"),
+            variable: true
+        })
+    }
+}
 
 
 /// 64bit Float:
@@ -299,9 +367,7 @@ impl TValue {
 }
 
 pub trait Typed: Atom + 'static {
-    fn initialize(vm: &VM) -> GCRef<TType> {
-        todo!()
-    }
+    fn initialize(vm: &VM) -> GCRef<TType>;
 
     fn visit_override(&self, visitor: &mut Visitor) {
         todo!()
@@ -355,77 +421,24 @@ impl VMDowncast for TValue {
     }
 }
 
+pub trait VMArgs: std::marker::Tuple + Sized {
+    fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self>;
+}
+
 pub trait GetHash {
     fn get_hash_code(&self) -> u64;
 }
 
-/// FIXME: better TTypeBuilder 
-pub struct TTypeBuilder<'vm> {
-    vm: &'vm VM,
-    attributes: Vec<(Symbol, TValue)>,
-    empty: Option<GCRef<TType>>
-}
-
-impl<'vm> TTypeBuilder<'vm> {
-    pub fn new(vm: &'vm VM, name: impl VMCast, modname: impl VMCast) -> Self {
-        let mut attributes = Vec::new();
-        attributes.push((
-            vm.symbols().intern_slice("name"),
-            name.vmcast(vm)
-        ));
-        attributes.push((
-            vm.symbols().intern_slice("modname"),
-            modname.vmcast(vm)
-        ));
-        Self {
-            vm,
-            attributes,
-            empty: None
-        }
-    }
-
-    fn build_empty(vm: &'vm VM, name: impl VMCast, modname: impl VMCast, empty: GCRef<TType>) -> Self {
-        let mut builder = TTypeBuilder::new(vm, name, modname);
-        builder.empty = Some(empty);
-        builder
-    }
-
-    pub fn insert_attribute(&mut self, name: Symbol, value: TValue) {
-        self.attributes.push((name, value));
-    }
-
-    pub fn extend<F: Fn(&mut Self)>(&mut self, builder: F) {
-        builder(self);
-    }
-
-    pub fn build(self) -> GCRef<TType> {
-        unsafe {
-            if let Some(ttype) = self.empty {
-                let mut object = ttype.cast::<TAnonObject>();
-                object.fill(&self.attributes);
-                return ttype;
-            }
-            let object = TAnonObject::create(self.vm, &self.attributes);
-            object.cast()
-        }
-    }
-}
-
-#[repr(C)]
-pub struct TType(TAnonObject);
-
-impl TType {
-    fn empty(vm: &VM, count: usize) -> GCRef<Self> {
-        unsafe {
-            let object = TAnonObject::make(vm, count + 2);
-            object.cast()
-        }
-    }
-}
-
-impl GCRef<TType> {
-    fn get_static(&self) -> &'static TType {
-        unsafe { &*self.as_ptr() }
+impl<T1> VMArgs for (T1,)
+where
+    T1: VMDowncast
+{
+    fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self> {
+        let mut iter = args.into_iter(1, false);
+        let arg1 = iter.next()?;
+        Some((
+            T1::vmdowncast(arg1, vm)?,
+        ))
     }
 }
 
@@ -442,9 +455,6 @@ impl TBool {
     pub const fn from_bool(bool: bool) -> Self {
         TBool(bool)
     }
-}
-
-impl Typed for TBool {
 }
 
 impl Into<TValue> for TBool {
@@ -820,6 +830,112 @@ iter_float_arithmetics! {
 }
 
 tobject! {
+pub struct TType {
+    pub basety: Option<GCRef<TType>>,
+    pub basesize: usize,
+    pub name: GCRef<TString>,
+    pub modname: GCRef<TString>,
+    pub variable: bool
+}
+}
+
+impl GCRef<TType> {
+    pub fn is_subclass(&self, needle: GCRef<TType>) -> bool {
+        let mut current = *self;
+        loop {
+            if current.refrence_eq(needle) {
+                return true;
+            }
+            let Some(base) = self.basety else {
+                break;
+            };
+            current = base;
+        }
+        false
+    }
+
+    pub fn define_property(&self, name: Symbol, property: GCRef<TProperty>) {
+        todo!()
+    }
+}
+
+impl Typed for TType {
+    fn initialize(vm: &VM) -> GCRef<TType> {
+        let mut ttype = vm.heap().allocate_atom(TType {
+            base: TObject::uninit(),
+            basety: None,
+            basesize: std::mem::size_of::<Self>(),
+            name: TString::from_slice(vm, "type"),
+            modname: TString::from_slice(vm, "prelude"),
+            variable: true
+        });
+
+        // Initialize the TObject
+        let mut object_ty = vm.types().query::<TObject>();
+        object_ty.base = TObject::base(vm, ttype);
+
+        // Finish TType
+        ttype.basety = Some(object_ty);
+        ttype.base = TObject::base(vm, ttype);
+
+        ttype.define_property(
+            Symbol![basety], TProperty::offset(vm, Accessor::GET, std::mem::offset_of!(Self, basety)));
+        ttype.define_property(
+            Symbol![name], TProperty::offset(vm, Accessor::GET, std::mem::offset_of!(Self, name)));
+        ttype.define_property(
+            Symbol![modname], TProperty::offset(vm, Accessor::GET, std::mem::offset_of!(Self, modname)));
+
+        ttype
+    }
+}
+
+bitflags::bitflags! {
+    pub struct Accessor: u8 {
+        const GET = 0b1;
+        const SET = 0b1;
+    }
+}
+
+tobject! {
+pub struct TProperty {
+    pub get: Option<GCRef<TFunction>>,
+    pub set: Option<GCRef<TFunction>>
+}
+}
+
+fn module() -> GCRef<TModule> {
+    todo!()
+}
+
+impl TProperty {
+    pub fn offset(vm: &VM, accessor: Accessor, offset: usize) -> GCRef<Self> {
+        let get = if accessor.contains(Accessor::GET) {
+            Some(TFunction::rustfunc(module(), None, |object: TPolymorphicWrapper<TObject>| {
+                todo!()
+            }))
+        } else {
+            None
+        };
+        let set = if accessor.contains(Accessor::SET) {
+            todo!()
+        } else {
+            None
+        };
+
+        vm.heap().allocate_atom(Self {
+            base: TObject::base(vm, vm.types().query::<Self>()),
+            get, set
+        })
+    }
+}
+
+impl Typed for TProperty {
+    fn initialize(vm: &VM) -> GCRef<TType> {
+        todo!()
+    }
+}
+
+tobject! {
 pub struct TFunction {
     pub name: TValue, /// Optional<TString>
     pub module: GCRef<TModule>,
@@ -827,26 +943,50 @@ pub struct TFunction {
 }
 }
 
-impl Typed for TFunction {}
+impl Typed for TFunction {
+    fn initialize(vm: &VM) -> GCRef<TType> {
+        todo!()
+    }
+}
 
 pub enum TFnKind {
     Function(TRawCode),
-    Nativefunc(fn(GCRef<TModule>, TArgsBuffer) -> TValue),
+    Nativefunc {
+        fastcall: Option<NonNull<()>>,
+    }
 }
 
+unsafe impl std::marker::Sync for TFnKind {}
+unsafe impl std::marker::Send for TFnKind {}
+
 impl TFunction {
-    pub fn nativefunc(
+    pub fn rustfunc<In: VMArgs, R: VMCast, F: FnOnce<In, Output = R>>(
         module: GCRef<TModule>,
         name: Option<&str>,
-        nativefunc: fn(GCRef<TModule>, TArgsBuffer) -> TValue
+        func: F
     ) -> GCRef<TFunction> {
+        let closure = |module: GCRef<TModule>, args: TArgsBuffer| {
+            let vm = module.vm();
+            let decoded_args = In::try_decode(&vm, args).unwrap();
+            func.call_once(decoded_args).vmcast(&vm)
+        };
         let vm = module.vm();
-        vm.heap().allocate_atom(SelfWithBase! {
-            base.ty: vm.types().query::<Self>(),
+        vm.heap().allocate_atom(Self {
+            base: TObject::base(&vm, vm.types().query::<Self>()),
             name: name.vmcast(&vm),
             module,
-            kind: TFnKind::Nativefunc(nativefunc)
+            kind: todo!() 
         })
+    }
+
+    pub fn nativefunc<F>(
+        module: GCRef<TModule>,
+        name: Option<&str>,
+        nativefunc: F) -> GCRef<TFunction>
+    where
+        F: FnOnce(GCRef<TModule>, TArgsBuffer) -> TValue
+    {
+        todo!()
     }
 }
 
@@ -872,68 +1012,13 @@ pub fn print_impl(module: GCRef<TModule>, args: TArgsBuffer) -> TValue {
 }
 
 pub fn module_init(mut module: GCRef<TModule>) {
-    let print_function = TFunction::nativefunc(module, Some("print"), print_impl);
-    module.set_global(module.vm().symbols().intern_slice("print"), print_function.into(), true).unwrap();
+    // let print_function = TFunction::nativefunc(module, Some("print"), print_impl);
+    // module.set_global(module.vm().symbols().intern_slice("print"), print_function.into(), true).unwrap();
+    todo!()
 }
 
 
-#[repr(C)]
-struct TAnonObject {
-    descriptor: RawTable<(Symbol, u64, usize)>,
-    data: [u8; 0]
-}
-
-impl TAnonObject {
-    fn create(vm: &VM, attributes: &[(Symbol, TValue)]) -> GCRef<Self> {
-        unsafe {
-            let mut object = Self::make(vm, attributes.len());
-            object.fill(attributes);
-            object
-        }
-    }
-
-    unsafe fn make(vm: &VM, count: usize) -> GCRef<Self> {
-        let object = TAnonObject {
-            descriptor: RawTable::with_capacity(count),
-            data: [0u8; 0]
-        };
-        /*vm.heap().allocate_var_atom(
-            object,
-            count * std::mem::size_of::<TValue>())*/
-        todo!()
-    }
-}
-
-impl GCRef<TAnonObject> {
-    unsafe fn fill(&mut self, attributes: &[(Symbol, TValue)]) {
-        debug_assert!(self.descriptor.capacity() >= attributes.len());
-        for (idx, (name, value)) in attributes.iter().enumerate() {
-            if let Some(bucket) = self.query_attribute(*name) {
-                *bucket = *value;
-                continue;
-            }
-            self.insert_attribute(idx, *name, *value);
-        }
-    }
-
-    unsafe fn insert_attribute(&mut self, idx: usize, attribute: Symbol, value: TValue) {
-        let hash = attribute.hash();
-        self.descriptor.insert(
-            hash, (attribute, hash, idx),
-            |val| val.1
-        );
-        *(self.data.as_mut_ptr() as *mut TValue).add(idx) = value;
-    }
-
-    unsafe fn query_attribute(&mut self, attribute: Symbol) -> Option<&mut TValue> { 
-        let hash = attribute.hash();
-        if let Some(&(_, _, idx)) = self.descriptor.get(hash, |val| val.0 == attribute) { 
-            let ptr = (self.data.as_mut_ptr() as *mut TValue).add(idx);
-            return Some(&mut *ptr)
-        }
-        None
-    }
-}
+// #[repr(C)]
 
 // --- TType's ---
 // TBool

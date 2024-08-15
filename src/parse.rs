@@ -224,7 +224,7 @@ impl<'ast> ParseContext<'ast> {
     pub fn parse(&self) -> Result<Module<'ast>, SyntaxError> {
         internal::ModuleParser::new()
             .parse(self, self.tokens
-                .into_iter()
+                .iter()
                 .map(|tok| (tok.1.start, tok.0, tok.1.end)))
             .map_err(|err| SyntaxError(as_span(err)))
     }

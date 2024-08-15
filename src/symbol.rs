@@ -3,7 +3,9 @@ use std::fmt::Debug;
 use ahash::RandomState;
 use hashbrown::raw::RawTable;
 
-use crate::{memory::{GCRef, Atom}, tvalue::{TString, GetHash}, vm::VM};
+use crate::{memory::{GCRef, Atom}, tvalue::TString};
+
+pub use tlang_macros::Symbol;
 
 const HASH0: RandomState = RandomState::with_seeds(
     0x6735611e020820df,
@@ -113,8 +115,8 @@ impl Atom for SymbolCache {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Symbol {
-    id: u64,
-    hash: u64,
+    pub id: u64,
+    pub hash: u64,
 }
 
 impl Symbol {

@@ -51,3 +51,10 @@ pub fn SelfWithBase(item: TokenStream) -> TokenStream {
         .into()
 }
 
+#[proc_macro]
+pub fn Symbol(item: TokenStream) -> TokenStream {
+    codegen::generate_symbol(item.into())
+        .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
+        .into()
+}
+

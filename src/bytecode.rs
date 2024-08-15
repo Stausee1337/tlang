@@ -4,7 +4,7 @@ use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCel
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed}, symbol::Symbol, parse::Ident, codegen::{self, CodegenErr}, memory::GCRef, vm::{VM, TModule}};
+use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed, TObject}, symbol::Symbol, parse::Ident, codegen::{self, CodegenErr}, memory::GCRef, vm::{VM, TModule}};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -645,14 +645,15 @@ impl TFunction {
         };
         let code = TRawCode::new(codesize, params, registers, descriptors, blocks);
 
-        let mut function: GCRef<Self> = /*vm.heap().allocate_var_atom(
+        let mut function: GCRef<Self> = vm.heap().allocate_var_atom(
             Self {
+                base: TObject::base(vm, vm.types().query::<Self>()),
                 name,
                 module,
                 kind: TFnKind::Function(code)
             },
             extra_size
-        );*/ todo!();
+        );
         let function2 = function.clone();
         match function.kind {
             TFnKind::Function(ref mut code) => {

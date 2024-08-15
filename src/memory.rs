@@ -285,7 +285,7 @@ pub struct GCRef<T>(NonNull<T>);
 
 impl<T> GCRef<T> {
     pub(crate) const unsafe fn from_raw(raw: *const T) -> Self {
-        GCRef(NonNull::new_unchecked(raw as *mut T))
+        GCRef(transmute(raw))
     }
 
     pub(crate) unsafe fn cast<U>(&self) -> GCRef<U> {

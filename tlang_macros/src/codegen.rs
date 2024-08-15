@@ -791,3 +791,56 @@ pub fn generate_struct_init(token_stream: TokenStream) -> Result<TokenStream, sy
     Ok(recursive_gen_tokens(quote!(#self_ident), fields)?)
 }
 
+mod symbol {
+    use ahash::RandomState;
+
+    const HASH0: RandomState = RandomState::with_seeds(
+        0x6735611e020820df,
+        0x43abdc326e8e3a2c,
+        0x80a2f5f207cf871e,
+        0x43d1fac44245c038
+    );
+
+    const HASH1: RandomState = RandomState::with_seeds(
+        0xb15ceb7218c4c1b5,
+        0xae5bd30505b9c17e,
+        0xb1c5d5e97339544a,
+        0xedae3f360619d8f6
+    );
+
+    const HASH2: RandomState = RandomState::with_seeds(
+        0x229533896b4d1f57,
+        0x82d963a13dca2bb5,
+        0x51a9b15708317482,
+        0x382e6f20e2020ddf
+    );
+
+    const HASH3: RandomState = RandomState::with_seeds(
+        0xd6cc5b074c253c8e,
+        0x591a296cf00ad299,
+        0x47848ccc54e51f03,
+        0x29e940477b79df10
+    );
+
+    pub fn mkhash(str: &str) -> u64 {
+        HASH0.hash_one(str)
+    }
+
+    pub fn mkid(str: &str) -> u64 {
+        HASH1.hash_one(str) ^ HASH2.hash_one(str) ^ HASH3.hash_one(str)
+    }
+}
+
+pub fn generate_symbol(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+    let name: Ident = syn::parse2(token_stream)?;
+    let name = name.to_string();
+    let hash = symbol::mkhash(&name);
+    let id = symbol::mkid(&name);
+
+    Ok(quote! {
+        tlang::symbol::Symbol {
+            id: #id,
+            hash: #hash
+        }
+    })
+}

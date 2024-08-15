@@ -18,6 +18,7 @@ impl VM {
             let heap = Box::new(Heap::init(me.clone()));
             Self::create(heap)
         });
+        vm.types().query::<TType>();
         vm
     }
 

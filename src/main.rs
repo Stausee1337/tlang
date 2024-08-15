@@ -1,3 +1,6 @@
+#![feature(fn_traits)]
+#![feature(tuple_trait)]
+#![feature(unboxed_closures)]
 #![feature(more_qualified_paths)]
 
 use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
