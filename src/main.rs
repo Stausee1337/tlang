@@ -11,6 +11,7 @@ use bumpalo::Bump;
 use eval::TArgsBuffer;
 use getopts::{Options, ParsingStyle};
 use interop::TPolymorphicCallable;
+use memory::GCRef;
 use tvalue::{TString, TFunction, TInteger};
 use vm::TModule;
 
@@ -94,22 +95,6 @@ fn main() -> ExitCode {
 
         let mut module = TModule::new_from_rust(&vm, TString::from_slice(&vm, modname));
         module.set_source(source);
-
-        let rustfunc = TFunction::rustfunc(module, None, |int: TInteger| {
-            println!("{:?}", int.as_isize());
-            return TInteger::from_int32(42);
-        });
-
-        let callable: TPolymorphicCallable<_, TInteger> = rustfunc.into();
-        callable(TInteger::from_int32(-12));
-
-        /*let res = rustfunc.call(
-            TArgsBuffer::debug(vec![
-                (-12i32).vmcast(&vm),
-            ]
-        ));*/
-
-        // assert!(res.encoded() == TValue::null().encoded());
 
         let generator = BytecodeGenerator::new(module);
         let gen_fn: TPolymorphicCallable<_, ()> = codegen::generate_module(ast, generator).unwrap().into();

@@ -875,20 +875,16 @@ impl Typed for TFunction {
     }
 }
 
-struct Fastcall {
-    id: TypeId,
-    ptr: NonNull<()>,
-}
-
 pub enum TFnKind {
     Function(TRawCode),
     Nativefunc {
+        fastcall: Box<Fastcall<()>>,
         traitfn: Box<FnOnceTrait>
     }
 }
 
 unsafe impl std::marker::Sync for TFnKind {}
-unsafe impl std::marker::Send for TFnKind {}
+unsafe impl std::marker::Send for TFnKind {}    
 
 impl TFunction {
     pub fn rustfunc<In: VMArgs + 'static, R: VMCast + 'static, F: FnOnce<In, Output = R> + Copy>(
@@ -896,30 +892,23 @@ impl TFunction {
         name: Option<&str>,
         func: F
     ) -> GCRef<TFunction> {
+        let vm = module.vm();
+
+        let fastcall = Fastcall::new(func);
+
+        let fastcall: &'_ mut Fastcall<()> = unsafe {
+            let leaked = Box::leak(Box::new(fastcall));
+            memory::mutcast(leaked)
+        };
+
         let closure = |module: GCRef<TModule>, args: TArgsBuffer| {
             let vm = module.vm();
             let decoded_args = In::try_decode(&vm, args).unwrap();
             func.call_once(decoded_args).vmcast(&vm)
         };
 
-        // let mut fastcall = None;
-        // if std::mem::size_of::<F>() == 0 { // no closure
-        //     let fastfunc = |args: In| func.call_once(args);
-        //     assert!(std::mem::size_of_val(&fastfunc) == std::mem::size_of::<&()>());
-
-        //     let ptr = unsafe {
-        //         NonNull::new(*transmute::<&_, &*mut ()>(&fastfunc)).unwrap()
-        //     };
-
-        //     fastcall = Some(Fastcall {
-        //         id: std::any::TypeId::of::<(In, R)>(),
-        //         ptr,
-        //     });
-        // }
-
         let traitfn = FnOnceTrait::new(closure);
 
-        let vm = module.vm();
         let traitfn: &'_ mut FnOnceTrait = unsafe {
             memory::mutcast(Box::leak(Box::new(traitfn)))
         };
@@ -929,21 +918,12 @@ impl TFunction {
             name: name.vmcast(&vm),
             module,
             kind: TFnKind::Nativefunc {
+                fastcall: unsafe { Box::from_raw(&mut *fastcall) },
                 traitfn: unsafe { Box::from_raw(&mut *traitfn) }
             }
         });
 
         func
-    }
-
-    pub fn nativefunc<F>(
-        module: GCRef<TModule>,
-        name: Option<&str>,
-        nativefunc: F) -> GCRef<TFunction>
-    where
-        F: FnOnce(GCRef<TModule>, TArgsBuffer) -> TValue
-    {
-        todo!()
     }
 }
 
@@ -957,6 +937,95 @@ impl GCRef<TFunction> {
                 traitfn.call(self.module, arguments)
         }
     }
+
+    #[inline(always)]
+    pub fn fastcall<In, R>(&self, args: In) -> CallResult<In, R>
+    where
+        In: std::marker::Tuple + 'static,
+        R: 'static
+    {
+        match &self.kind {
+            TFnKind::Function(..) => CallResult::NotImplemented(args),
+            TFnKind::Nativefunc { fastcall, .. } =>
+                fastcall.try_call(args)
+        }
+    }
+}
+
+pub enum CallResult<In, R> {
+    NotImplemented(In),
+    Result(R)
+}
+
+#[repr(C)]
+struct Fastcall<F> {
+    id: TypeId,
+    fast_drop: unsafe fn(NonNull<Fastcall<()>>),
+    fast_call: *const (),
+    func: F
+}
+
+impl<F> Fastcall<F> {
+    pub fn new<In, R>(func: F) -> Fastcall<F>
+    where
+        In: std::marker::Tuple + 'static,
+        R: 'static,
+        F: FnOnce<In, Output = R> + Copy
+    {
+        let id = TypeId::of::<(In, R)>();
+        Fastcall {
+            id,
+            fast_drop: fast_drop::<In, R, F>,
+            fast_call: fast_call::<In, R, F> as *const (),
+            func
+        }
+    }
+}
+
+impl Fastcall<()> {
+    #[inline(always)]
+    fn try_call<In, R>(&self, args: In) -> CallResult<In, R> 
+    where
+        In: std::marker::Tuple + 'static,
+        R: 'static,
+    {
+        let id = TypeId::of::<(In, R)>();
+        if self.id != id {
+            return CallResult::NotImplemented(args);
+        }
+        unsafe {
+            let fast_call: unsafe fn(&Fastcall<()>, In) -> R = transmute(self.fast_call);
+            CallResult::Result(fast_call(self, args))
+        }
+    }
+}
+
+impl<F> Drop for Fastcall<F> {
+    fn drop(&mut self) {
+        unsafe {
+            let ereased_ref: &mut Fastcall<()> = memory::mutcast(self);
+            let erased_owned = ereased_ref.into();
+            (self.fast_drop)(erased_owned);
+        }
+    }
+}
+
+unsafe fn fast_drop<In, R, F>(mut fastcall: NonNull<Fastcall<()>>)
+where
+    In: std::marker::Tuple,
+    F: FnOnce<In, Output = R> + Copy
+{
+    let unerased_type: &mut Fastcall<F> = memory::mutcast(fastcall.as_mut());
+    std::ptr::drop_in_place(unerased_type);
+}
+
+unsafe fn fast_call<In, R, F>(fastcall: &Fastcall<()>, args: In) -> R
+where
+    In: std::marker::Tuple,
+    F: FnOnce<In, Output = R> + Copy
+{
+    let unerased_type: &Fastcall<F> = memory::refcast(fastcall);
+    unerased_type.func.call_once(args)
 }
 
 #[repr(C)]
