@@ -91,6 +91,8 @@ trait DecodeDeref {
 impl TRawCode {
     pub fn evaluate<'a>(&self, module: GCRef<TModule>, args: TArgsBuffer) -> TValue {
         self.with_environment(module, args, |env| {
+            println!("{:?}", env.stream.code());
+            println!("evaluate {:p}", env.stream.code());
             loop {
                 let opcode = OpCode::decode(env.stream.current());
                 println!("{opcode:?}");

@@ -12,6 +12,7 @@ use eval::TArgsBuffer;
 use getopts::{Options, ParsingStyle};
 use interop::TPolymorphicCallable;
 use memory::GCRef;
+use serde::Deserialize;
 use tvalue::{TString, TFunction, TInteger};
 use vm::TModule;
 
@@ -39,6 +40,13 @@ fn read_entire_file(filename: &Path) -> Result<String, io::Error> {
     File::open(filename)?
         .read_to_string(&mut result)?;
     Ok(result)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[repr(packed)]
+struct Test {
+    x: u8,
+    b: u16
 }
 
 fn main() -> ExitCode {

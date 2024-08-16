@@ -976,6 +976,7 @@ impl Typed for TFunction {
     }
 }
 
+#[repr(C)]
 pub enum TFnKind {
     Function(TRawCode),
     Nativefunc {

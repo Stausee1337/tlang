@@ -615,6 +615,8 @@ impl TFunction {
         for block in &func.blocks {
             assert!(block.terminated);
 
+            println!("{:?}", block.data);
+
             tcode.blocks_mut()[block.label.index()] = offset as u32;
             let length = block.data.len();
             let codebuf = &mut tcode.code_mut()[offset..offset + length];
@@ -845,10 +847,13 @@ impl CallSerializer {
             return None;
         }
 
+        let ptr = data[header_size..].as_ptr() as *const T;
+        println!("deserialize_slice {:p}", ptr);
+
         let length = size / item_size;
         unsafe {
             Some((std::slice::from_raw_parts(
-                data[header_size..].as_ptr() as *const T,
+                ptr,
                 length
             ), header_size + size))
         }
@@ -858,9 +863,17 @@ impl CallSerializer {
 impl<'s> InstructionSerializer<instructions::Call_1<'s>> for CallSerializer {
     #[inline(always)]
     fn serialize(instr: instructions::Call_1<'s>, vec: &mut Vec<u8>) {
+        const ALIGN: usize = 8;
+
         let instructions::Call_1 { callee, arguments, dst } = instr;
         BitSerializer::serialize(callee, vec);
         BitSerializer::serialize(dst, vec);
+
+        if vec.len() % ALIGN != 0 {
+            let padding = ALIGN - (vec.len() % ALIGN);
+            vec.extend(&[0u8; 4][..padding]);
+        }
+
         Self::serialize_slice(arguments, vec);
     }
 
@@ -878,11 +891,22 @@ impl InstructionSerializer<instructions::Call> for CallSerializer {
 
     #[inline(always)]
     fn deserialize<'c>(data: &'c mut CodeStream) -> Option<&'c instructions::Call> {
+        const ALIGN: usize = 8;
         const SIZE: usize = std::mem::size_of::<instructions::Call>();
         let codestream: *mut _ = &mut *data;
 
         let instr = BitSerializer::deserialize::<instructions::Call>(data.code());
         CodeStream::bump(unsafe { &mut *codestream }, SIZE);
+
+        {
+            let stream = unsafe { &mut *codestream };
+            let ptr = stream.code().as_ptr() as usize;
+            if ptr % ALIGN != 0 {
+                let padding = ALIGN - (ptr % ALIGN);
+                println!("deserialize padding {padding}");
+                stream.bump(padding);
+            }
+        }
 
         let (_arguments, size) = Self::deserialize_slice::<Operand>(data.code())?;
         CodeStream::bump(unsafe { &mut *codestream }, size);
@@ -893,10 +917,19 @@ impl InstructionSerializer<instructions::Call> for CallSerializer {
 
 impl instructions::Call {
     pub fn arguments(&self) -> &[Operand] {
+        const ALIGN: usize = 8;
+
+        let ptr = self.arguments.as_ptr() as usize;
+        let mut padding = 0;
+        if ptr % ALIGN != 0 {
+            padding = ALIGN - (ptr % ALIGN);
+        }
+
         let data = unsafe {
+        println!("arguments {:p} {}", self.arguments.as_ptr().byte_add(padding), padding);
             std::slice::from_raw_parts(
-                self.arguments.as_ptr() as *const u8,
-                usize::MAX
+                self.arguments.as_ptr().byte_add(padding) as *const u8,
+                isize::MAX as usize
             )
         };
         CallSerializer::deserialize_slice(data).unwrap().0
