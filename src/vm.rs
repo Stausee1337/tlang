@@ -1,12 +1,15 @@
 use std::{rc::Rc, any::TypeId};
 
-use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, self, TString, TValue, Typed}};
+use hashbrown::hash_map::RawEntryMut;
+
+use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, self, TString, TValue, Typed, TProperty, Accessor}};
 
 pub struct VM {
     heap: Box<Heap>,
 
     pub symbols: GCRef<SymbolCache>,
     pub types: GCRef<RustTypeInterner>,
+    pub modules: GCRef<TModules>,
     pub hash_state: ahash::RandomState,
 
     pub primitives: Primitives
@@ -18,7 +21,7 @@ impl VM {
             let heap = Box::new(Heap::init(me.clone()));
             Self::create(heap)
         });
-        vm.types().query::<TType>();
+        let ttype = vm.types().query::<TType>();
         vm
     }
 
@@ -27,9 +30,11 @@ impl VM {
 
         let symbols = heap.allocate_atom(SymbolCache::new());
         let types = heap.allocate_atom(RustTypeInterner::new());
+        let modules = heap.allocate_atom(TModules::new(&heap));
 
         VM {
             heap,
+            modules,
 
             symbols,
             hash_state,
@@ -52,6 +57,10 @@ impl VM {
 
     pub fn symbols(&self) -> GCRef<SymbolCache> {
         self.symbols
+    }
+
+    pub fn modules(&self) -> GCRef<TModules> {
+        self.modules
     }
 }
 
@@ -80,31 +89,52 @@ impl Primitives {
     }
 }
 
+pub struct TModules {
+    empty: GCRef<TModule>
+}
+
+impl TModules {
+    pub fn new(heap: &Heap) -> Self {
+        Self {
+            empty: heap.allocate_atom(TModule {
+                name: TString::from_slice_impl(heap, "empty"),
+                source: None,
+                table: Default::default()
+            })
+        }
+    }
+
+    pub fn empty(&self) -> GCRef<TModule> {
+        self.empty
+    }
+}
+
+impl Atom for TModules {
+    fn visit(&self, visitor: &mut Visitor) {
+        todo!()
+    }
+}
+
 pub struct RustTypeInterner(hashbrown::HashMap<TypeId, GCRef<TType>>);
 
 impl RustTypeInterner {
     fn new() -> Self {
         RustTypeInterner(Default::default())
-    }
-    
-    fn intern<T: Typed>(&mut self, ttype: GCRef<TType>) {
-        let Some(ttype2) = self.0.insert(TypeId::of::<T>(), ttype) else {
-            return;
-        };
-        if ttype2.refrence_eq(ttype) {
-            panic!("{:?} was tried to be associated with two different types", TypeId::of::<T>());
-        }
-    }
+    }    
 }
 
 impl GCRef<RustTypeInterner> {
     pub fn query<T: Typed>(mut self) -> GCRef<TType> {
-        if let Some(ty) = self.0.get(&TypeId::of::<T>()) {
-            return *ty;
+        let vm = self.vm();
+
+        let key = TypeId::of::<T>();
+        let entry = self.0.raw_entry_mut().from_key(&key);
+        match entry {
+            RawEntryMut::Occupied(ty) => *ty.get(),
+            RawEntryMut::Vacant(vacant) => {
+                T::initialize_entry(&vm, vacant)
+            }
         }
-        let ty = T::initialize(&self.vm());
-        self.intern::<T>(ty);
-        ty
     }
 }
 
@@ -123,7 +153,7 @@ pub enum GlobalErr {
 
 pub struct TModule {
     name: GCRef<TString>,
-    source: TValue,
+    source: Option<GCRef<TString>>,
     table: hashbrown::HashTable<(Symbol, TValue, bool)>
 }
 
@@ -138,14 +168,14 @@ impl TModule {
         vm.heap().allocate_atom(
             Self {
                 name,
-                source: TValue::null(),
+                source: None,
                 table: Default::default()
             }
         )
     }
 
-    pub fn set_source(&mut self, source: GCRef<TString>) {
-        self.source = source.into();
+    pub fn set_source(&mut self, source: Option<GCRef<TString>>) {
+        self.source = source;
     }
 }
 

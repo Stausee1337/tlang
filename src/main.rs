@@ -94,7 +94,7 @@ fn main() -> ExitCode {
         };
 
         let mut module = TModule::new_from_rust(&vm, TString::from_slice(&vm, modname));
-        module.set_source(source);
+        module.set_source(Some(source));
 
         let generator = BytecodeGenerator::new(module);
         let gen_fn: TPolymorphicCallable<_, ()> = codegen::generate_module(ast, generator).unwrap().into();

@@ -1,10 +1,11 @@
-use std::{mem::{transmute, MaybeUninit}, fmt::Display, alloc::Layout, marker::PhantomData, ptr::NonNull, any::TypeId};
+use std::{mem::{transmute, MaybeUninit, offset_of}, fmt::Display, alloc::Layout, ptr::NonNull, any::TypeId, hash::BuildHasherDefault};
 
 
-use hashbrown::raw::RawTable;
-use tlang_macros::SelfWithBase;
+use ahash::AHasher;
+use allocator_api2::alloc::Global;
+use hashbrown::{hash_map::RawVacantEntryMut, HashTable, hash_table::Entry};
 
-use crate::{memory::{GCRef, Atom, Visitor, self}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast}};
+use crate::{memory::{GCRef, Atom, Visitor, self, Heap}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast}};
 
 
 macro_rules! __tobject_struct {
@@ -290,6 +291,13 @@ impl TValue {
 }
 
 pub trait Typed: Atom + 'static {
+    fn initialize_entry(
+        vm: &VM,
+        entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
+    ) -> GCRef<TType> {
+        *entry.insert(TypeId::of::<Self>(), Self::initialize(vm)).1
+    }
+
     fn initialize(vm: &VM) -> GCRef<TType>;
 
     fn visit_override(&self, visitor: &mut Visitor) {
@@ -306,13 +314,13 @@ impl<T: Typed> Atom for T {
 tobject! {
 pub struct TObject: () {
     pub ty: GCRef<TType>,
-    descriptor: Option<GCRef<RawTable<(Symbol, TValue)>>>
+    descriptor: Option<GCRef<HashTable<(Symbol, TValue)>>>
 }
 }
 
 impl TObject {
     pub fn new(vm: &VM) -> GCRef<Self> {
-        let descriptor = vm.heap().allocate_atom(RawTable::new());
+        let descriptor = vm.heap().allocate_atom(HashTable::new());
         vm.heap().allocate_atom(Self {
             ty: vm.types().query::<Self>(),
             descriptor: Some(descriptor),
@@ -321,7 +329,7 @@ impl TObject {
 
     pub fn base(vm: &VM, ty: GCRef<TType>) -> Self {
         let descriptor = if ty.variable {
-            Some(vm.heap().allocate_atom(RawTable::new()))
+            Some(vm.heap().allocate_atom(HashTable::new()))
         } else {
             None
         };
@@ -331,25 +339,68 @@ impl TObject {
         }
     }
 
+    pub fn get_attribute(&self, name: Symbol, value: TValue) -> Option<TValue> {
+        if !self.ty.variable {
+            panic!("cannot set attribute on fixed type");
+        }
+        let Some(descriptor) = &self.descriptor else {
+            unreachable!()
+        };
+        descriptor
+            .find(name.hash, |val| val.0 == name)
+            .map(|val| val.1)
+    }
+
+    pub fn set_attribute(&mut self, name: Symbol, value: TValue) {
+        if !self.ty.variable {
+            panic!("cannot set attribute on fixed type");
+        }
+        let Some(descriptor) = &mut self.descriptor else {
+            unreachable!()
+        };
+        match descriptor.entry(
+            name.hash,
+            |val| val.0 == name,
+            |val| val.0.hash) {
+            Entry::Occupied(mut entry) => {
+                *entry.get_mut() = (name, value);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert((name, value));
+            }
+        }
+    }
+
     fn uninit() -> Self {
         unsafe { MaybeUninit::uninit().assume_init() }
     }
 }
 
 impl Typed for TObject {
-    fn initialize(vm: &VM) -> GCRef<TType> {
-        vm.heap().allocate_atom(TType {
+    fn initialize_entry(
+            vm: &VM,
+            entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
+        ) -> GCRef<TType> {
+        let mut ttype = vm.heap().allocate_atom(TType {
             base: Self::uninit(),
             basesize: std::mem::size_of::<Self>(),
             basety: None, // There's nothing above Object in the hierarchy
             name: TString::from_slice(vm, "object"),
             modname: TString::from_slice(vm, "prelude"),
             variable: true
-        })
+        });
+        entry.insert(TypeId::of::<Self>(), ttype);
+
+        ttype.base = TObject::base(vm, ttype);
+        ttype
+    }
+
+    fn initialize(vm: &VM) -> GCRef<TType> {
+        unreachable!()
     }
 }
 
-impl Atom for RawTable<(Symbol, TValue)> {
+impl Atom for HashTable<(Symbol, TValue)> {
     fn visit(&self, visitor: &mut Visitor) {
         todo!()
     }
@@ -416,12 +467,12 @@ unsafe impl std::marker::Send for StringData {}
 static_assertions::const_assert!(std::mem::size_of::<StringData>() == 8);
 
 impl TString {
-    pub fn from_slice(vm: &VM, slice: &str) -> GCRef<Self> {
+    pub(crate) fn from_slice_impl(heap: &Heap, slice: &str) -> GCRef<Self> {
         let size = slice.len();
         let length = TInteger::from_usize(slice.chars().count());
 
         unsafe {
-            let mut string = vm.heap().allocate_var_atom(
+            let mut string = heap.allocate_var_atom(
                 Self {
                     data: StringData { ptr: std::ptr::null() },
                     length,
@@ -445,6 +496,10 @@ impl TString {
 
             string
         }
+    }
+
+    pub fn from_slice(vm: &VM, slice: &str) -> GCRef<Self> {
+        Self::from_slice_impl(vm.heap(), slice)
     }
 }
 
@@ -772,13 +827,16 @@ impl GCRef<TType> {
         false
     }
 
-    pub fn define_property(&self, name: Symbol, property: GCRef<TProperty>) {
-        todo!()
+    pub fn define_property(&mut self, name: Symbol, property: GCRef<TProperty>) {
+        self.base.set_attribute(name, property.into());
     }
 }
 
 impl Typed for TType {
-    fn initialize(vm: &VM) -> GCRef<TType> {
+    fn initialize_entry(
+            vm: &VM,
+            entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
+        ) -> GCRef<TType> {
         let mut ttype = vm.heap().allocate_atom(TType {
             base: TObject::uninit(),
             basety: None,
@@ -787,24 +845,27 @@ impl Typed for TType {
             modname: TString::from_slice(vm, "prelude"),
             variable: true
         });
+        entry.insert(TypeId::of::<Self>(), ttype);
 
-        // Initialize the TObject
-        let mut object_ty = vm.types().query::<TObject>();
-        object_ty.base = TObject::base(vm, ttype);
-
-        // Finish TType
-        ttype.basety = Some(object_ty);
+        ttype.basety = Some(vm.types().query::<TObject>());
         ttype.base = TObject::base(vm, ttype);
 
-        /*ttype.define_property(
-            Symbol![basety], TProperty::offset(vm, Accessor::GET, std::mem::offset_of!(Self, basety)));
         ttype.define_property(
-            Symbol![name], TProperty::offset(vm, Accessor::GET, std::mem::offset_of!(Self, name)));
+            Symbol![basety],
+            TProperty::offset::<TType, Option<GCRef<TType>>>(&vm, Accessor::GET, offset_of!(TType, basety)));
         ttype.define_property(
-            Symbol![modname], TProperty::offset(vm, Accessor::GET, std::mem::offset_of!(Self, modname)));
-        */
+            Symbol![name],
+            TProperty::offset::<TType, GCRef<TString>>(&vm, Accessor::GET, offset_of!(TType, name)));
+        ttype.define_property(
+            Symbol![modname],
+            TProperty::offset::<TType, GCRef<TString>>(&vm, Accessor::GET, offset_of!(TType, modname)));
 
         ttype
+        
+    }
+
+    fn initialize(vm: &VM) -> GCRef<TType> {
+        unreachable!()
     }
 }
 
@@ -822,21 +883,23 @@ pub struct TProperty {
 }
 }
 
-fn module() -> GCRef<TModule> {
-    todo!()
-}
-
 impl TProperty {
-    pub fn offset(vm: &VM, accessor: Accessor, offset: usize) -> GCRef<Self> {
+    pub fn offset<Slf, P>(vm: &VM, accessor: Accessor, offset: usize) -> GCRef<Self>
+    where
+        Slf: TPolymorphicObject,
+        P: VMCast + VMDowncast + Copy + 'static
+    {
         let get = if accessor.contains(Accessor::GET) {
-            Some(TFunction::rustfunc(module(), None, |object: TPolymorphicWrapper<TObject>| {
-                todo!()
+            Some(TFunction::rustfunc(vm.modules().empty(), None, |object: TPolymorphicWrapper<Slf>| {
+                unsafe { *object.raw_access::<P>(offset) }
             }))
         } else {
             None
         };
         let set = if accessor.contains(Accessor::SET) {
-            todo!()
+            Some(TFunction::rustfunc(vm.modules().empty(), None, |object: TPolymorphicWrapper<Slf>, value: P| {
+                unsafe { *object.raw_access::<P>(offset) = value; }
+            }))
         } else {
             None
         };
@@ -849,8 +912,33 @@ impl TProperty {
 }
 
 impl Typed for TProperty {
+    fn initialize_entry(
+            vm: &VM,
+            entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
+        ) -> GCRef<TType> {  
+        let mut ttype = vm.heap().allocate_atom(TType {
+            base: TObject::base(vm, vm.types().query::<TType>()),
+            basety: Some(vm.types().query::<TObject>()),
+            basesize: std::mem::size_of::<Self>(),
+            name: TString::from_slice(vm, "property"),
+            modname: TString::from_slice(vm, "prelude"),
+            variable: false
+        });
+        entry.insert(TypeId::of::<Self>(), ttype);
+
+        ttype.define_property(
+            Symbol![get],
+            TProperty::offset::<Self, Option<GCRef<TFunction>>>(vm, Accessor::GET, offset_of!(TProperty, get)));
+
+        ttype.define_property(
+            Symbol![set],
+            TProperty::offset::<Self, Option<GCRef<TFunction>>>(vm, Accessor::GET, offset_of!(TProperty, set)));
+
+        ttype
+    }
+
     fn initialize(vm: &VM) -> GCRef<TType> {
-        todo!()
+        unreachable!()
     }
 }
 
