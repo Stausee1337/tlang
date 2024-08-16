@@ -15,7 +15,7 @@ use memory::GCRef;
 use tvalue::{TString, TFunction, TInteger};
 use vm::TModule;
 
-use crate::{bytecode::BytecodeGenerator, tvalue::TValue, interop::VMCast};
+use crate::{bytecode::BytecodeGenerator, tvalue::TValue, interop::VMCast, symbol::Symbol};
 
 mod lexer;
 mod symbol;
@@ -93,12 +93,21 @@ fn main() -> ExitCode {
             filename
         };
 
-        let mut module = TModule::new_from_rust(&vm, TString::from_slice(&vm, modname));
+        let mut module = TModule::new(&vm, TString::from_slice(&vm, modname));
         module.set_source(Some(source));
 
+
+        let printfn = TFunction::rustfunc(module, Some("print"), |msg| tvalue::print(module, msg));
+
+        module.set_global(
+            Symbol![print],
+            printfn.into(),
+            true
+        );
+
         let generator = BytecodeGenerator::new(module);
-        let gen_fn: TPolymorphicCallable<_, ()> = codegen::generate_module(ast, generator).unwrap().into();
-        gen_fn();
+        let module_func: TPolymorphicCallable<_, ()> = codegen::generate_module(ast, generator).unwrap().into();
+        module_func();
 
         drop(vm);
 

@@ -1,4 +1,4 @@
-use std::{rc::Rc, any::TypeId};
+use std::{rc::Rc, any::TypeId, sync::OnceLock};
 
 use hashbrown::hash_map::RawEntryMut;
 
@@ -30,7 +30,7 @@ impl VM {
 
         let symbols = heap.allocate_atom(SymbolCache::new());
         let types = heap.allocate_atom(RustTypeInterner::new());
-        let modules = heap.allocate_atom(TModules::new(&heap));
+        let modules = heap.allocate_atom(TModules::new());
 
         VM {
             heap,
@@ -90,22 +90,23 @@ impl Primitives {
 }
 
 pub struct TModules {
-    empty: GCRef<TModule>
+    empty: OnceLock<GCRef<TModule>>
 }
 
 impl TModules {
-    pub fn new(heap: &Heap) -> Self {
+    pub fn new() -> Self {
         Self {
-            empty: heap.allocate_atom(TModule {
-                name: TString::from_slice_impl(heap, "empty"),
-                source: None,
-                table: Default::default()
-            })
+            empty: OnceLock::new()
         }
     }
+}
 
+impl GCRef<TModules> {
     pub fn empty(&self) -> GCRef<TModule> {
-        self.empty
+        *self.empty.get_or_init(|| {
+            let vm = self.vm();
+            TModule::new(&vm, TString::from_slice(&vm, "empty"))
+        })
     }
 }
 
@@ -164,7 +165,7 @@ impl Atom for TModule {
 }
 
 impl TModule {
-    pub fn new_from_rust(vm: &VM, name: GCRef<TString>) -> GCRef<Self> {
+    pub fn new(vm: &VM, name: GCRef<TString>) -> GCRef<Self> {
         vm.heap().allocate_atom(
             Self {
                 name,

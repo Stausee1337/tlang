@@ -5,7 +5,7 @@ use ahash::AHasher;
 use allocator_api2::alloc::Global;
 use hashbrown::{hash_map::RawVacantEntryMut, HashTable, hash_table::Entry};
 
-use crate::{memory::{GCRef, Atom, Visitor, self, Heap}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast}};
+use crate::{memory::{GCRef, Atom, Visitor, self}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast, TPolymorphicCallable}};
 
 
 macro_rules! __tobject_struct {
@@ -390,8 +390,11 @@ impl Typed for TObject {
             variable: true
         });
         entry.insert(TypeId::of::<Self>(), ttype);
-
         ttype.base = TObject::base(vm, ttype);
+
+        ttype.define_method(Symbol![toString], TFunction::rustfunc(
+                vm.modules().empty(), Some("toString"), |_value: TValue| "object {}"));
+
         ttype
     }
 
@@ -467,12 +470,12 @@ unsafe impl std::marker::Send for StringData {}
 static_assertions::const_assert!(std::mem::size_of::<StringData>() == 8);
 
 impl TString {
-    pub(crate) fn from_slice_impl(heap: &Heap, slice: &str) -> GCRef<Self> {
+    pub(crate) fn from_slice(vm: &VM, slice: &str) -> GCRef<Self> {
         let size = slice.len();
         let length = TInteger::from_usize(slice.chars().count());
 
         unsafe {
-            let mut string = heap.allocate_var_atom(
+            let mut string = vm.heap().allocate_var_atom(
                 Self {
                     data: StringData { ptr: std::ptr::null() },
                     length,
@@ -496,10 +499,6 @@ impl TString {
 
             string
         }
-    }
-
-    pub fn from_slice(vm: &VM, slice: &str) -> GCRef<Self> {
-        Self::from_slice_impl(vm.heap(), slice)
     }
 }
 
@@ -830,6 +829,11 @@ impl GCRef<TType> {
     pub fn define_property(&mut self, name: Symbol, property: GCRef<TProperty>) {
         self.base.set_attribute(name, property.into());
     }
+
+    pub fn define_method(&mut self, name: Symbol, method: GCRef<TFunction>) {
+        // TODO: make method a method
+        self.base.set_attribute(name, method.into());
+    }
 }
 
 impl Typed for TType {
@@ -944,22 +948,31 @@ impl Typed for TProperty {
 
 tobject! {
 pub struct TFunction {
-    pub name: TValue, /// Optional<TString>
+    pub name: Option<GCRef<TString>>,
     pub module: GCRef<TModule>,
     pub kind: TFnKind
 }
 }
 
 impl Typed for TFunction {
-    fn initialize(vm: &VM) -> GCRef<TType> {
-        vm.heap().allocate_atom(TType {
+    fn initialize_entry(
+            vm: &VM,
+            entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
+        ) -> GCRef<TType> { 
+        let ttype = vm.heap().allocate_atom(TType {
             base: TObject::base(vm, vm.types().query::<TType>()),
             basety: None,
             basesize: std::mem::size_of::<Self>(),
             name: TString::from_slice(vm, "function"),
             modname: TString::from_slice(vm, "prelude"),
             variable: false
-        })
+        });
+        entry.insert(TypeId::of::<Self>(), ttype);
+
+        ttype
+    }
+    fn initialize(vm: &VM) -> GCRef<TType> {
+        unreachable!()
     }
 }
 
@@ -1003,7 +1016,7 @@ impl TFunction {
 
         let mut func = vm.heap().allocate_atom(Self {
             base: TObject::base(&vm, vm.types().query::<Self>()),
-            name: name.vmcast(&vm),
+            name: name.map(|name| TString::from_slice(&vm, name)),
             module,
             kind: TFnKind::Nativefunc {
                 fastcall: unsafe { Box::from_raw(&mut *fastcall) },
@@ -1175,13 +1188,42 @@ where
     (unerased_type.func)(module, args)
 }
 
-pub fn print_impl(module: GCRef<TModule>, args: TArgsBuffer) -> TValue {
-    let vm = module.vm();
-    let mut iter = args.into_iter(1, false);
+#[inline(always)]
+pub fn resolve_by_symbol<T, R>(vm: &VM, name: Symbol, value: T) -> R
+where
+    T: VMCast,
+    R: VMDowncast
+{
+    let value = value.vmcast(vm);
+    if let Some(tobject) = value.query_tobject() {
+        if let Some(found) = tobject.get_attribute(name, value) {
+            return R::vmdowncast(found, vm).unwrap();
+        }
+    }
+    
+    let mut found = None;
+    let mut mut_current = value.ttype(vm);
 
-    let message: GCRef<TString> = iter.next().and_then(|value| VMDowncast::vmdowncast(value, &vm)).unwrap();
-    println!("{}", message);
-    TValue::null()
+    while let Some(current) = mut_current {
+        if let Some(val) = current.base.get_attribute(name, value) {
+            found = Some(val);
+            break;
+        }
+        mut_current = current.basety;
+    }
+
+    R::vmdowncast(found.unwrap(), vm).unwrap()
+}
+
+pub fn print(module: GCRef<TModule>, msg: TValue) {
+    let vm = module.vm();
+    // let msg: GCRef<TString> = tcall!(&vm, TValue::toString(msg));
+    let msg: GCRef<TString> = {
+        let resolved_func: TPolymorphicCallable<_, _> = resolve_by_symbol(&vm, Symbol![toString], msg);
+        resolved_func(msg)
+    };
+
+    println!("{msg}");
 }
 
 pub fn module_init(mut module: GCRef<TModule>) {

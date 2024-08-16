@@ -496,10 +496,6 @@ impl BytecodeGenerator {
         do_work(self)?;
         let func = self.function_stack.pop().unwrap();
 
-        let mut string = String::new();
-        FunctionDisassembler::dissassemble(&func, &mut string).unwrap();
-        println!("{string}");
-
         let func = TFunction::from_codegen(&self.vm(), func, self.module);
         if let Err(crate::vm::GlobalErr::Redeclared(..)) = self.module.set_global(name.symbol, func.into(), true) {
             todo!("codegen errors that are more like runtime errors? Keep going?");
@@ -583,6 +579,15 @@ impl BytecodeGenerator {
     }
 
     pub fn root_function(self) -> GCRef<TFunction> {
+        struct N;
+        let mut n = N;
+        impl std::fmt::Write for N {
+            fn write_str(&mut self, s: &str) -> FmtResult {
+                print!("{s}");
+                Ok(())
+            }
+        }
+        FunctionDisassembler::dissassemble(&self.root_fn, &mut n).unwrap();
         TFunction::from_codegen(&self.vm(), self.root_fn, self.module)
     }
 }
@@ -637,12 +642,6 @@ impl TFunction {
         let extra_size = codesize
             + descriptors as usize * std::mem::size_of::<TValue>()
             + blocks as usize * std::mem::size_of::<u32>();
-
-        let name = if let Some(name) = name {
-            name.into()
-        } else {
-            TValue::null()
-        };
         let code = TRawCode::new(codesize, params, registers, descriptors, blocks);
 
         let mut function: GCRef<Self> = vm.heap().allocate_var_atom(

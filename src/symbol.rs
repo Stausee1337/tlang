@@ -119,6 +119,8 @@ pub struct Symbol {
     pub hash: u64,
 }
 
+static_assertions::const_assert!(std::mem::size_of::<Symbol>() == 16);
+
 impl Symbol {
     pub fn hash(&self) -> u64 {
         self.id
