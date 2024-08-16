@@ -6,7 +6,8 @@ use crate::{
     },
     memory::GCRef,
     symbol::Symbol,
-    tvalue::{TBool, TFunction, TInteger, TValue, VMDowncast},
+    tvalue::{TBool, TFunction, TInteger, TValue},
+    interop::VMDowncast,
     vm::{TModule, VM},
 };
 

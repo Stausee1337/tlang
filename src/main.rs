@@ -13,7 +13,7 @@ use getopts::{Options, ParsingStyle};
 use tvalue::{TString, TFunction, TInteger};
 use vm::TModule;
 
-use crate::{bytecode::BytecodeGenerator, tvalue::TValue};
+use crate::{bytecode::BytecodeGenerator, tvalue::TValue, interop::VMCast};
 
 mod lexer;
 mod symbol;
@@ -25,6 +25,7 @@ mod eval;
 mod vm;
 mod memory;
 mod bigint;
+mod interop;
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options] [-c cmd | file] [arg]", program);
@@ -97,13 +98,13 @@ fn main() -> ExitCode {
             println!("{:?}", int.as_isize());
         });
 
-        let res = rustfunc.call(
+        /*let res = rustfunc.call(
             TArgsBuffer::debug(vec![
-                TInteger::from_int32(-12).into(),
+                (-12i32).vmcast(&vm),
             ]
-        ));
+        ));*/
 
-        assert!(res.encoded() == TValue::null().encoded());
+        // assert!(res.encoded() == TValue::null().encoded());
 
         let generator = BytecodeGenerator::new(module);
         let gen_fn = codegen::generate_module(ast, generator).unwrap();

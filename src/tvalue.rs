@@ -4,18 +4,8 @@ use std::{mem::{transmute, MaybeUninit}, fmt::Display, alloc::Layout, marker::Ph
 use hashbrown::raw::RawTable;
 use tlang_macros::SelfWithBase;
 
-use crate::{memory::{GCRef, Atom, Visitor, self}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer};
+use crate::{memory::{GCRef, Atom, Visitor, self}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast}};
 
-#[repr(u64)]
-#[derive(Debug, PartialEq, Eq)]
-enum TValueKind {
-    Object   = 0b101 << 49,
-    Int32    = 0b001 << 49,
-    Bool     = 0b010 << 49,
-    Float    = 0b100 << 49,
-    String   = 0b000 << 49,
-    BigInt   = 0b110 << 49,
-}
 
 macro_rules! __tobject_struct {
     ($vis:vis, $name:ident, [], { $($fields:tt)* }) => {
@@ -44,17 +34,17 @@ macro_rules! __tobject_struct {
 
 macro_rules! __tobject_marker {
     ($name:ident,) => {
-        unsafe impl TPolymorphicObject for $name {
+        unsafe impl $crate::interop::TPolymorphicObject for $name {
             type Base = TObject;
         }
     };
     ($name:ident, ()) => {
-        unsafe impl TPolymorphicObject for $name {
+        unsafe impl $crate::interop::TPolymorphicObject for $name {
             type Base = TObject;
         }
     };
     ($name:ident, $base:ident) => {
-        unsafe impl TPolymorphicObject for $name {
+        unsafe impl $crate::interop::TPolymorphicObject for $name {
             type Base = $base;
         }
     };
@@ -91,7 +81,7 @@ macro_rules! tobject {
             }
         }
 
-        impl VMDowncast for GCRef<$name> {
+        impl $crate::interop::VMDowncast for GCRef<$name> {
             #[inline(always)]
             fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
                 value.query_object::<$name>(vm)
@@ -101,96 +91,17 @@ macro_rules! tobject {
     () => {};
 }
 
-pub struct TPolymorphicWrapper<T: TPolymorphicObject> {
-    object: GCRef<TObject>,
-    _phantom: PhantomData<T>
+
+#[repr(u64)]
+#[derive(Debug, PartialEq, Eq)]
+enum TValueKind {
+    Object   = 0b101 << 49,
+    Int32    = 0b001 << 49,
+    Bool     = 0b010 << 49,
+    Float    = 0b100 << 49,
+    String   = 0b000 << 49,
+    BigInt   = 0b110 << 49,
 }
-
-impl<T: TPolymorphicObject> VMCast for TPolymorphicWrapper<T> {
-    fn vmcast(self, vm: &VM) -> TValue {
-        TValue::object(self.object)
-    }
-}
-
-impl<T: TPolymorphicObject> VMDowncast for TPolymorphicWrapper<T> {
-    fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
-        let object = value.as_object::<TObject>()?;
-        if !object.ty.is_subclass(vm.types().query::<T>()) {
-            return None;
-        }
-        Some(TPolymorphicWrapper {
-            object,
-            _phantom: PhantomData::default()
-        })
-    }
-}
-
-/// This is a _marker_ trait for polymorphic Objects use `tobject!` to implement
-///
-/// Marking a struct means it obeys 2 main criteria
-///     * the first attribute is a struct implementig `TPolymorphicObject`
-///     * the struct layout is `#[repr(C)]`
-/// This ensures that the first N attributes are the same as those in
-/// `TObject`, furthermore it allows any base types to directly extend the
-/// inheritance hirachy for decendent objects.
-/// Most importantly it allows for our type queries, as the first field now
-/// always points to a TType
-pub unsafe trait TPolymorphicObject: Typed {
-    type Base: TPolymorphicObject;
-}
-
-impl Atom for RawTable<(Symbol, TValue)> {
-    fn visit(&self, visitor: &mut Visitor) {
-        todo!()
-    }
-}
-
-tobject! {
-pub struct TObject: () {
-    pub ty: GCRef<TType>,
-    descriptor: Option<GCRef<RawTable<(Symbol, TValue)>>>
-}
-}
-
-impl TObject {
-    pub fn new(vm: &VM) -> GCRef<Self> {
-        let descriptor = vm.heap().allocate_atom(RawTable::new());
-        vm.heap().allocate_atom(Self {
-            ty: vm.types().query::<Self>(),
-            descriptor: Some(descriptor),
-        })
-    }
-
-    pub fn base(vm: &VM, ty: GCRef<TType>) -> Self {
-        let descriptor = if ty.variable {
-            Some(vm.heap().allocate_atom(RawTable::new()))
-        } else {
-            None
-        };
-        Self {
-            ty: vm.types().query::<Self>(),
-            descriptor,
-        }
-    }
-
-    fn uninit() -> Self {
-        unsafe { MaybeUninit::uninit().assume_init() }
-    }
-}
-
-impl Typed for TObject {
-    fn initialize(vm: &VM) -> GCRef<TType> {
-        vm.heap().allocate_atom(TType {
-            base: Self::uninit(),
-            basesize: std::mem::size_of::<Self>(),
-            basety: None, // There's nothing above Object in the hierarchy
-            name: TString::from_slice(vm, "object"),
-            modname: TString::from_slice(vm, "prelude"),
-            variable: true
-        })
-    }
-}
-
 
 /// 64bit Float:
 /// S eeeeeeeeeee FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
@@ -269,6 +180,14 @@ impl TValue {
             if !self.ttype(vm)?.refrence_eq(ty) {
                 return None;
             }
+            return self.as_object();
+        }
+        None
+    }
+
+    #[inline(always)]
+    pub fn query_tobject(&self) -> Option<GCRef<TObject>> {
+        if let TValueKind::Object = self.kind() {
             return self.as_object();
         }
         None
@@ -384,65 +303,55 @@ impl<T: Typed> Atom for T {
     }
 }
 
-pub trait VMCast {
-    fn vmcast(self, vm: &VM) -> TValue;
+tobject! {
+pub struct TObject: () {
+    pub ty: GCRef<TType>,
+    descriptor: Option<GCRef<RawTable<(Symbol, TValue)>>>
+}
 }
 
-pub trait VMDowncast: Sized {
-    fn vmdowncast(value: TValue, vm: &VM) -> Option<Self>;
-}
-
-impl VMCast for &str {
-    fn vmcast(self, vm: &VM) -> TValue {
-        TString::from_slice(vm, self).into()
+impl TObject {
+    pub fn new(vm: &VM) -> GCRef<Self> {
+        let descriptor = vm.heap().allocate_atom(RawTable::new());
+        vm.heap().allocate_atom(Self {
+            ty: vm.types().query::<Self>(),
+            descriptor: Some(descriptor),
+        })
     }
-}
 
-impl VMCast for () {
-    fn vmcast(self, _vm: &VM) -> TValue {
-        TValue::null()
-    }
-}
-
-impl<T: Into<TValue>> VMCast for T {
-    fn vmcast(self, _vm: &VM) -> TValue {
-        self.into()
-    }
-}
-
-impl<T: VMCast> VMCast for Option<T> {
-    fn vmcast(self, vm: &VM) -> TValue {
-        if let Some(value) = self {
-            return value.vmcast(vm);
+    pub fn base(vm: &VM, ty: GCRef<TType>) -> Self {
+        let descriptor = if ty.variable {
+            Some(vm.heap().allocate_atom(RawTable::new()))
+        } else {
+            None
+        };
+        Self {
+            ty: vm.types().query::<Self>(),
+            descriptor,
         }
-        TValue::null()
+    }
+
+    fn uninit() -> Self {
+        unsafe { MaybeUninit::uninit().assume_init() }
     }
 }
 
-impl VMDowncast for TValue {
-    fn vmdowncast(value: TValue, _vm: &VM) -> Option<Self> {
-        Some(value)
+impl Typed for TObject {
+    fn initialize(vm: &VM) -> GCRef<TType> {
+        vm.heap().allocate_atom(TType {
+            base: Self::uninit(),
+            basesize: std::mem::size_of::<Self>(),
+            basety: None, // There's nothing above Object in the hierarchy
+            name: TString::from_slice(vm, "object"),
+            modname: TString::from_slice(vm, "prelude"),
+            variable: true
+        })
     }
 }
 
-pub trait VMArgs: std::marker::Tuple + Sized {
-    fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self>;
-}
-
-pub trait GetHash {
-    fn get_hash_code(&self) -> u64;
-}
-
-impl<T1> VMArgs for (T1,)
-where
-    T1: VMDowncast
-{
-    fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self> {
-        let mut iter = args.into_iter(1, false);
-        let arg1 = iter.next()?;
-        Some((
-            T1::vmdowncast(arg1, vm)?,
-        ))
+impl Atom for RawTable<(Symbol, TValue)> {
+    fn visit(&self, visitor: &mut Visitor) {
+        todo!()
     }
 }
 
@@ -539,6 +448,10 @@ impl TString {
     }
 }
 
+pub trait GetHash {
+    fn get_hash_code(&self) -> u64;
+}
+
 impl TString {
     pub fn as_slice<'a>(&self) -> &'a str {
         unsafe {
@@ -620,6 +533,7 @@ impl VMDowncast for GCRef<TString> {
         value.query_string()
     }
 }
+
 
 impl PartialEq for GCRef<TString> {
     fn eq(&self, other: &Self) -> bool {
