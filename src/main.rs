@@ -10,6 +10,7 @@ extern crate self as tlang;
 use bumpalo::Bump;
 use eval::TArgsBuffer;
 use getopts::{Options, ParsingStyle};
+use interop::TPolymorphicCallable;
 use tvalue::{TString, TFunction, TInteger};
 use vm::TModule;
 
@@ -96,7 +97,11 @@ fn main() -> ExitCode {
 
         let rustfunc = TFunction::rustfunc(module, None, |int: TInteger| {
             println!("{:?}", int.as_isize());
+            return TInteger::from_int32(42);
         });
+
+        let callable: TPolymorphicCallable<_, TInteger> = rustfunc.into();
+        callable(TInteger::from_int32(-12));
 
         /*let res = rustfunc.call(
             TArgsBuffer::debug(vec![
@@ -107,9 +112,8 @@ fn main() -> ExitCode {
         // assert!(res.encoded() == TValue::null().encoded());
 
         let generator = BytecodeGenerator::new(module);
-        let gen_fn = codegen::generate_module(ast, generator).unwrap();
-
-        gen_fn.call(TArgsBuffer::empty());
+        let gen_fn: TPolymorphicCallable<_, ()> = codegen::generate_module(ast, generator).unwrap().into();
+        gen_fn();
 
         drop(vm);
 

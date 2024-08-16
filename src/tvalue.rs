@@ -883,7 +883,6 @@ struct Fastcall {
 pub enum TFnKind {
     Function(TRawCode),
     Nativefunc {
-        fastcall: Option<Fastcall>,
         traitfn: Box<FnOnceTrait>
     }
 }
@@ -903,20 +902,20 @@ impl TFunction {
             func.call_once(decoded_args).vmcast(&vm)
         };
 
-        let mut fastcall = None;
-        if std::mem::size_of::<F>() == 0 { // no closure
-            let fastfunc = |args: In| func.call_once(args);
-            assert!(std::mem::size_of_val(&fastfunc) == std::mem::size_of::<&()>());
+        // let mut fastcall = None;
+        // if std::mem::size_of::<F>() == 0 { // no closure
+        //     let fastfunc = |args: In| func.call_once(args);
+        //     assert!(std::mem::size_of_val(&fastfunc) == std::mem::size_of::<&()>());
 
-            let ptr = unsafe {
-                NonNull::new(*transmute::<&_, &*mut ()>(&fastfunc)).unwrap()
-            };
+        //     let ptr = unsafe {
+        //         NonNull::new(*transmute::<&_, &*mut ()>(&fastfunc)).unwrap()
+        //     };
 
-            fastcall = Some(Fastcall {
-                id: std::any::TypeId::of::<(In, R)>(),
-                ptr,
-            });
-        }
+        //     fastcall = Some(Fastcall {
+        //         id: std::any::TypeId::of::<(In, R)>(),
+        //         ptr,
+        //     });
+        // }
 
         let traitfn = FnOnceTrait::new(closure);
 
@@ -930,7 +929,6 @@ impl TFunction {
             name: name.vmcast(&vm),
             module,
             kind: TFnKind::Nativefunc {
-                fastcall,
                 traitfn: unsafe { Box::from_raw(&mut *traitfn) }
             }
         });
