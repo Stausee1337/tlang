@@ -42,6 +42,24 @@ fn read_entire_file(filename: &Path) -> Result<String, io::Error> {
     Ok(result)
 }
 
+struct Something(Vec<u8>);
+
+impl Something {
+    fn new() -> Self {
+        Something(vec![42])
+    }
+
+    fn get(&self) -> u8 {
+        self.0[0]
+    }
+}
+
+impl Drop for Something {
+    fn drop(&mut self) {
+        println!("I'm Dropping");
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let program = args[0].clone();
@@ -97,8 +115,9 @@ fn main() -> ExitCode {
         let mut module = TModule::new(&vm, TString::from_slice(&vm, modname));
         module.set_source(Some(source));
 
-
-        let printfn = TFunction::rustfunc(module, Some("print"), |msg| tvalue::print(module, msg));
+        let printfn = TFunction::rustfunc(module, Some("print"), move |msg| {
+            tvalue::print(module, msg);
+        });
 
         module.set_global(
             Symbol![print],

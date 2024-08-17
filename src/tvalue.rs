@@ -1,4 +1,4 @@
-use std::{mem::{transmute, MaybeUninit, offset_of}, fmt::Display, alloc::Layout, ptr::NonNull, any::TypeId, hash::BuildHasherDefault};
+use std::{mem::{transmute, MaybeUninit, offset_of, ManuallyDrop}, fmt::Display, alloc::Layout, ptr::NonNull, any::TypeId, hash::BuildHasherDefault};
 
 
 use ahash::AHasher;
@@ -334,8 +334,7 @@ impl TObject {
             None
         };
         Self {
-            ty: vm.types().query::<Self>(),
-            descriptor,
+            ty, descriptor,
         }
     }
 
@@ -393,7 +392,7 @@ impl Typed for TObject {
         ttype.base = TObject::base(vm, ttype);
 
         ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                vm.modules().empty(), Some("toString"), |_value: TValue| "object {}"));
+                vm.modules().empty(), Some("object::toString"), |_value: TValue| "object {}"));
 
         ttype
     }
@@ -1003,13 +1002,13 @@ impl TFunction {
             memory::mutcast(leaked)
         };
 
-        let closure = |module: GCRef<TModule>, args: TArgsBuffer| {
+        let mut closure = ManuallyDrop::new(|module: GCRef<TModule>, args: TArgsBuffer| {
             let vm = module.vm();
             let decoded_args = In::try_decode(&vm, args).unwrap();
             func.call_once(decoded_args).vmcast(&vm)
-        };
+        });
 
-        let traitfn = FnOnceTrait::new(closure);
+        let traitfn = FnOnceTrait::new(unsafe { ManuallyDrop::take(&mut closure) });
 
         let traitfn: &'_ mut FnOnceTrait = unsafe {
             memory::mutcast(Box::leak(Box::new(traitfn)))
@@ -1218,6 +1217,7 @@ where
 
 pub fn print(module: GCRef<TModule>, msg: TValue) {
     let vm = module.vm();
+    println!("print({:?})", msg.kind());
     // let msg: GCRef<TString> = tcall!(&vm, TValue::toString(msg));
     let msg: GCRef<TString> = {
         let resolved_func: TPolymorphicCallable<_, _> = resolve_by_symbol(&vm, Symbol![toString], msg);

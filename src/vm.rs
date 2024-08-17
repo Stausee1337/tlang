@@ -2,7 +2,7 @@ use std::{rc::Rc, any::TypeId, sync::OnceLock};
 
 use hashbrown::hash_map::RawEntryMut;
 
-use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, self, TString, TValue, Typed, TProperty, Accessor}};
+use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, self, TString, TValue, Typed, TProperty, Accessor, TObject, TFunction, TInteger}};
 
 pub struct VM {
     heap: Box<Heap>,
@@ -12,7 +12,7 @@ pub struct VM {
     pub modules: GCRef<TModules>,
     pub hash_state: ahash::RandomState,
 
-    pub primitives: Primitives
+    pub primitives: GCRef<Primitives>
 }
 
 impl VM {
@@ -31,6 +31,7 @@ impl VM {
         let symbols = heap.allocate_atom(SymbolCache::new());
         let types = heap.allocate_atom(RustTypeInterner::new());
         let modules = heap.allocate_atom(TModules::new());
+        let primitives = heap.allocate_atom(Primitives::lazy());
 
         VM {
             heap,
@@ -39,7 +40,7 @@ impl VM {
             symbols,
             hash_state,
             types,
-            primitives: Primitives::lazy(),
+            primitives,
         }
     }
 
@@ -47,8 +48,8 @@ impl VM {
         &self.heap
     }
 
-    pub fn primitives(&self) -> &Primitives {
-        &self.primitives
+    pub fn primitives(&self) -> GCRef<Primitives> {
+        self.primitives
     }
 
     pub fn types(&self) -> GCRef<RustTypeInterner> {
@@ -65,19 +66,45 @@ impl VM {
 }
 
 pub struct Primitives {
+    int: OnceLock<GCRef<TType>>,
+    string: OnceLock<GCRef<TType>>
 }
 
 impl Primitives {
     fn lazy() -> Self {
-        Primitives {}
+        Primitives {
+            int: OnceLock::new(),
+            string: OnceLock::new()
+        }
     }
+}
 
+impl GCRef<Primitives> {
     pub fn float_type(&self) -> GCRef<TType> {
         todo!()
     }
 
     pub fn int_type(&self) -> GCRef<TType> {
-        todo!()
+        *self.int.get_or_init(|| {
+            let vm = self.vm();
+            let mut ttype = vm.heap().allocate_atom(TType {
+                base: TObject::base(&vm, vm.types().query::<TType>()),
+                basety: Some(vm.types().query::<TObject>()),
+                basesize: 0, // primitive
+                name: TString::from_slice(&vm, "int"),
+                modname: TString::from_slice(&vm, "prelude"),
+                variable: false
+            });
+
+            ttype.define_method(Symbol![toString], TFunction::rustfunc(
+                    vm.modules().empty(), Some("int::toString"),
+                    move |this: TInteger| {
+                        let vm = self.vm();
+                        TString::from_slice(&vm, &format!("{this}"))
+                    }));
+
+            ttype
+        })
     }
 
     pub fn bool_type(&self) -> GCRef<TType> {
@@ -85,6 +112,27 @@ impl Primitives {
     }
 
     pub fn string_type(&self) -> GCRef<TType> {
+        *self.string.get_or_init(|| {
+            let vm = self.vm();
+            let mut ttype = vm.heap().allocate_atom(TType {
+                base: TObject::base(&vm, vm.types().query::<TType>()),
+                basety: Some(vm.types().query::<TObject>()),
+                basesize: 0, // primitive
+                name: TString::from_slice(&vm, "string"),
+                modname: TString::from_slice(&vm, "prelude"),
+                variable: false
+            });
+
+            ttype.define_method(Symbol![toString], TFunction::rustfunc(
+                    vm.modules().empty(), Some("string::toString"), |this: GCRef<TString>| this));
+
+            ttype
+        })
+    }
+}
+
+impl Atom for Primitives {
+    fn visit(&self, visitor: &mut Visitor) {
         todo!()
     }
 }

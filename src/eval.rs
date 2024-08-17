@@ -7,7 +7,7 @@ use crate::{
     memory::GCRef,
     symbol::Symbol,
     tvalue::{TBool, TFunction, TInteger, TValue},
-    interop::VMDowncast,
+    interop::{VMDowncast, TPolymorphicCallable},
     vm::{TModule, VM},
 };
 
