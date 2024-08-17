@@ -43,8 +43,6 @@ pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Erro
 }
 
 pub struct Instruction {
-    serializer: Option<TokenStream>,
-    formatter: Option<TokenStream>,
     terminator: bool,
     ident: Ident,
     lifetime: Option<GenericLifetime>,
@@ -68,8 +66,6 @@ impl Parse for Instruction {
             Some((tok, input.parse()?))
         } else { None };
 
-        let mut serializer = None;
-        let mut formatter = None;
         let mut terminator = false;
         for attr in attrs {
             let Meta::List(list) = attr.meta else {
@@ -79,17 +75,6 @@ impl Parse for Instruction {
                 continue;
             };
             match ident.to_string().as_ref() {
-                "serializer" => {
-                    let MacroDelimiter::Paren(..) = list.delimiter else {
-                        return Err(
-                            syn::Error::new(
-                                list.delimiter.span().span(),
-                                "expected parens `(...)` for #[serializer(...)]")
-                        );
-                    };
-                    serializer = Some(list.tokens);
-                    continue;
-                }
                 "terminator" => {
                     let MacroDelimiter::Paren(..) = list.delimiter else {
                         return Err(
@@ -102,23 +87,11 @@ impl Parse for Instruction {
                     let lit_bool = parser.parse2(list.tokens)?;
                     terminator = lit_bool.value;
                 }
-                "formatter" => {
-                    let MacroDelimiter::Paren(..) = list.delimiter else {
-                        return Err(
-                            syn::Error::new(
-                                list.delimiter.span().span(),
-                                "expected parens `(...)` for #[formatter(...)]")
-                        );
-                    };
-                    formatter = Some(list.tokens);
-                }
                 _ => continue,
             }
         }
 
         Ok(Self {
-            serializer,
-            formatter,
             terminator,
             ident,
             lifetime,
@@ -152,44 +125,42 @@ impl ToTokens for GenericLifetime {
     }
 }
 
-fn is_slice(ty: &Type) -> bool {
-    match ty {
-        Type::Reference(TypeReference { mutability: None, lifetime, elem, .. })
-            if matches!(elem.as_ref(), Type::Slice(..)) => true,
-        _ => false 
-    }
-}
-
 fn make_struct(
     vis: Visibility,
     ident: &Ident,
-    opcode: &Ident,
-    generics: &Option<GenericLifetime>,
+    generics: Option<&GenericLifetime>,
     fields: &TokenStream,
-    serializer: Option<&TokenStream>,
     is_terminator: bool,
-    has_formatter: bool,
     structures: &mut TokenStream) {
-    let serializer = serializer
-        .map(|x| x.clone())
-        .unwrap_or(quote!(BitSerializer));
 
-    let debug = if !has_formatter {
-        Some(quote!(Debug))
+    let impl_generics = if let Some(lifetime) = &generics {
+        let lifetime = &lifetime.param;
+        quote! { <'de: #lifetime, #lifetime> }
     } else {
-        None
+        quote! { <'de> }
     };
 
     structures.extend(quote!(
-            #[derive(Clone, Copy, #debug)]
+            #[derive(Clone, Copy, Debug)]
             #[repr(packed)] 
             #[allow(non_camel_case_types)]
             #vis struct #ident #generics #fields));
     structures.extend(quote! {
-        impl #generics Instruction for #ident #generics {
-            const CODE: OpCode = OpCode::#opcode;
+        impl #impl_generics Instruction<'de> for #ident #generics {
+            const CODE: OpCode = OpCode::#ident;
             const IS_TERMINATOR: bool = #is_terminator;
-            type Serializer = #serializer;
+        }
+
+        impl #generics Serialize for #ident #generics {
+            fn serialize(&self, _serializer: &mut Serializer) {
+                todo!()
+            }
+        }
+
+        impl #impl_generics Deserialize<'de> for #ident #generics {
+            fn deserialize(_deserializer: &mut Deserializer<'de>) -> Option<Self> {
+                todo!()
+            }
         }
     });
 }
@@ -216,15 +187,12 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
         let snake_case_name = format!("emit_{}", ident.to_string().to_case(Case::Snake));
         let snake_case_ident = Ident::new(&snake_case_name, Span::call_site());
         
-        let mut has_slice = false;
         let mut fargs = Punctuated::<Ident, Token![,]>::new();
         let mut params = TokenStream::new();
         if let Some(fields) = &inst.fields {
             for field in fields.named.iter() { 
                 let ident = field.ident.as_ref().unwrap();
                 let ty = &field.ty;
-
-                has_slice |= is_slice(&field.ty);
 
                 fargs.push(ident.clone());
                 params.extend(quote!(#ident: #ty,));
@@ -235,20 +203,14 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
             Some(quote!(self.terminated = true;))
         } else { None };
 
-        let sident = if !has_slice {
-            ident.clone()
-        } else {
-            Ident::new(&format!("{}_{}", ident, 1), Span::call_site())
-        };
-
         block_impls.extend(quote! {
             pub fn #snake_case_ident #generics (&mut self, #params) {
                 debug_assert!(!self.terminated);
                 #terminator_code
-                let instruction = crate::bytecode::instructions::#sident {
+                let instruction = crate::bytecode::instructions::#ident {
                     #fargs
                 };
-                Instruction::serialize(instruction, &mut self.data)
+                instruction.serialize(self.serializer());
             }
         });
 
@@ -260,20 +222,13 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
             }
         });
 
-        debug_deserialize.extend(quote! {
+        /*debug_deserialize.extend(quote! {
             OpCode::#ident =>
-                crate::bytecode::instructions::#ident::deserialize(stream).unwrap(),
-        });
+                Box::new(crate::bytecode::instructions::#ident::deserialize(stream).unwrap()),
+        });*/
 
-        let mut has_slice = false;
         let fields = if let Some(fields) = &mut inst.fields.clone() {
             for field in &mut fields.named {
-                if is_slice(&field.ty) {
-                    has_slice = true;
-                    field.ty = syn::parse2(quote!([(); 0])).unwrap();
-                    field.vis = syn::parse2(quote!( pub(super) )).unwrap();
-                    continue;
-                }
                 field.vis = Visibility::Public(syn::token::Pub::default());
             }
             quote!(#fields)
@@ -284,45 +239,10 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
         make_struct(
             Visibility::Public(syn::token::Pub::default()),
             ident, 
-            ident, 
-            &None,
-            &fields, 
-            inst.serializer.as_ref(),
+            generics.as_ref(),
+            &fields,
             inst.terminator,
-            inst.formatter.is_some(),
             &mut structures);
-
-        if let Some(formatter) = &inst.formatter {
-            structures.extend(quote! {
-                impl std::fmt::Debug for #ident {
-                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                        #formatter(self, f)
-                    }
-                }
-            });
-        }
-
-        if has_slice {
-            let fields = inst.fields.as_mut().unwrap();
-            for field in &mut fields.named {
-                field.vis = syn::parse2(quote!( pub(super) )).unwrap();
-            }
-
-            let fields = quote!(#fields);
-
-            let ext_ident = Ident::new(&format!("{}_{}", ident, 1), Span::call_site());
-
-            make_struct(
-                syn::parse2(quote!( pub(super) )).unwrap(),
-                &ext_ident, 
-                ident,
-                generics,
-                &fields, 
-                inst.serializer.as_ref(),
-                inst.terminator,
-                true,
-                &mut structures);
-        }
     }
 
     let module = quote! {
@@ -333,40 +253,15 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
         }
 
         impl OpCode {
-            pub fn decode(op: u8) -> Self {
-                unsafe { std::mem::transmute(op) }
-            }
-
-            pub fn deserialize_for_debug<'c>(self, stream: &'c mut CodeStream) -> &'c dyn std::fmt::Debug {
-                match self {
-                    #debug_deserialize
-                }
+            pub fn deserialize_for_debug<'c>(self, stream: &'c mut CodeStream) -> Box<dyn std::fmt::Debug> {
+                todo!()
             }
         }
 
-        pub trait Instruction: Sized + Copy {
-            const CODE: OpCode;
-            const IS_TERMINATOR: bool;
-            type Serializer: InstructionSerializer<Self>;
-
-            #[inline(always)]
-            fn serialize(self, vec: &mut Vec<u8>) {
-                vec.push(Self::CODE as u8);
-                Self::Serializer::serialize(self, vec);
-            }
-
-            #[inline(always)]
-            fn deserialize<'c>(stream: &'c mut CodeStream) -> Option<&'c Self> {
-                if stream.current() != Self::CODE as u8 {
-                    return None;
-                }
-                stream.bump(1);
-
-                let Some(inst) = Self::Serializer::deserialize(stream) else {
-                    return None;
-                };
-
-                Some(inst)
+        impl<'de> Deserialize<'de> for OpCode {
+            fn deserialize(_deserializer: &mut Deserializer<'de>) -> Option<Self> {
+                // Some(unsafe { std::mem::transmute(op) })
+                todo!();
             }
         }
 
@@ -393,17 +288,21 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
 }
 
 struct DecodeStmt {
+    deserializer: Expr,
+    comma_token1: Token![,],
+    environment: Expr,
+    comma_token2: Token![,],
     decodable: Decodable,
-    in_token: Token![in],
-    environment: Ident
 }
 
 impl Parse for DecodeStmt {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let decodable = input.parse()?;
-        let in_token = input.parse()?;
+        let deserializer = input.parse()?;
+        let comma_token1 = input.parse()?;
         let environment = input.parse()?;
-        Ok(Self { decodable, in_token, environment })
+        let comma_token2 = input.parse()?;
+        let decodable = input.parse()?;
+        Ok(Self { deserializer, comma_token1, environment, comma_token2, decodable })
     }
 }
 
@@ -474,9 +373,9 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
 
     let ident = &stmt.decodable.ident;
     let environment = &stmt.environment;
+    let deserializer = &stmt.deserializer;
 
     let mut decode_logic = TokenStream::new(); 
-    let mut deref_decode_logic = TokenStream::new(); 
     for field in &stmt.decodable.fields.named {
         let ident = &field.ident;
         let local = PatIdent {
@@ -491,15 +390,7 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
         
         let decoding = match field.kind {
             DecodeKind::Copy => quote!(Decode::decode(&#ident, #environment)),
-            DecodeKind::Deref(_) => {
-                let decode_deref_fn = Ident::new(&format!("decode_deref_{ident}"), Span::call_site());
-                deref_decode_logic.extend(quote! {
-                    let #local = instruction.#decode_deref_fn(unsafe { &*codenv });
-                });
-                locals.push(local);
-                outputs.push(ident.clone());
-                continue;
-            },
+            DecodeKind::Deref(_) => unreachable!(),
             DecodeKind::Mutable(_) => quote!(DecodeMut::decode_mut(&#ident, #environment)),
         };
 
@@ -517,15 +408,8 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
             use std::ops::Deref;
             use crate::bytecode::Instruction;
 
-            let codenv: *mut _ = &mut *#environment;
-
-            let instruction = crate::bytecode::instructions::#ident::deserialize(
-                &mut #environment.stream
-            ).unwrap();
-
-            #deref_decode_logic
-
-            let crate::bytecode::instructions::#ident { #fields, .. } = *instruction;
+            let instruction: crate::bytecode::instructions::#ident = (#deserializer).next().unwrap();
+            let crate::bytecode::instructions::#ident { #fields, .. } = instruction;
 
             #decode_logic
         };

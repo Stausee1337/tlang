@@ -1,5 +1,5 @@
 
-use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCell, rc::Rc};
+use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCell, rc::Rc, marker::PhantomData};
 
 use ahash::HashMap;
 use tlang_macros::define_instructions;
@@ -201,8 +201,9 @@ impl<'f> FunctionDisassembler<'f> {
 
         let mut stream = CodeStream::debug_from_data(&block.data);
         while !stream.eos() {
-            let op = OpCode::decode(stream.current());
-            let instruction = op.deserialize_for_debug(&mut stream);
+            let instruction = todo!();
+            // let op = OpCode::decode(stream.current());
+            // let instruction = op.deserialize_for_debug(&mut stream);
             writeln!(self, "{instruction:?}")?;
         }
 
@@ -271,6 +272,10 @@ impl BasicBlock {
             data: vec![],
             terminated: false
         }
+    }
+
+    fn serializer(&mut self) -> &mut Serializer {
+        todo!()
     }
 }
 
@@ -774,178 +779,37 @@ impl TRawCode {
     }
 }
 
-pub trait InstructionSerializer<I: Instruction> {
-    fn serialize(inst: I, vec: &mut Vec<u8>);
-    fn deserialize<'c>(data: &'c mut CodeStream) -> Option<&'c I>;
+pub struct Deserializer<'de> {
+    stream: &'de mut CodeStream<'de>
 }
 
-pub struct BitSerializer;
-
-impl BitSerializer {
-    #[inline(always)]
-    fn serialize<T: Copy>(inst: T, vec: &mut Vec<u8>) {
-        let bytes = unsafe {
-            std::slice::from_raw_parts(
-                (&inst as *const T) as * const u8,
-                std::mem::size_of::<T>()
-            )
-        };
-        vec.extend(bytes);
+impl<'de> Deserializer<'de> {
+    pub fn new(stream: &'de mut CodeStream<'de>) -> Self {
+        Self { stream }
     }
 
-    #[inline(always)]
-    fn deserialize<T: Copy>(data: &[u8]) -> Option<&T> {
-        if data.len() < std::mem::size_of::<Self>() {
-            return None;
-        }
-        Some(unsafe { std::mem::transmute::<*const u8, &T>(data.as_ptr()) })
+    pub fn stream(&mut self) -> &mut CodeStream<'de> {
+        self.stream
+    }
+
+    pub fn next<T: Deserialize<'de>>(&mut self) -> Option<T> {
+        todo!()
     }
 }
 
-impl<I: Instruction> InstructionSerializer<I> for BitSerializer {
-    #[inline(always)]
-    fn serialize(inst: I, vec: &mut Vec<u8>) {
-        BitSerializer::serialize::<I>(inst, vec)
-    }
+pub struct Serializer;
 
-    #[inline(always)]
-    fn deserialize<'c>(data: &'c mut CodeStream) -> Option<&'c I> {
-        let codestream: *mut _ = &mut *data;
-
-        let instr = BitSerializer::deserialize::<I>(data.code())?;
-        CodeStream::bump(unsafe { &mut *codestream }, std::mem::size_of::<I>());
-
-        Some(instr)
-    }
+pub trait Serialize: Sized {
+    fn serialize(&self, serializer: &mut Serializer);
 }
 
-pub struct CallSerializer;
-
-impl CallSerializer {
-    fn serialize_slice<'a, T>(slice: &'a [T], vec: &mut Vec<u8>) {
-        let size = slice.len() * std::mem::size_of::<T>();
-        let bytes = unsafe {
-            std::slice::from_raw_parts(slice.as_ptr() as *const u8, size)
-        };
-        vec.extend(size.to_le_bytes());
-        vec.extend(bytes);
-    }
-
-    fn deserialize_slice<'a, T>(data: &'a [u8]) -> Option<(&'a [T], usize)> {
-        let item_size = std::mem::size_of::<T>();
-        let header_size = std::mem::size_of::<usize>();
-
-        if data.len() < header_size {
-            return None;
-        }
-
-        let size: [u8; 8] = data[0..header_size].try_into().unwrap();
-        let size = usize::from_le_bytes(size);
-
-        let remaining = data.len() - header_size;
-        if size % item_size != 0 || remaining < size {
-            return None;
-        }
-
-        let ptr = data[header_size..].as_ptr() as *const T;
-        println!("deserialize_slice {:p}", ptr);
-
-        let length = size / item_size;
-        unsafe {
-            Some((std::slice::from_raw_parts(
-                ptr,
-                length
-            ), header_size + size))
-        }
-    }
+pub trait Deserialize<'de>: Sized {
+    fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self>;
 }
 
-impl<'s> InstructionSerializer<instructions::Call_1<'s>> for CallSerializer {
-    #[inline(always)]
-    fn serialize(instr: instructions::Call_1<'s>, vec: &mut Vec<u8>) {
-        const ALIGN: usize = 8;
-
-        let instructions::Call_1 { callee, arguments, dst } = instr;
-        BitSerializer::serialize(callee, vec);
-        BitSerializer::serialize(dst, vec);
-
-        if vec.len() % ALIGN != 0 {
-            let padding = ALIGN - (vec.len() % ALIGN);
-            vec.extend(&[0u8; 4][..padding]);
-        }
-
-        Self::serialize_slice(arguments, vec);
-    }
-
-    #[inline(always)]
-    fn deserialize<'c>(_data: &'c mut CodeStream) -> Option<&'c instructions::Call_1<'s>> {
-        panic!()
-    }
-}
-
-impl InstructionSerializer<instructions::Call> for CallSerializer {
-    #[inline(always)]
-    fn serialize(_instr: instructions::Call, _vec: &mut Vec<u8>) {
-        panic!()
-    }
-
-    #[inline(always)]
-    fn deserialize<'c>(data: &'c mut CodeStream) -> Option<&'c instructions::Call> {
-        const ALIGN: usize = 8;
-        const SIZE: usize = std::mem::size_of::<instructions::Call>();
-        let codestream: *mut _ = &mut *data;
-
-        let instr = BitSerializer::deserialize::<instructions::Call>(data.code());
-        CodeStream::bump(unsafe { &mut *codestream }, SIZE);
-
-        {
-            let stream = unsafe { &mut *codestream };
-            let ptr = stream.code().as_ptr() as usize;
-            if ptr % ALIGN != 0 {
-                let padding = ALIGN - (ptr % ALIGN);
-                println!("deserialize padding {padding}");
-                stream.bump(padding);
-            }
-        }
-
-        let (_arguments, size) = Self::deserialize_slice::<Operand>(data.code())?;
-        CodeStream::bump(unsafe { &mut *codestream }, size);
-
-        instr
-    }
-}
-
-impl instructions::Call {
-    pub fn arguments(&self) -> &[Operand] {
-        const ALIGN: usize = 8;
-
-        let ptr = self.arguments.as_ptr() as usize;
-        let mut padding = 0;
-        if ptr % ALIGN != 0 {
-            padding = ALIGN - (ptr % ALIGN);
-        }
-
-        let data = unsafe {
-        println!("arguments {:p} {}", self.arguments.as_ptr().byte_add(padding), padding);
-            std::slice::from_raw_parts(
-                self.arguments.as_ptr().byte_add(padding) as *const u8,
-                isize::MAX as usize
-            )
-        };
-        CallSerializer::deserialize_slice(data).unwrap().0
-    }
-}
-
-fn call_format(call: &instructions::Call, f: &mut std::fmt::Formatter<'_>) -> FmtResult {
-    let instructions::Call { dst, callee, .. } = *call;
-
-    f.write_str("Call { ")?;
-
-    write!(f, "dst: {:?}, ", dst)?;
-    write!(f, "callee: {:?}, ", callee)?;
-    write!(f, "arguments: {:?}", call.arguments())?;
-
-    f.write_str(" }")
+pub trait Instruction<'de>: Sized + Copy + Serialize + Deserialize<'de> {
+    const CODE: OpCode;
+    const IS_TERMINATOR: bool;
 }
 
 define_instructions! {
@@ -1043,8 +907,6 @@ define_instructions! {
     #[terminator(true)]
     Fallthrough,
 
-    #[serializer(CallSerializer)]
-    #[formatter(call_format)]
     Call<'s> {
         dst: Operand,
         callee: Operand,
