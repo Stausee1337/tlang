@@ -1,4 +1,4 @@
-use std::{mem::{transmute, MaybeUninit, offset_of, ManuallyDrop}, fmt::Display, alloc::Layout, ptr::NonNull, any::TypeId, hash::BuildHasherDefault};
+use std::{mem::{transmute, MaybeUninit, offset_of, ManuallyDrop}, fmt::Display, alloc::Layout, ptr::NonNull, any::TypeId, hash::BuildHasherDefault, io::Write};
 
 
 use ahash::AHasher;
@@ -893,14 +893,14 @@ impl TProperty {
         P: VMCast + VMDowncast + Copy + 'static
     {
         let get = if accessor.contains(Accessor::GET) {
-            Some(TFunction::rustfunc(vm.modules().empty(), None, |object: TPolymorphicWrapper<Slf>| {
+            Some(TFunction::rustfunc(vm.modules().empty(), None, move |object: TPolymorphicWrapper<Slf>| {
                 unsafe { *object.raw_access::<P>(offset) }
             }))
         } else {
             None
         };
         let set = if accessor.contains(Accessor::SET) {
-            Some(TFunction::rustfunc(vm.modules().empty(), None, |object: TPolymorphicWrapper<Slf>, value: P| {
+            Some(TFunction::rustfunc(vm.modules().empty(), None, move |object: TPolymorphicWrapper<Slf>, value: P| {
                 unsafe { *object.raw_access::<P>(offset) = value; }
             }))
         } else {
@@ -980,39 +980,34 @@ pub enum TFnKind {
     Function(TRawCode),
     Nativefunc {
         fastcall: Box<Fastcall<()>>,
-        traitfn: Box<FnOnceTrait>
+        traitfn: Box<dyn Fn(GCRef<TModule>, TArgsBuffer) -> TValue>,
     }
 }
 
 unsafe impl std::marker::Sync for TFnKind {}
-unsafe impl std::marker::Send for TFnKind {}    
+unsafe impl std::marker::Send for TFnKind {}
 
 impl TFunction {
-    pub fn rustfunc<In: VMArgs + 'static, R: VMCast + 'static, F: FnOnce<In, Output = R> + Copy>(
+    pub fn rustfunc<In: VMArgs + 'static, R: VMCast + 'static, F: Fn<In, Output = R> + Copy + 'static>(
         module: GCRef<TModule>,
         name: Option<&str>,
         func: F
     ) -> GCRef<TFunction> {
         let vm = module.vm();
 
-        let fastcall = Fastcall::new(func);
+        // let fastcall = Fastcall::new(func);
 
         let fastcall: &'_ mut Fastcall<()> = unsafe {
-            let leaked = Box::leak(Box::new(fastcall));
-            memory::mutcast(leaked)
+            &mut *(0xdeadbeef as *mut Fastcall<()>)
         };
 
-        let mut closure = ManuallyDrop::new(|module: GCRef<TModule>, args: TArgsBuffer| {
+        let closure = Box::new(move |module: GCRef<TModule>, args: TArgsBuffer| {
             let vm = module.vm();
             let decoded_args = In::try_decode(&vm, args).unwrap();
             func.call_once(decoded_args).vmcast(&vm)
         });
 
-        let traitfn = FnOnceTrait::new(unsafe { ManuallyDrop::take(&mut closure) });
-
-        let traitfn: &'_ mut FnOnceTrait = unsafe {
-            memory::mutcast(Box::leak(Box::new(traitfn)))
-        };
+        let traitfn: Box<dyn Fn(GCRef<TModule>, TArgsBuffer) -> TValue> = closure;
 
         let mut func = vm.heap().allocate_atom(Self {
             base: TObject::base(&vm, vm.types().query::<Self>()),
@@ -1020,7 +1015,7 @@ impl TFunction {
             module,
             kind: TFnKind::Nativefunc {
                 fastcall: unsafe { Box::from_raw(&mut *fastcall) },
-                traitfn: unsafe { Box::from_raw(&mut *traitfn) }
+                traitfn
             }
         });
 
@@ -1035,7 +1030,7 @@ impl GCRef<TFunction> {
             TFnKind::Function(code) =>
                 code.evaluate(self.module, arguments),
             TFnKind::Nativefunc { traitfn, .. } =>
-                traitfn.call(self.module, arguments)
+                traitfn(self.module, arguments)
         }
     }
 

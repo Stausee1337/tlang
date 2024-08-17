@@ -84,7 +84,7 @@ impl GCRef<Primitives> {
         todo!()
     }
 
-    pub fn int_type(&self) -> GCRef<TType> {
+    pub fn int_type(self) -> GCRef<TType> {
         *self.int.get_or_init(|| {
             let vm = self.vm();
             let mut ttype = vm.heap().allocate_atom(TType {
