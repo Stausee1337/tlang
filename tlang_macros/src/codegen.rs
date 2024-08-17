@@ -129,7 +129,7 @@ fn make_struct(
     vis: Visibility,
     ident: &Ident,
     generics: Option<&GenericLifetime>,
-    fields: &TokenStream,
+    fields: Option<&FieldsNamed>,
     is_terminator: bool,
     structures: &mut TokenStream) {
 
@@ -140,11 +140,43 @@ fn make_struct(
         quote! { <'de> }
     };
 
+    let mut fields_tokens = TokenStream::new();
+    let mut serialize_code = TokenStream::new();
+    let mut deserialize_code = TokenStream::new();
+
+    if let Some(fields) = fields {
+        fields.to_tokens(&mut fields_tokens);
+        let mut ident_fields = TokenStream::new();
+        for field in &fields.named {
+            let fident = &field.ident;
+            ident_fields.extend(quote!(#fident,));
+        }
+        serialize_code.extend(quote! {
+            let #ident { #ident_fields } = self;
+        });
+
+        for field in &fields.named {
+            let fident = &field.ident;
+            serialize_code.extend(quote!(serializer.feed(#fident);));
+            deserialize_code.extend(quote!(let #fident = deserializer.next()?;));
+        }
+        deserialize_code.extend(quote! {
+            Some(Self { #ident_fields })
+        });
+    } else {
+        fields_tokens.extend(quote!(;));
+        serialize_code.extend(quote!(drop(serializer);));
+        deserialize_code.extend(quote! {
+            drop(deserializer);
+            Some(Self)
+        });
+    }
+
     structures.extend(quote!(
             #[derive(Clone, Copy, Debug)]
             #[repr(packed)] 
             #[allow(non_camel_case_types)]
-            #vis struct #ident #generics #fields));
+            #vis struct #ident #generics #fields_tokens));
     structures.extend(quote! {
         impl #impl_generics Instruction<'de> for #ident #generics {
             const CODE: OpCode = OpCode::#ident;
@@ -152,14 +184,14 @@ fn make_struct(
         }
 
         impl #generics Serialize for #ident #generics {
-            fn serialize(&self, _serializer: &mut Serializer) {
-                todo!()
+            fn serialize(&self, serializer: &mut Serializer) {
+                #serialize_code 
             }
         }
 
         impl #impl_generics Deserialize<'de> for #ident #generics {
-            fn deserialize(_deserializer: &mut Deserializer<'de>) -> Option<Self> {
-                todo!()
+            fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self> {
+                #deserialize_code
             }
         }
     });
@@ -227,20 +259,17 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
                 Box::new(crate::bytecode::instructions::#ident::deserialize(stream).unwrap()),
         });*/
 
-        let fields = if let Some(fields) = &mut inst.fields.clone() {
+        if let Some(fields) = &mut inst.fields {
             for field in &mut fields.named {
                 field.vis = Visibility::Public(syn::token::Pub::default());
             }
-            quote!(#fields)
-        } else {
-            quote!({})
-        };
+        }
 
         make_struct(
             Visibility::Public(syn::token::Pub::default()),
             ident, 
             generics.as_ref(),
-            &fields,
+            inst.fields.as_ref(),
             inst.terminator,
             &mut structures);
     }
