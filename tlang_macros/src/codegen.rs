@@ -152,12 +152,12 @@ fn make_struct(
             ident_fields.extend(quote!(#fident,));
         }
         serialize_code.extend(quote! {
-            let #ident { #ident_fields } = self;
+            let #ident { #ident_fields } = *self;
         });
 
         for field in &fields.named {
             let fident = &field.ident;
-            serialize_code.extend(quote!(serializer.feed(#fident);));
+            serialize_code.extend(quote!(serializer.feed(&#fident);));
             deserialize_code.extend(quote!(let #fident = deserializer.next()?;));
         }
         deserialize_code.extend(quote! {

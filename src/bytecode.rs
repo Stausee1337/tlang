@@ -70,6 +70,18 @@ impl Operand {
     }
 }
 
+impl Serialize for Operand {
+    fn serialize(&self, serializer: &mut Serializer) {
+        serializer.feed_u32(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Operand {
+    fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self> {
+        Some(Operand(deserializer.next_u32()?))
+    }
+}
+
 impl std::fmt::Debug for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtResult {
         match self.to_rust() {
@@ -253,6 +265,18 @@ define_index_type! {
     DEBUG_FORMAT = "bb{}";
 }
 
+impl Serialize for CodeLabel {
+    fn serialize(&self, serializer: &mut Serializer) {
+        serializer.feed_u32(self._raw)
+    }
+}
+
+impl<'de> Deserialize<'de> for CodeLabel {
+    fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self> {
+        Some(Self::from_raw(deserializer.next_u32()?))
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Local {
     pub constant: bool,
@@ -261,7 +285,7 @@ pub struct Local {
 
 struct BasicBlock {
     label: CodeLabel,
-    data: Serializer<Vec<u8>>,
+    data: Serializer,
     terminated: bool
 } 
 
@@ -793,13 +817,47 @@ impl<'de> Deserializer<'de> {
     pub fn next<T: Deserialize<'de>>(&mut self) -> Option<T> {
         T::deserialize(self)
     }
+
+    #[must_use]
+    pub fn skip_align<T: Sized>(&mut self) -> Option<()> {
+        let align = std::mem::align_of::<T>();
+        if self.stream.position % align != 0 {
+            let padding = align - (self.stream.position % align);
+            if self.stream.code().len() < padding {
+                return None;
+            }
+            self.stream.position += padding;
+        }
+        Some(())
+    }
+
+    #[must_use]
+    pub fn skip_bytes(&mut self, amount: usize) -> Option<()> {
+        if self.stream.code().len() < amount {
+            return None;
+        }
+        self.stream.position += amount;
+        Some(())
+    }
+
+    pub fn raw_data(&self) -> *const u8 {
+        self.stream.code().as_ptr()
+    }
 }
 
-pub struct Serializer<T: ?Sized = dyn std::io::Write>(T);
+pub struct Serializer(Vec<u8>);
 
 impl Serializer {
     pub fn feed<S: Serialize>(&mut self, serialize: &S) {
-        todo!();
+        serialize.serialize(self);
+    }
+
+    pub fn feed_align<T: Sized>(&mut self) {
+        let align = std::mem::align_of::<T>();
+        if self.0.len() % align != 0 {
+            let padding = align - (self.0.len() % align);
+            self.0.extend(std::iter::repeat(0u8).take(padding));
+        }
     }
 }
 
@@ -819,7 +877,8 @@ macro_rules! impl_primitive {
         }
 
         impl Serializer {
-            pub fn $ser(&mut self, x: u8) {
+            pub fn $ser(&mut self, x: $ty) {
+                use std::io::Write;
                 self.0.write(&x.to_le_bytes());
             }
         }
@@ -841,6 +900,40 @@ pub trait Deserialize<'de>: Sized {
 pub trait Instruction<'de>: Sized + Copy + Serialize + Deserialize<'de> {
     const CODE: OpCode;
     const IS_TERMINATOR: bool;
+}
+
+impl Serialize for bool {
+    fn serialize(&self, serializer: &mut Serializer) {
+        serializer.feed_u8(*self as u8);
+    }
+}
+
+impl<'de> Deserialize<'de> for bool {
+    fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self> {
+        Some(deserializer.next_u8()? == 1)
+    }
+}
+
+impl<'a> Serialize for &'a [Operand] {
+    fn serialize(&self, serializer: &mut Serializer) {
+        serializer.feed_u64(self.len() as u64);
+        serializer.feed_align::<Operand>();
+        for op in self.iter() {
+            serializer.feed(op);
+        }
+    }
+}
+
+impl<'a, 'de: 'a> Deserialize<'de> for &'a [Operand] {
+    fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self> {
+        let length = deserializer.next_u64()? as usize;
+        deserializer.skip_align::<Operand>();
+
+        let slice = unsafe { std::slice::from_raw_parts(deserializer.raw_data() as *const Operand, length) };
+        deserializer.skip_bytes(slice.len() * std::mem::size_of::<Operand>());
+
+        return Some(slice);
+    }
 }
 
 define_instructions! {
