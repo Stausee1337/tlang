@@ -199,7 +199,7 @@ impl<'f> FunctionDisassembler<'f> {
         writeln!(self, "bb{} {{", block.label._raw)?;
         self.indent();
 
-        let mut stream = CodeStream::debug_from_data(&block.data);
+        let mut stream = CodeStream::debug_from_data(&block.data.0);
         while !stream.eos() {
             let instruction = todo!();
             // let op = OpCode::decode(stream.current());
@@ -217,7 +217,7 @@ impl<'f> FunctionDisassembler<'f> {
         
         let mut code_size = 0;
         for block in &self.function.blocks {
-            code_size += block.data.len();
+            code_size += block.data.0.len();
         }
 
         writeln!(self, ".locals {}", self.function.num_locals)?;
@@ -261,7 +261,7 @@ pub struct Local {
 
 struct BasicBlock {
     label: CodeLabel,
-    data: Vec<u8>,
+    data: Serializer<Vec<u8>>,
     terminated: bool
 } 
 
@@ -269,13 +269,13 @@ impl BasicBlock {
     fn new() -> Self {
         Self {
             label: CodeLabel::from_raw(0),
-            data: vec![],
+            data: Serializer(vec![]),
             terminated: false
         }
     }
 
     fn serializer(&mut self) -> &mut Serializer {
-        todo!()
+        &mut self.data
     }
 }
 
@@ -584,7 +584,7 @@ impl BytecodeGenerator {
     }
 
     pub fn root_function(self) -> GCRef<TFunction> {
-        struct N;
+        /*struct N;
         let mut n = N;
         impl std::fmt::Write for N {
             fn write_str(&mut self, s: &str) -> FmtResult {
@@ -592,7 +592,7 @@ impl BytecodeGenerator {
                 Ok(())
             }
         }
-        FunctionDisassembler::dissassemble(&self.root_fn, &mut n).unwrap();
+        FunctionDisassembler::dissassemble(&self.root_fn, &mut n).unwrap();*/
         TFunction::from_codegen(&self.vm(), self.root_fn, self.module)
     }
 }
@@ -601,7 +601,7 @@ impl TFunction {
     pub fn from_codegen(vm: &VM, func: CGFunction, module: GCRef<TModule>) -> GCRef<Self> {
         let mut codesize = 0;
         for block in &func.blocks {
-            codesize += block.data.len();
+            codesize += block.data.0.len();
         }
 
         let name = func.name.map(|name| vm.symbols.get(name));
@@ -620,13 +620,11 @@ impl TFunction {
         for block in &func.blocks {
             assert!(block.terminated);
 
-            println!("{:?}", block.data);
-
             tcode.blocks_mut()[block.label.index()] = offset as u32;
-            let length = block.data.len();
+            let length = block.data.0.len();
             let codebuf = &mut tcode.code_mut()[offset..offset + length];
-            codebuf.copy_from_slice(&block.data);
-            offset += block.data.len();
+            codebuf.copy_from_slice(&block.data.0);
+            offset += block.data.0.len();
         }
 
         for (descriptor, value) in func.descriptor_table.iter_enumerated() {
@@ -793,11 +791,44 @@ impl<'de> Deserializer<'de> {
     }
 
     pub fn next<T: Deserialize<'de>>(&mut self) -> Option<T> {
-        todo!()
+        T::deserialize(self)
     }
 }
 
-pub struct Serializer;
+pub struct Serializer<T: ?Sized = dyn std::io::Write>(T);
+
+impl Serializer {
+    pub fn feed<S: Serialize>(&mut self, serialize: &S) {
+        todo!();
+    }
+}
+
+macro_rules! impl_primitive {
+    ($ty:ty, $ser:ident, $deser:ident) => {    
+        impl<'de> Deserializer<'de> {
+            pub fn $deser(&mut self) -> Option<$ty> {
+                const SIZE: usize = std::mem::size_of::<$ty>();
+                if self.stream.code().len() >= SIZE {
+                    let data: [u8; SIZE] = self.stream.code()[0..SIZE].try_into().unwrap();
+                    let data = <$ty>::from_le_bytes(data);
+                    self.stream.bump(SIZE);
+                    return Some(data);
+                }
+                None
+            }
+        }
+
+        impl Serializer {
+            pub fn $ser(&mut self, x: u8) {
+                self.0.write(&x.to_le_bytes());
+            }
+        }
+    };
+}
+
+impl_primitive!(u8, feed_u8, next_u8);
+impl_primitive!(u32, feed_u32, next_u32);
+impl_primitive!(u64, feed_u64, next_u64);
 
 pub trait Serialize: Sized {
     fn serialize(&self, serializer: &mut Serializer);

@@ -173,7 +173,6 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
     let mut structures = TokenStream::new();
     let mut codegen_impls = TokenStream::new();
     let mut block_impls = TokenStream::new();
-    let mut debug_deserialize = TokenStream::new();
     for inst in &mut instructions {
         let ident = &inst.ident;
         let generics = &inst.lifetime;
@@ -210,7 +209,8 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
                 let instruction = crate::bytecode::instructions::#ident {
                     #fargs
                 };
-                instruction.serialize(self.serializer());
+                self.serializer().feed(&crate::bytecode::OpCode::#ident);
+                self.serializer().feed(&instruction);
             }
         });
 
@@ -258,10 +258,16 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
             }
         }
 
+        impl Serialize for OpCode {
+            fn serialize(&self, serializer: &mut Serializer) {
+                serializer.feed_u8(*self as u8);
+            }
+        }
+
         impl<'de> Deserialize<'de> for OpCode {
-            fn deserialize(_deserializer: &mut Deserializer<'de>) -> Option<Self> {
-                // Some(unsafe { std::mem::transmute(op) })
-                todo!();
+            fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self> {
+                let op = deserializer.next_u8()?;
+                Some(unsafe { std::mem::transmute(op) })
             }
         }
 
