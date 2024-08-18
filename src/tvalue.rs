@@ -1,11 +1,12 @@
-use std::{mem::{transmute, MaybeUninit, offset_of, ManuallyDrop}, fmt::Display, alloc::Layout, ptr::NonNull, any::TypeId, hash::BuildHasherDefault, io::Write};
+use std::{mem::{transmute, MaybeUninit, offset_of}, fmt::Display, alloc::Layout, any::TypeId, hash::BuildHasherDefault, io::Write};
 
 
 use ahash::AHasher;
 use allocator_api2::alloc::Global;
 use hashbrown::{hash_map::RawVacantEntryMut, HashTable, hash_table::Entry};
+use tlang_macros::tcall;
 
-use crate::{memory::{GCRef, Atom, Visitor, self}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast, TPolymorphicCallable}};
+use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast, TPolymorphicCallable}};
 
 
 macro_rules! __tobject_struct {
@@ -391,8 +392,14 @@ impl Typed for TObject {
         entry.insert(TypeId::of::<Self>(), ttype);
         ttype.base = TObject::base(vm, ttype);
 
+        ttype.define_method(Symbol![eq], TFunction::rustfunc(
+                vm.modules().empty(), Some("object::eq"), |this: TValue, other: TValue| {
+                    TBool::from_bool(this.encoded() == other.encoded())
+                }));
+
         ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                vm.modules().empty(), Some("object::toString"), |_value: TValue| "object {}"));
+                vm.modules().empty(), Some("object::toString"), |_this: TValue| "object {}"));
+
 
         ttype
     }
@@ -1123,11 +1130,6 @@ where
 
 pub fn print(module: GCRef<TModule>, msg: TValue) {
     let vm = module.vm();
-    // let msg: GCRef<TString> = tcall!(&vm, TValue::toString(msg));
-    let msg: GCRef<TString> = {
-        let resolved_func: TPolymorphicCallable<_, _> = resolve_by_symbol(&vm, Symbol![toString], msg);
-        resolved_func(msg)
-    };
-
+    let msg: GCRef<TString> = tcall!(&vm, TValue::toString(msg));
     println!("{msg}");
 }

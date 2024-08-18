@@ -38,8 +38,8 @@ pub fn tobject(item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro]
-pub fn tfunction(item: TokenStream) -> TokenStream {
-    codegen::generate_tfunction(item.into())
+pub fn tcall(item: TokenStream) -> TokenStream {
+    codegen::generate_tcall(item.into())
         .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
         .into()
 }
