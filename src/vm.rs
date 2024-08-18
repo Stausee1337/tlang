@@ -6,13 +6,13 @@ use hashbrown::hash_map::RawEntryMut;
 use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, self, TString, TValue, Typed, TProperty, Accessor, TObject, TFunction, TInteger, TBool}};
 
 #[macro_export]
-#[cfg(not(debug_assertions))]
+#[cfg(debug_assertions)]
 macro_rules! debug {
     ($($arg:tt)*) => { println!($($arg)*) }
 }
 
 #[macro_export]
-#[cfg(debug_assertions)]
+#[cfg(not(debug_assertions))]
 macro_rules! debug {
     ($($arg:tt)*) => { }
 }

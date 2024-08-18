@@ -1,4 +1,4 @@
-use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::NonNull, alloc::Layout, cell::Cell, any::TypeId, mem::{transmute, ManuallyDrop}, rc::{Weak, Rc}};
+use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::{NonNull, copy_nonoverlapping}, alloc::Layout, cell::Cell, any::TypeId, mem::{transmute, ManuallyDrop}, rc::{Weak, Rc}};
 use rustix::{
     io,
     mm::{mmap_anonymous, munmap, MapFlags, ProtFlags}
@@ -144,7 +144,7 @@ impl Heap {
         unsafe {
             let mut data = self.allocate(
                 Layout::new::<AtomTrait<A>>()).unwrap().cast::<AtomTrait<A>>();
-            *(data.as_mut()) = ManuallyDrop::take(&mut atom);
+            copy_nonoverlapping(atom.deref(), data.as_ptr(), 1);
             GCRef::from_raw(std::ptr::addr_of!(data.as_mut().atom))
         }
     }
@@ -156,7 +156,7 @@ impl Heap {
             let layout = Layout::from_size_align_unchecked(layout.size() + extra_bytes, layout.align());
 
             let mut data = self.allocate(layout).unwrap().cast::<AtomTrait<A>>();
-            *(data.as_mut()) = ManuallyDrop::take(&mut atom);
+            copy_nonoverlapping(atom.deref(), data.as_ptr(), 1);
             GCRef::from_raw(std::ptr::addr_of!(data.as_mut().atom))
         }
     }
