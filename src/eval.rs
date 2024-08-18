@@ -135,8 +135,6 @@ impl TRawCode {
                         return value;
                     }
 
-                    OpCode::Fallthrough => (),
-
                     OpCode::Call => {
                         decode!(&mut deserializer, env, Call { arguments, callee, mut dst });
                         let callee: GCRef<TFunction> = VMDowncast::vmdowncast(callee, vm).unwrap();
@@ -323,11 +321,10 @@ mod impls {
 
     pub fn branch_eq<'de>(vm: &VM, env: &ExecutionEnvironment, deserializer: &mut Deserializer<'de>) {
         decode!(deserializer, env, BranchEq { lhs, rhs, true_target, false_target });
-        deserializer.stream().jump(false_target);
-        /*if TBool::as_bool(tcall!(vm, TValue::eq(lhs, rhs))) {
+        if TBool::as_bool(tcall!(vm, TValue::eq(lhs, rhs))) {
             deserializer.stream().jump(true_target);
         } else {
             deserializer.stream().jump(false_target);
-        }*/
+        }
     }
 }

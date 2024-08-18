@@ -57,11 +57,7 @@ fn generate_body<'ast>(body: &'ast [&'ast Statement], generator: &mut BytecodeGe
 }
 
 fn generate_small_branch(src: CodeLabel, dst: CodeLabel, generator: &mut BytecodeGenerator) {
-    if src == dst - 1 {
-        generator.emit_fallthrough();
-    } else {
-        generator.emit_branch(dst);
-    }
+    generator.emit_branch(dst);
 }
 
 /// STATEMENTS
@@ -450,7 +446,7 @@ impl<'ast> GeneratorNode for BinaryExpr<'ast> {
 
                 generator.set_current_block(true_target);
                 generator.emit_mov(dst, Operand::bool(true));
-                generator.emit_fallthrough();
+                generator.emit_branch(end_block);
 
                 generator.set_current_block(end_block);
 

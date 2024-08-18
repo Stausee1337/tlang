@@ -1042,8 +1042,6 @@ define_instructions! {
 
     #[terminator(true)]
     Return { value: Operand },
-    #[terminator(true)]
-    Fallthrough,
 
     Call<'s> {
         dst: Operand,
