@@ -144,7 +144,7 @@ where
     }
 
     fn encode(self, vm: &VM) -> TArgsBuffer {
-        TArgsBuffer::debug(vec![self.0.vmcast(vm)])
+        TArgsBuffer::new(vec![self.0.vmcast(vm)])
     }
 }
 
@@ -164,7 +164,7 @@ where
     }
 
     fn encode(self, vm: &VM) -> TArgsBuffer {
-        TArgsBuffer::debug(vec![
+        TArgsBuffer::new(vec![
             self.0.vmcast(vm),
             self.1.vmcast(vm)
         ])

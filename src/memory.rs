@@ -7,7 +7,7 @@ use rustix::{
 use allocator_api2::alloc::{Allocator, AllocError};
 use static_assertions::const_assert_eq;
 
-use crate::vm::VM;
+use crate::{vm::VM, debug};
 
 #[repr(u16)]
 enum State {
@@ -109,7 +109,7 @@ impl HeapBlock {
             tag: 0
         };
 
-        println!("{layout:?}, {alloc_size}, {} {:p}", self.allocated_bytes, body);
+        debug!("{layout:?}, {alloc_size}, {} {:p}", self.allocated_bytes, body);
 
         Some(body)
     }

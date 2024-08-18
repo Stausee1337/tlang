@@ -340,11 +340,9 @@ impl TObject {
     }
 
     pub fn get_attribute(&self, name: Symbol, value: TValue) -> Option<TValue> {
-        if !self.ty.variable {
-            panic!("cannot set attribute on fixed type");
-        }
         let Some(descriptor) = &self.descriptor else {
-            unreachable!()
+            debug_assert!(!self.ty.variable);
+            panic!("cannot get attribute on fixed type");
         };
         descriptor
             .find(name.hash, |val| val.0 == name)
@@ -352,11 +350,9 @@ impl TObject {
     }
 
     pub fn set_attribute(&mut self, name: Symbol, value: TValue) {
-        if !self.ty.variable {
-            panic!("cannot set attribute on fixed type");
-        }
         let Some(descriptor) = &mut self.descriptor else {
-            unreachable!()
+            debug_assert!(!self.ty.variable);
+            panic!("cannot set attribute on fixed type {:p} {:p}", std::ptr::addr_of!(self.ty), self.ty.as_ptr());
         };
         match descriptor.entry(
             name.hash,
@@ -1124,18 +1120,12 @@ where
     let mut mut_current = value.ttype(vm);
 
     while let Some(current) = mut_current {
-        print!("1 ");
         if let Some(val) = current.base.get_attribute(name, value) {
             found = Some(val);
             break;
         }
         mut_current = current.basety;
     }
-
-    vm.symbols().intern_slice("eq");
-    vm.symbols().intern_slice("toString");
-
-    println!("{} {:?}", vm.symbols().get(name), found.map(|val| val.kind()));
 
     R::vmdowncast(found.unwrap(), vm).unwrap()
 }

@@ -42,24 +42,6 @@ fn read_entire_file(filename: &Path) -> Result<String, io::Error> {
     Ok(result)
 }
 
-struct Something(Vec<u8>);
-
-impl Something {
-    fn new() -> Self {
-        Something(vec![42])
-    }
-
-    fn get(&self) -> u8 {
-        self.0[0]
-    }
-}
-
-impl Drop for Something {
-    fn drop(&mut self) {
-        println!("I'm Dropping");
-    }
-}
-
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let program = args[0].clone();

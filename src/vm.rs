@@ -1,8 +1,21 @@
-use std::{rc::Rc, any::TypeId, sync::OnceLock};
+use std::{rc::Rc, any::TypeId, sync::OnceLock, hash::BuildHasherDefault};
 
+use ahash::AHasher;
 use hashbrown::hash_map::RawEntryMut;
 
 use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, self, TString, TValue, Typed, TProperty, Accessor, TObject, TFunction, TInteger, TBool}};
+
+#[macro_export]
+#[cfg(not(debug_assertions))]
+macro_rules! debug {
+    ($($arg:tt)*) => { println!($($arg)*) }
+}
+
+#[macro_export]
+#[cfg(debug_assertions)]
+macro_rules! debug {
+    ($($arg:tt)*) => { }
+}
 
 pub struct VM {
     heap: Box<Heap>,
@@ -194,11 +207,16 @@ impl RustTypeInterner {
 }
 
 impl GCRef<RustTypeInterner> {
+    #[inline(never)]
+    fn raw_entry_mut(&mut self, key: TypeId) -> RawEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>> {
+        self.0.raw_entry_mut().from_key(&key)
+    }
+
     pub fn query<T: Typed>(mut self) -> GCRef<TType> {
         let vm = self.vm();
 
         let key = TypeId::of::<T>();
-        let entry = self.0.raw_entry_mut().from_key(&key);
+        let entry = self.raw_entry_mut(key);
         match entry {
             RawEntryMut::Occupied(ty) => *ty.get(),
             RawEntryMut::Vacant(vacant) => {

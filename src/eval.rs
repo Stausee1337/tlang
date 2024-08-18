@@ -2,13 +2,14 @@ use tlang_macros::decode;
 
 use crate::{
     bytecode::{
-        CodeLabel, CodeStream, Descriptor, OpCode, Operand, OperandKind, Register, TRawCode, Deserialize, Deserializer
+        CodeLabel, CodeStream, Descriptor, OpCode, Operand, OperandKind, Register, TRawCode, Deserializer
     },
     memory::GCRef,
     symbol::Symbol,
     tvalue::{TBool, TFunction, TInteger, TValue},
     interop::{VMDowncast, TPolymorphicCallable},
     vm::{TModule, VM},
+    debug
 };
 
 struct ExecutionEnvironment<'l> {
@@ -24,8 +25,7 @@ impl TArgsBuffer {
         TArgsBuffer(vec![])
     }
 
-    #[cfg(debug_assertions)]
-    pub fn debug(v: Vec<TValue>) -> Self {
+    pub fn new(v: Vec<TValue>) -> Self {
         TArgsBuffer(v)
     }
 
@@ -91,7 +91,7 @@ impl TRawCode {
         self.with_environment(module, args, |vm, env, mut deserializer| {
             loop {
                 let op: OpCode = deserializer.next().unwrap();
-                println!("{op:?}");
+                debug!("{op:?}");
                 match op {
                     OpCode::Mov => {
                         decode!(&mut deserializer, env, Mov { src, mut dst });
@@ -231,7 +231,7 @@ impl Decode for Register {
     #[inline(always)]
     fn decode(&self, env: &ExecutionEnvironment) -> TValue {
         let idx = self.index();
-        println!("  -> Decode {idx}");
+        debug!("  -> Decode {idx}");
         idx.checked_sub(env.arguments.len())
             .map(|idx| env.registers[idx])
             .unwrap_or_else(|| env.arguments[idx])
@@ -242,7 +242,7 @@ impl DecodeMut for Register {
     #[inline(always)]
     fn decode_mut<'l>(&self, env: &'l mut ExecutionEnvironment) -> &'l mut TValue {
         let idx = self.index();
-        println!("  -> DecodeMut {idx}");
+        debug!("  -> DecodeMut {idx}");
         idx.checked_sub(env.arguments.len())
             .map(|idx| env.registers.get_mut(idx).unwrap())
             .unwrap_or_else(|| env.arguments.get_mut(idx).unwrap())

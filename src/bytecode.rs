@@ -944,8 +944,6 @@ impl<'a, 'de: 'a> Deserialize<'de> for &'a [Operand] {
         let slice = unsafe { std::slice::from_raw_parts(deserializer.raw_data() as *const Operand, length) };
         deserializer.skip_bytes(slice.len() * std::mem::size_of::<Operand>());
 
-        println!("{slice:?}");
-
         return Some(slice);
     }
 }
