@@ -2,7 +2,7 @@ use std::{rc::Rc, any::TypeId, sync::OnceLock};
 
 use hashbrown::hash_map::RawEntryMut;
 
-use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, self, TString, TValue, Typed, TProperty, Accessor, TObject, TFunction, TInteger}};
+use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, self, TString, TValue, Typed, TProperty, Accessor, TObject, TFunction, TInteger, TBool}};
 
 pub struct VM {
     heap: Box<Heap>,
@@ -67,6 +67,7 @@ impl VM {
 
 pub struct Primitives {
     int: OnceLock<GCRef<TType>>,
+    bool: OnceLock<GCRef<TType>>,
     string: OnceLock<GCRef<TType>>
 }
 
@@ -74,7 +75,8 @@ impl Primitives {
     fn lazy() -> Self {
         Primitives {
             int: OnceLock::new(),
-            string: OnceLock::new()
+            string: OnceLock::new(),
+            bool: OnceLock::new()
         }
     }
 }
@@ -107,8 +109,27 @@ impl GCRef<Primitives> {
         })
     }
 
-    pub fn bool_type(&self) -> GCRef<TType> {
-        todo!()
+    pub fn bool_type(self) -> GCRef<TType> {
+        *self.bool.get_or_init(|| {
+            let vm = self.vm();
+            let mut ttype = vm.heap().allocate_atom(TType {
+                base: TObject::base(&vm, vm.types().query::<TType>()),
+                basety: Some(vm.types().query::<TObject>()),
+                basesize: 0, // primitive
+                name: TString::from_slice(&vm, "bool"),
+                modname: TString::from_slice(&vm, "prelude"),
+                variable: false
+            });
+
+            ttype.define_method(Symbol![toString], TFunction::rustfunc(
+                    vm.modules().empty(), Some("bool::toString"),
+                    move |this: TBool| {
+                        let vm = self.vm();
+                        TString::from_slice(&vm, &format!("{this}"))
+                    }));
+
+            ttype
+        })
     }
 
     pub fn string_type(&self) -> GCRef<TType> {

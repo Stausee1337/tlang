@@ -7,7 +7,7 @@ use tlang_macros::define_instructions;
 use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed, TObject}, symbol::Symbol, parse::Ident, codegen::{self, CodegenErr}, memory::GCRef, vm::{VM, TModule}};
 use index_vec::{IndexVec, define_index_type};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OperandKind {
     Null,
     Bool(bool),
@@ -212,10 +212,10 @@ impl<'f> FunctionDisassembler<'f> {
         self.indent();
 
         let mut stream = CodeStream::debug_from_data(&block.data.0);
-        while !stream.eos() {
-            let instruction = todo!();
-            // let op = OpCode::decode(stream.current());
-            // let instruction = op.deserialize_for_debug(&mut stream);
+        let mut deserializer = Deserializer::new(&mut stream);
+        while !deserializer.stream().eos() {
+            let op: OpCode = deserializer.next().unwrap();
+            let instruction = op.deserialize_for_debug(&mut deserializer);
             writeln!(self, "{instruction:?}")?;
         }
 
@@ -608,7 +608,7 @@ impl BytecodeGenerator {
     }
 
     pub fn root_function(self) -> GCRef<TFunction> {
-        /*struct N;
+        struct N;
         let mut n = N;
         impl std::fmt::Write for N {
             fn write_str(&mut self, s: &str) -> FmtResult {
@@ -616,16 +616,22 @@ impl BytecodeGenerator {
                 Ok(())
             }
         }
-        FunctionDisassembler::dissassemble(&self.root_fn, &mut n).unwrap();*/
+        FunctionDisassembler::dissassemble(&self.root_fn, &mut n).unwrap();
         TFunction::from_codegen(&self.vm(), self.root_fn, self.module)
     }
 }
 
 impl TFunction {
     pub fn from_codegen(vm: &VM, func: CGFunction, module: GCRef<TModule>) -> GCRef<Self> {
+        const ALIGN: usize = 8;
+
         let mut codesize = 0;
         for block in &func.blocks {
             codesize += block.data.0.len();
+            if codesize % ALIGN != 0 {
+                let padding = ALIGN - (codesize % ALIGN);
+                codesize += padding;
+            }
         }
 
         let name = func.name.map(|name| vm.symbols.get(name));
@@ -649,6 +655,12 @@ impl TFunction {
             let codebuf = &mut tcode.code_mut()[offset..offset + length];
             codebuf.copy_from_slice(&block.data.0);
             offset += block.data.0.len();
+
+
+            if offset % ALIGN != 0 {
+                let padding = ALIGN - (offset % ALIGN);
+                offset += padding;
+            }
         }
 
         for (descriptor, value) in func.descriptor_table.iter_enumerated() {
@@ -931,6 +943,8 @@ impl<'a, 'de: 'a> Deserialize<'de> for &'a [Operand] {
 
         let slice = unsafe { std::slice::from_raw_parts(deserializer.raw_data() as *const Operand, length) };
         deserializer.skip_bytes(slice.len() * std::mem::size_of::<Operand>());
+
+        println!("{slice:?}");
 
         return Some(slice);
     }

@@ -205,6 +205,7 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
     let mut structures = TokenStream::new();
     let mut codegen_impls = TokenStream::new();
     let mut block_impls = TokenStream::new();
+    let mut debug_deserialize = TokenStream::new();
     for inst in &mut instructions {
         let ident = &inst.ident;
         let generics = &inst.lifetime;
@@ -254,10 +255,10 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
             }
         });
 
-        /*debug_deserialize.extend(quote! {
+        debug_deserialize.extend(quote! {
             OpCode::#ident =>
-                Box::new(crate::bytecode::instructions::#ident::deserialize(stream).unwrap()),
-        });*/
+                Box::new(crate::bytecode::instructions::#ident::deserialize(deserializer).unwrap()),
+        });
 
         if let Some(fields) = &mut inst.fields {
             for field in &mut fields.named {
@@ -282,8 +283,11 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
         }
 
         impl OpCode {
-            pub fn deserialize_for_debug<'c>(self, stream: &'c mut CodeStream) -> Box<dyn std::fmt::Debug> {
-                todo!()
+            pub fn deserialize_for_debug<'de>(self, deserializer: &mut Deserializer<'de>
+                ) -> Box<dyn std::fmt::Debug + 'de> {
+                match self {
+                    #debug_deserialize
+                }
             }
         }
 

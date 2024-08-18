@@ -91,6 +91,7 @@ impl TRawCode {
         self.with_environment(module, args, |vm, env, mut deserializer| {
             loop {
                 let op: OpCode = deserializer.next().unwrap();
+                println!("{op:?}");
                 match op {
                     OpCode::Mov => {
                         decode!(&mut deserializer, env, Mov { src, mut dst });
@@ -126,6 +127,8 @@ impl TRawCode {
                             deserializer.stream().jump(false_target);
                         }
                     }
+
+                    OpCode::BranchEq => impls::branch_eq(vm, env, &mut deserializer),
 
                     OpCode::Return => {
                         decode!(&mut deserializer, env, Return { value });
@@ -276,6 +279,8 @@ impl Decode for Symbol {
 }
 
 mod impls {
+    use tlang_macros::tcall;
+
     use super::*;
     use std::ops::*;
 
@@ -314,5 +319,15 @@ mod impls {
 
         impl shl for LeftShift; impl shr for RightShift;
         impl bitand for BitwiseAnd; impl bitor for BitwiseOr; impl bitxor for BitwiseXor;
+    }
+
+    pub fn branch_eq<'de>(vm: &VM, env: &ExecutionEnvironment, deserializer: &mut Deserializer<'de>) {
+        decode!(deserializer, env, BranchEq { lhs, rhs, true_target, false_target });
+        deserializer.stream().jump(false_target);
+        /*if TBool::as_bool(tcall!(vm, TValue::eq(lhs, rhs))) {
+            deserializer.stream().jump(true_target);
+        } else {
+            deserializer.stream().jump(false_target);
+        }*/
     }
 }

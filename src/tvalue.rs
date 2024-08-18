@@ -453,6 +453,12 @@ impl std::fmt::Debug for TBool {
     }
 }
 
+impl VMDowncast for TBool {
+    fn vmdowncast(value: TValue, _vm: &VM) -> Option<Self> {
+        value.query_bool()
+    }
+}
+
 #[repr(C)]
 #[repr(align(8))]
 pub struct TString {
@@ -1118,6 +1124,7 @@ where
     let mut mut_current = value.ttype(vm);
 
     while let Some(current) = mut_current {
+        print!("1 ");
         if let Some(val) = current.base.get_attribute(name, value) {
             found = Some(val);
             break;
@@ -1125,11 +1132,20 @@ where
         mut_current = current.basety;
     }
 
+    vm.symbols().intern_slice("eq");
+    vm.symbols().intern_slice("toString");
+
+    println!("{} {:?}", vm.symbols().get(name), found.map(|val| val.kind()));
+
     R::vmdowncast(found.unwrap(), vm).unwrap()
 }
 
 pub fn print(module: GCRef<TModule>, msg: TValue) {
     let vm = module.vm();
+    if msg.encoded() == TValue::null().encoded() {
+        println!("null");
+        return;
+    }
     let msg: GCRef<TString> = tcall!(&vm, TValue::toString(msg));
     println!("{msg}");
 }

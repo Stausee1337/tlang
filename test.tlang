@@ -1,4 +1,5 @@
 
 print("Hello, Wizard!");
 print(12);
+print(11 != 12);
 
