@@ -976,51 +976,87 @@ impl Typed for TFunction {
 }
 
 #[repr(C)]
+struct Nativefunc {
+    id: TypeId,
+    closure: *const (),
+    fastcall: *const (),
+    traitfn: fn(&Nativefunc, GCRef<TModule>, TArgsBuffer) -> TValue,
+}
+
+impl Nativefunc {
+    unsafe fn call_unchecked<In, R>(&self, args: In) -> R
+    where
+        In: VMArgs + 'static,
+        R: VMCast + 'static,
+    {
+        let fn_ptr: unsafe fn(*const(), In) -> R = transmute(self.fastcall);
+        fn_ptr(self.closure, args)
+    }
+}
+
+
+#[repr(C)]
 pub enum TFnKind {
     Function(TRawCode),
-    Nativefunc {
-        fastcall: Box<Fastcall<()>>,
-        traitfn: Box<dyn Fn(GCRef<TModule>, TArgsBuffer) -> TValue>,
-    }
+    Nativefunc(Nativefunc)
 }
 
 unsafe impl std::marker::Sync for TFnKind {}
 unsafe impl std::marker::Send for TFnKind {}
 
+fn traitfn<In, R>(this: &Nativefunc, module: GCRef<TModule>, args: TArgsBuffer) -> TValue
+where
+    In: VMArgs + 'static,
+    R: VMCast + 'static
+{
+    let vm = module.vm();
+    let decoded_args = In::try_decode(&vm, args).unwrap();
+    let result = unsafe { this.call_unchecked(decoded_args) };
+    R::vmcast(result, &vm)
+}
+
 impl TFunction {
-    pub fn rustfunc<In: VMArgs + 'static, R: VMCast + 'static, F: Fn<In, Output = R> + Copy + 'static>(
+    pub fn rustfunc<In: VMArgs + 'static, R: VMCast + 'static, F: Fn<In, Output = R> + Sync + Send + 'static>(
         module: GCRef<TModule>,
         name: Option<&str>,
         func: F
     ) -> GCRef<TFunction> {
         let vm = module.vm();
 
+        let id = TypeId::of::<(In, R)>();
+        let closure = Box::new(func);
+
+        let closure: *const _ = Box::leak(closure);
+
+        /*let ptr: unsafe fn(args: In) -> R = |args| {
+        };*/
+
         // let fastcall = Fastcall::new(func);
-
-        let fastcall: &'_ mut Fastcall<()> = unsafe {
-            &mut *(0xdeadbeef as *mut Fastcall<()>)
-        };
-
-        let closure = Box::new(move |module: GCRef<TModule>, args: TArgsBuffer| {
-            let vm = module.vm();
-            let decoded_args = In::try_decode(&vm, args).unwrap();
-            func.call_once(decoded_args).vmcast(&vm)
-        });
-
-        let traitfn: Box<dyn Fn(GCRef<TModule>, TArgsBuffer) -> TValue> = closure;
 
         let mut func = vm.heap().allocate_atom(Self {
             base: TObject::base(&vm, vm.types().query::<Self>()),
             name: name.map(|name| TString::from_slice(&vm, name)),
             module,
-            kind: TFnKind::Nativefunc {
-                fastcall: unsafe { Box::from_raw(&mut *fastcall) },
-                traitfn
-            }
+            kind: TFnKind::Nativefunc(Nativefunc {
+                id,
+                closure: closure as *const (),
+                fastcall: fastcall::<In, R, F> as *const (),
+                traitfn: traitfn::<In, R>
+            })
         });
 
         func
     }
+}
+
+unsafe fn fastcall<In, R, F>(func: *const (), args: In) -> R
+where
+    In: VMArgs + 'static,
+    R: VMCast + 'static,
+    F: Fn<In, Output = R> + Sync + Send + 'static
+{
+    let unerased_func = &*(func as *const F);
+    unerased_func.call(args)
 }
 
 impl GCRef<TFunction> {
@@ -1029,8 +1065,8 @@ impl GCRef<TFunction> {
         match &self.kind {
             TFnKind::Function(code) =>
                 code.evaluate(self.module, arguments),
-            TFnKind::Nativefunc { traitfn, .. } =>
-                traitfn(self.module, arguments)
+            TFnKind::Nativefunc(n @ Nativefunc { traitfn, .. })=>
+                traitfn(n, self.module, arguments)
         }
     }
 
@@ -1042,8 +1078,7 @@ impl GCRef<TFunction> {
     {
         match &self.kind {
             TFnKind::Function(..) => CallResult::NotImplemented(args),
-            TFnKind::Nativefunc { fastcall, .. } =>
-                fastcall.try_call(args)
+            TFnKind::Nativefunc(..) => todo!()
         }
     }
 }
