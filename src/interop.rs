@@ -216,15 +216,13 @@ impl<In: VMArgs + 'static, R: VMDowncast + 'static> FnOnce<In> for TPolymorphicC
         match self.inner {
             CallableInner::Function(tfunction) => {
                 let vm = tfunction.vm();
-                /*match tfunction.fastcall(args) {
+                match tfunction.fastcall(args) {
                     CallResult::Result(result) => result,
                     CallResult::NotImplemented(args) => {
                         let buffer = args.encode(&vm);
                         R::vmdowncast(tfunction.call(buffer), &vm).unwrap()
                     }
-                }*/
-                let buffer = args.encode(&vm);
-                R::vmdowncast(tfunction.call(buffer), &vm).unwrap()
+                }
             }
             CallableInner::Polymorph(..) => todo!()
         }

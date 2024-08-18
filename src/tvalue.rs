@@ -986,11 +986,22 @@ struct Nativefunc {
 impl Nativefunc {
     unsafe fn call_unchecked<In, R>(&self, args: In) -> R
     where
-        In: VMArgs + 'static,
-        R: VMCast + 'static,
+        In: std::marker::Tuple + 'static,
+        R: 'static,
     {
         let fn_ptr: unsafe fn(*const(), In) -> R = transmute(self.fastcall);
         fn_ptr(self.closure, args)
+    }
+
+    fn call<In, R>(&self, args: In) -> CallResult<In ,R>
+    where
+        In: std::marker::Tuple + 'static,
+        R: 'static,
+    {
+        if self.id != TypeId::of::<(In, R)>() {
+            return CallResult::NotImplemented(args);
+        }
+        CallResult::Result(unsafe { self.call_unchecked(args) })
     }
 }
 
@@ -1051,8 +1062,8 @@ impl TFunction {
 
 unsafe fn fastcall<In, R, F>(func: *const (), args: In) -> R
 where
-    In: VMArgs + 'static,
-    R: VMCast + 'static,
+    In: std::marker::Tuple + 'static,
+    R: 'static,
     F: Fn<In, Output = R> + Sync + Send + 'static
 {
     let unerased_func = &*(func as *const F);
@@ -1078,7 +1089,7 @@ impl GCRef<TFunction> {
     {
         match &self.kind {
             TFnKind::Function(..) => CallResult::NotImplemented(args),
-            TFnKind::Nativefunc(..) => todo!()
+            TFnKind::Nativefunc(n) => n.call(args)
         }
     }
 }
