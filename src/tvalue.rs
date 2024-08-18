@@ -953,6 +953,15 @@ pub struct TFunction {
 }
 }
 
+#[repr(C)]
+pub enum TFnKind {
+    Function(TRawCode),
+    Nativefunc(Nativefunc)
+}
+
+unsafe impl std::marker::Sync for TFnKind {}
+unsafe impl std::marker::Send for TFnKind {}
+
 impl Typed for TFunction {
     fn initialize_entry(
             vm: &VM,
@@ -970,9 +979,79 @@ impl Typed for TFunction {
 
         ttype
     }
+
     fn initialize(vm: &VM) -> GCRef<TType> {
         unreachable!()
     }
+}
+
+impl TFunction {
+    pub fn rustfunc<In: VMArgs + 'static, R: VMCast + 'static, F: Fn<In, Output = R> + Sync + Send + 'static>(
+        module: GCRef<TModule>,
+        name: Option<&str>,
+        func: F
+    ) -> GCRef<TFunction> {
+        let vm = module.vm();
+
+        let id = TypeId::of::<(In, R)>();
+        let closure = Box::new(func);
+
+        let closure: *const _ = Box::leak(closure);
+
+        let mut func = vm.heap().allocate_atom(Self {
+            base: TObject::base(&vm, vm.types().query::<Self>()),
+            name: name.map(|name| TString::from_slice(&vm, name)),
+            module,
+            kind: TFnKind::Nativefunc(Nativefunc {
+                id,
+                closure: closure as *const (),
+                fastcall: fastcall::<In, R, F> as *const (),
+                traitfn: traitfn::<In, R>
+            })
+        });
+
+        func
+    }
+}
+
+impl GCRef<TFunction> {
+    #[inline(always)]
+    pub fn call(&self, arguments: TArgsBuffer) -> TValue {
+        match &self.kind {
+            TFnKind::Function(code) =>
+                code.evaluate(self.module, arguments),
+            TFnKind::Nativefunc(n @ Nativefunc { traitfn, .. })=>
+                traitfn(n, self.module, arguments)
+        }
+    }
+
+    #[inline(always)]
+    pub fn fastcall<In, R>(&self, args: In) -> CallResult<In, R>
+    where
+        In: std::marker::Tuple + 'static,
+        R: 'static
+    {
+        match &self.kind {
+            TFnKind::Function(..) => CallResult::NotImplemented(args),
+            TFnKind::Nativefunc(n) => n.call(args)
+        }
+    }
+}
+
+fn traitfn<In, R>(this: &Nativefunc, module: GCRef<TModule>, args: TArgsBuffer) -> TValue
+where
+    In: VMArgs + 'static,
+    R: VMCast + 'static
+{
+    let vm = module.vm();
+    let decoded_args = In::try_decode(&vm, args).unwrap();
+    let result = unsafe { this.call_unchecked(decoded_args) };
+    R::vmcast(result, &vm)
+}
+
+pub enum CallResult<In, R> {
+    NotImplemented(In),
+    Result(R)
 }
 
 #[repr(C)]
@@ -1005,61 +1084,6 @@ impl Nativefunc {
     }
 }
 
-
-#[repr(C)]
-pub enum TFnKind {
-    Function(TRawCode),
-    Nativefunc(Nativefunc)
-}
-
-unsafe impl std::marker::Sync for TFnKind {}
-unsafe impl std::marker::Send for TFnKind {}
-
-fn traitfn<In, R>(this: &Nativefunc, module: GCRef<TModule>, args: TArgsBuffer) -> TValue
-where
-    In: VMArgs + 'static,
-    R: VMCast + 'static
-{
-    let vm = module.vm();
-    let decoded_args = In::try_decode(&vm, args).unwrap();
-    let result = unsafe { this.call_unchecked(decoded_args) };
-    R::vmcast(result, &vm)
-}
-
-impl TFunction {
-    pub fn rustfunc<In: VMArgs + 'static, R: VMCast + 'static, F: Fn<In, Output = R> + Sync + Send + 'static>(
-        module: GCRef<TModule>,
-        name: Option<&str>,
-        func: F
-    ) -> GCRef<TFunction> {
-        let vm = module.vm();
-
-        let id = TypeId::of::<(In, R)>();
-        let closure = Box::new(func);
-
-        let closure: *const _ = Box::leak(closure);
-
-        /*let ptr: unsafe fn(args: In) -> R = |args| {
-        };*/
-
-        // let fastcall = Fastcall::new(func);
-
-        let mut func = vm.heap().allocate_atom(Self {
-            base: TObject::base(&vm, vm.types().query::<Self>()),
-            name: name.map(|name| TString::from_slice(&vm, name)),
-            module,
-            kind: TFnKind::Nativefunc(Nativefunc {
-                id,
-                closure: closure as *const (),
-                fastcall: fastcall::<In, R, F> as *const (),
-                traitfn: traitfn::<In, R>
-            })
-        });
-
-        func
-    }
-}
-
 unsafe fn fastcall<In, R, F>(func: *const (), args: In) -> R
 where
     In: std::marker::Tuple + 'static,
@@ -1068,165 +1092,6 @@ where
 {
     let unerased_func = &*(func as *const F);
     unerased_func.call(args)
-}
-
-impl GCRef<TFunction> {
-    #[inline(always)]
-    pub fn call(&self, arguments: TArgsBuffer) -> TValue {
-        match &self.kind {
-            TFnKind::Function(code) =>
-                code.evaluate(self.module, arguments),
-            TFnKind::Nativefunc(n @ Nativefunc { traitfn, .. })=>
-                traitfn(n, self.module, arguments)
-        }
-    }
-
-    #[inline(always)]
-    pub fn fastcall<In, R>(&self, args: In) -> CallResult<In, R>
-    where
-        In: std::marker::Tuple + 'static,
-        R: 'static
-    {
-        match &self.kind {
-            TFnKind::Function(..) => CallResult::NotImplemented(args),
-            TFnKind::Nativefunc(n) => n.call(args)
-        }
-    }
-}
-
-pub enum CallResult<In, R> {
-    NotImplemented(In),
-    Result(R)
-}
-
-#[repr(C)]
-struct Fastcall<F> {
-    id: TypeId,
-    fast_drop: unsafe fn(NonNull<Fastcall<()>>),
-    fast_call: *const (),
-    func: F
-}
-
-impl<F> Fastcall<F> {
-    pub fn new<In, R>(func: F) -> Fastcall<F>
-    where
-        In: std::marker::Tuple + 'static,
-        R: 'static,
-        F: FnOnce<In, Output = R> + Copy
-    {
-        let id = TypeId::of::<(In, R)>();
-        Fastcall {
-            id,
-            fast_drop: fast_drop::<In, R, F>,
-            fast_call: fast_call::<In, R, F> as *const (),
-            func
-        }
-    }
-}
-
-impl Fastcall<()> {
-    #[inline(always)]
-    fn try_call<In, R>(&self, args: In) -> CallResult<In, R> 
-    where
-        In: std::marker::Tuple + 'static,
-        R: 'static,
-    {
-        let id = TypeId::of::<(In, R)>();
-        if self.id != id {
-            return CallResult::NotImplemented(args);
-        }
-        unsafe {
-            let fast_call: unsafe fn(&Fastcall<()>, In) -> R = transmute(self.fast_call);
-            CallResult::Result(fast_call(self, args))
-        }
-    }
-}
-
-impl<F> Drop for Fastcall<F> {
-    fn drop(&mut self) {
-        unsafe {
-            let ereased_ref: &mut Fastcall<()> = memory::mutcast(self);
-            let erased_owned = ereased_ref.into();
-            (self.fast_drop)(erased_owned);
-        }
-    }
-}
-
-unsafe fn fast_drop<In, R, F>(mut fastcall: NonNull<Fastcall<()>>)
-where
-    In: std::marker::Tuple,
-    F: FnOnce<In, Output = R> + Copy
-{
-    let unerased_type: &mut Fastcall<F> = memory::mutcast(fastcall.as_mut());
-    std::ptr::drop_in_place(unerased_type);
-}
-
-unsafe fn fast_call<In, R, F>(fastcall: &Fastcall<()>, args: In) -> R
-where
-    In: std::marker::Tuple,
-    F: FnOnce<In, Output = R> + Copy
-{
-    let unerased_type: &Fastcall<F> = memory::refcast(fastcall);
-    unerased_type.func.call_once(args)
-}
-
-#[repr(C)]
-struct FnOnceTrait<F = ()> {
-    vtable: &'static FnOnceTable,
-    func: F,
-}
-
-#[repr(C)]
-struct FnOnceTable {
-    func_drop: unsafe fn(NonNull<FnOnceTrait>),
-    func_call: unsafe fn(&'_ FnOnceTrait, GCRef<TModule>, TArgsBuffer) -> TValue,
-}
-
-impl<F: FnOnce(GCRef<TModule>, TArgsBuffer) -> TValue + Copy> FnOnceTrait<F> {
-    fn new(func: F) -> Self {
-        let vtable = &FnOnceTable {
-            func_drop: func_drop::<F>,
-            func_call: func_call::<F>
-        };
-        Self {
-            vtable,
-            func,
-        }
-    }
-}
-
-impl FnOnceTrait {
-    fn call(&self, module: GCRef<TModule>, args: TArgsBuffer) -> TValue {
-        unsafe {
-            (self.vtable.func_call)(self, module, args)
-        }
-    }
-}
-
-impl<T> Drop for FnOnceTrait<T> {
-    fn drop(&mut self) {
-        unsafe {
-            let erased_ref: &mut FnOnceTrait<()> = memory::mutcast(self);
-            let erased_owned = erased_ref.into();
-            (self.vtable.func_drop)(erased_owned)
-        }
-    }
-}
-
-unsafe fn func_drop<F>(mut f: NonNull<FnOnceTrait>)
-where
-    F: FnOnce(GCRef<TModule>, TArgsBuffer) -> TValue + Copy
-{
-    let unerased_type: &mut FnOnceTrait<F> = memory::mutcast(f.as_mut());
-    std::ptr::drop_in_place(unerased_type);
-}
-
-unsafe fn func_call<F>(f: &'_ FnOnceTrait, module: GCRef<TModule>, args: TArgsBuffer) -> TValue
-where
-    F: FnOnce(GCRef<TModule>, TArgsBuffer) -> TValue + Copy
-{
-    let unerased_type: &'_ FnOnceTrait<F> = memory::refcast(f);
-    (unerased_type.func)(module, args)
 }
 
 #[inline(always)]
@@ -1258,7 +1123,6 @@ where
 
 pub fn print(module: GCRef<TModule>, msg: TValue) {
     let vm = module.vm();
-    println!("print({:?})", msg.kind());
     // let msg: GCRef<TString> = tcall!(&vm, TValue::toString(msg));
     let msg: GCRef<TString> = {
         let resolved_func: TPolymorphicCallable<_, _> = resolve_by_symbol(&vm, Symbol![toString], msg);
@@ -1267,22 +1131,3 @@ pub fn print(module: GCRef<TModule>, msg: TValue) {
 
     println!("{msg}");
 }
-
-pub fn module_init(mut module: GCRef<TModule>) {
-    // let print_function = TFunction::nativefunc(module, Some("print"), print_impl);
-    // module.set_global(module.vm().symbols().intern_slice("print"), print_function.into(), true).unwrap();
-    todo!()
-}
-
-
-// #[repr(C)]
-
-// --- TType's ---
-// TBool
-// TInt
-// TFloat
-// TString
-// TFunction
-// TObject
-// TType (TType as a subtype of TObject makes sense)
-

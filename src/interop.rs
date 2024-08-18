@@ -197,7 +197,6 @@ impl<In: VMArgs, R: VMDowncast> VMCast for TPolymorphicCallable<In, R> {
 impl<In: VMArgs, R: VMDowncast> VMDowncast for TPolymorphicCallable<In, R> {
     fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
         if let Some(tfunction) = value.query_object::<TFunction>(vm) {
-            println!("{:?}", tfunction.name);
             return Some(Self {
                 inner: CallableInner::Function(tfunction),
                 _phantom: PhantomData::default()
