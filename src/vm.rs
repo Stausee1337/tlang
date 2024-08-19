@@ -1,7 +1,7 @@
 use std::{rc::Rc, any::TypeId, sync::OnceLock, hash::BuildHasherDefault};
 
 use ahash::AHasher;
-use hashbrown::hash_map::RawEntryMut;
+use hashbrown::hash_map::{RawEntryMut, RawVacantEntryMut};
 
 use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, self, TString, TValue, Typed, TProperty, Accessor, TObject, TFunction, TInteger, TBool}};
 
@@ -207,19 +207,18 @@ impl RustTypeInterner {
 }
 
 impl GCRef<RustTypeInterner> {
-    #[inline(never)]
-    fn raw_entry_mut(&mut self, key: TypeId) -> RawEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>> {
-        self.0.raw_entry_mut().from_key(&key)
-    }
+    // return T::initialize_entry(&vm, entry);
 
-    pub fn query<T: Typed>(mut self) -> GCRef<TType> {
+    #[inline(never)]
+    pub fn query<T: Typed>(&mut self) -> GCRef<TType> {
         let vm = self.vm();
 
         let key = TypeId::of::<T>();
-        let entry = self.raw_entry_mut(key);
+        let entry = self.0.raw_entry_mut().from_key(&key);
         match entry {
             RawEntryMut::Occupied(ty) => *ty.get(),
             RawEntryMut::Vacant(vacant) => {
+                // todo!("initialize vacant entry {:p}", vm);
                 T::initialize_entry(&vm, vacant)
             }
         }
@@ -286,7 +285,6 @@ impl GCRef<TModule> {
     }
 
     pub fn get_global(&self, name: Symbol) -> Result<TValue, GlobalErr> {
-        println!("{name:?} {}", self.vm().symbols().get(name));
         self.table.find(
             name.hash(),
             |entry| entry.0 == name

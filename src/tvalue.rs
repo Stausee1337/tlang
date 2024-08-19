@@ -339,7 +339,14 @@ impl TObject {
         }
     }
 
-    pub fn get_attribute(&self, name: Symbol, value: TValue) -> Option<TValue> {
+    fn base_with_descriptor(
+        vm: &VM, ty: GCRef<TType>, descriptor: Option<GCRef<HashTable<(Symbol, TValue)>>>) -> Self {
+        Self {
+            ty, descriptor,
+        }
+    }
+
+    pub fn get_attribute(&self, name: Symbol) -> Option<TValue> {
         let Some(descriptor) = &self.descriptor else {
             debug_assert!(!self.ty.variable);
             panic!("cannot get attribute on fixed type");
@@ -366,10 +373,6 @@ impl TObject {
             }
         }
     }
-
-    fn uninit() -> Self {
-        unsafe { MaybeUninit::uninit().assume_init() }
-    }
 }
 
 impl Typed for TObject {
@@ -378,7 +381,7 @@ impl Typed for TObject {
             entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
         ) -> GCRef<TType> {
         let mut ttype = vm.heap().allocate_atom(TType {
-            base: Self::uninit(),
+            base: Self::base_with_descriptor(vm, unsafe { GCRef::null() }, None),
             basesize: std::mem::size_of::<Self>(),
             basety: None, // There's nothing above Object in the hierarchy
             name: TString::from_slice(vm, "object"),
@@ -386,7 +389,8 @@ impl Typed for TObject {
             variable: true
         });
         entry.insert(TypeId::of::<Self>(), ttype);
-        ttype.base = TObject::base(vm, ttype);
+
+        ttype.base = TObject::base(vm, vm.types().query::<TType>());
 
         ttype.define_method(Symbol![eq], TFunction::rustfunc(
                 vm.modules().empty(), Some("object::eq"), |this: TValue, other: TValue| {
@@ -844,23 +848,30 @@ impl GCRef<TType> {
     }
 }
 
+impl Atom for i32 {
+    fn visit(&self, visitor: &mut Visitor) {
+        todo!()
+    }
+}
+
 impl Typed for TType {
     fn initialize_entry(
             vm: &VM,
             entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
         ) -> GCRef<TType> {
         let mut ttype = vm.heap().allocate_atom(TType {
-            base: TObject::uninit(),
+            base: TObject::base_with_descriptor(vm, unsafe { GCRef::null() }, None),
             basety: None,
             basesize: std::mem::size_of::<Self>(),
             name: TString::from_slice(vm, "type"),
             modname: TString::from_slice(vm, "prelude"),
             variable: true
         });
+        let int = vm.heap().allocate_atom(12);
         entry.insert(TypeId::of::<Self>(), ttype);
 
-        ttype.basety = Some(vm.types().query::<TObject>());
         ttype.base = TObject::base(vm, ttype);
+        ttype.basety = Some(vm.types().query::<TObject>());
 
         ttype.define_property(
             Symbol![basety],
@@ -1111,7 +1122,7 @@ where
 {
     let value = value.vmcast(vm);
     if let Some(tobject) = value.query_tobject() {
-        if let Some(found) = tobject.get_attribute(name, value) {
+        if let Some(found) = tobject.get_attribute(name) {
             return R::vmdowncast(found, vm).unwrap();
         }
     }
@@ -1120,7 +1131,7 @@ where
     let mut mut_current = value.ttype(vm);
 
     while let Some(current) = mut_current {
-        if let Some(val) = current.base.get_attribute(name, value) {
+        if let Some(val) = current.base.get_attribute(name) {
             found = Some(val);
             break;
         }

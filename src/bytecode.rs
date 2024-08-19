@@ -608,15 +608,15 @@ impl BytecodeGenerator {
     }
 
     pub fn root_function(self) -> GCRef<TFunction> {
-        struct N;
-        let mut n = N;
-        impl std::fmt::Write for N {
-            fn write_str(&mut self, s: &str) -> FmtResult {
-                print!("{s}");
-                Ok(())
-            }
-        }
-        FunctionDisassembler::dissassemble(&self.root_fn, &mut n).unwrap();
+        // struct N;
+        // let mut n = N;
+        // impl std::fmt::Write for N {
+        //     fn write_str(&mut self, s: &str) -> FmtResult {
+        //         print!("{s}");
+        //         Ok(())
+        //     }
+        // }
+        // FunctionDisassembler::dissassemble(&self.root_fn, &mut n).unwrap();
         TFunction::from_codegen(&self.vm(), self.root_fn, self.module)
     }
 }
