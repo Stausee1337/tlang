@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use convert_case::{Casing, Case};
 use proc_macro2::{TokenStream, Ident, Span};

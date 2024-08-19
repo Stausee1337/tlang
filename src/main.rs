@@ -8,15 +8,9 @@ use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
 extern crate self as tlang;
 
 use bumpalo::Bump;
-use eval::TArgsBuffer;
 use getopts::{Options, ParsingStyle};
-use interop::TPolymorphicCallable;
-use memory::GCRef;
-use serde::{Deserialize, Deserializer, Serialize};
-use tvalue::{TString, TFunction, TInteger};
-use vm::TModule;
 
-use crate::{bytecode::BytecodeGenerator, tvalue::TValue, interop::VMCast, symbol::Symbol};
+use crate::{bytecode::BytecodeGenerator, interop::TPolymorphicCallable,  tvalue::{TString, TFunction}, symbol::Symbol, vm::TModule};
 
 mod lexer;
 mod symbol;

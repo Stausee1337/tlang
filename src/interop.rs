@@ -1,6 +1,6 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, cell::{Cell, OnceCell}, mem::MaybeUninit, rc::Rc};
 
-use crate::{memory::GCRef, tvalue::{TObject, TValue, TString, Typed, TInteger, TFunction, CallResult}, vm::VM, eval::TArgsBuffer};
+use crate::{memory::GCRef, tvalue::{TObject, TValue, TString, Typed, TInteger, TFunction, CallResult, TProperty}, vm::VM, eval::TArgsBuffer};
 
 
 pub struct TPolymorphicWrapper<T: TPolymorphicObject> {
@@ -233,6 +233,120 @@ impl<In: VMArgs, R: VMDowncast> From<GCRef<TFunction>> for TPolymorphicCallable<
         Self {
             inner: CallableInner::Function(value),
             _phantom: PhantomData::default()
+        }
+    }
+}
+
+pub trait VMPropertyCast {
+    fn propcast(this: TValue, value: &mut TValue, vm: &VM) -> Self;
+}
+
+impl<T: VMDowncast> VMPropertyCast for T {
+    fn propcast(_this: TValue, value: &mut TValue, vm: &VM) -> T {
+        T::vmdowncast(*value, vm).unwrap()
+    }
+}
+
+enum AccessKind {
+    Property {
+        property: GCRef<TProperty>,
+        this: TValue,
+    },
+    Attribute {
+        vm: Rc<VM>,
+        attribute_val: *mut TValue,
+    }
+}
+
+pub struct TPropertyAccess<T: VMDowncast + VMCast + Copy + 'static> {
+    copy: OnceCell<T>,
+    place: MaybeUninit<T>,
+    write: bool,
+    kind: AccessKind
+}
+
+impl<T: VMDowncast + VMCast + Copy + 'static> VMPropertyCast for TPropertyAccess<T> {
+    fn propcast(this: TValue, value: &mut TValue, vm: &VM) -> Self {
+        if let Some(property) = GCRef::<TProperty>::vmdowncast(*value, vm) {
+            return TPropertyAccess {
+                kind: AccessKind::Property {
+                    property, this,
+                },
+                copy: OnceCell::new(),
+                place: MaybeUninit::uninit(),
+                write: false
+            };
+        }
+        TPropertyAccess {
+            kind: AccessKind::Attribute {
+                vm: vm.heap().vm(),
+                attribute_val: &mut *value,
+            },
+            copy: OnceCell::new(),
+            place: MaybeUninit::uninit(),
+            write: false
+        }
+    }
+}
+
+impl<T: VMDowncast + VMCast + Copy + 'static> TPropertyAccess<T> {
+    fn get(&self) -> &T {
+        if let Some(value) = self.copy.get() {
+            return value;
+        }
+        match &self.kind {
+            AccessKind::Property { property, this } => {
+                let Some(getter) = property.get else {
+                    panic!("cannot get property");
+                };
+                let getter: TPolymorphicCallable<_, T> = getter.into();
+                let value = getter(*this);
+                self.copy.set(value);
+                return self.get();
+            }
+            AccessKind::Attribute { attribute_val: value, vm } => {
+                let value = T::vmdowncast(unsafe { **value }, &vm).unwrap(); 
+                self.copy.set(value);
+                return self.get();
+            }
+        }
+    }
+}
+
+impl<T: VMDowncast + VMCast + Copy + 'static> std::ops::Deref for TPropertyAccess<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        self.get()
+    }
+}
+
+impl<T: VMDowncast + VMCast + Copy + 'static> std::ops::DerefMut for TPropertyAccess<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.write = true;
+        unsafe { self.place.assume_init_mut() }
+    }
+}
+
+impl<T: VMDowncast + VMCast + Copy + 'static> std::ops::Drop for TPropertyAccess<T> {
+    fn drop(&mut self) {
+        if !self.write {
+            return;
+        }
+        let value = unsafe { self.place.assume_init() };
+        match &mut self.kind {
+            AccessKind::Property { property, this } => {
+                let Some(setter) = property.set else {
+                    panic!("cannot set property");
+                };
+                let setter: TPolymorphicCallable<_, ()> = setter.into();
+                setter(*this, value);
+            }
+            AccessKind::Attribute { attribute_val, vm } => {
+                unsafe {
+                    std::ptr::drop_in_place(&mut *vm);
+                    **attribute_val = T::vmcast(value, vm);
+                }
+            }
         }
     }
 }

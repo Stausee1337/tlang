@@ -6,7 +6,7 @@ use allocator_api2::alloc::Global;
 use hashbrown::{hash_map::RawVacantEntryMut, HashTable, hash_table::Entry};
 use tlang_macros::tcall;
 
-use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast, TPolymorphicCallable}};
+use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast, TPolymorphicCallable, TPropertyAccess}, debug};
 
 
 macro_rules! __tobject_struct {
@@ -346,14 +346,15 @@ impl TObject {
         }
     }
 
-    pub fn get_attribute(&self, name: Symbol) -> Option<TValue> {
-        let Some(descriptor) = &self.descriptor else {
+    pub fn get_attribute(&mut self, name: Symbol) -> Option<&mut TValue> {
+        let Some(descriptor) = &mut self.descriptor else {
             debug_assert!(!self.ty.variable);
             panic!("cannot get attribute on fixed type");
         };
-        descriptor
-            .find(name.hash, |val| val.0 == name)
-            .map(|val| val.1)
+        if let Some(val) = descriptor.find_mut(name.hash, |val| val.0 == name) {
+            return Some(&mut val.1);
+        }
+        None
     }
 
     pub fn set_attribute(&mut self, name: Symbol, value: TValue) {
@@ -1142,8 +1143,8 @@ impl Typed for TType {
 
 bitflags::bitflags! {
     pub struct Accessor: u8 {
-        const GET = 0b1;
-        const SET = 0b1;
+        const GET = 0b10;
+        const SET = 0b01;
     }
 }
 
@@ -1363,31 +1364,29 @@ where
 }
 
 #[inline(always)]
-pub fn resolve_by_symbol<T, R>(vm: &VM, name: Symbol, value: T) -> R
+pub fn resolve_by_symbol<'v, T, R>(vm: &VM, name: Symbol, value: T) -> R
 where
     T: VMCast,
-    R: VMDowncast
+    R: tlang::interop::VMPropertyCast
 {
     let value = value.vmcast(vm);
-    if let Some(tobject) = value.query_tobject() {
+    if let Some(mut tobject) = value.query_tobject() {
         if let Some(found) = tobject.get_attribute(name) {
-            return R::vmdowncast(found, vm).unwrap();
+            return R::propcast(value, found, vm);
         }
     }
     
-    let mut found = None;
     let mut mut_current = value.ttype(vm);
 
-    while let Some(current) = mut_current {
+    while let Some(mut current) = mut_current {
         if let Some(val) = current.base.get_attribute(name) {
-            found = Some(val);
-            break;
+            return R::propcast(value, val, vm)
+        } else {
+            mut_current = current.basety.clone();
         }
-        mut_current = current.basety;
     }
-
-    let found = found.unwrap();
-    R::vmdowncast(found, vm).unwrap()
+    
+    panic!("Could not find property");
 }
 
 pub fn print(module: GCRef<TModule>, msg: TValue) {
@@ -1396,6 +1395,8 @@ pub fn print(module: GCRef<TModule>, msg: TValue) {
         println!("null");
         return;
     }
-    let msg: GCRef<TString> = tcall!(&vm, TValue::toString(msg));
-    println!("{msg}");
+
+    let msg_str: GCRef<TString> = tcall!(&vm, TValue::toString(msg));
+
+    println!("{msg_str}");
 }
