@@ -7,7 +7,7 @@ use crate::{
     memory::GCRef,
     symbol::Symbol,
     tvalue::{TBool, TFunction, TInteger, TValue},
-    interop::{VMDowncast, TPolymorphicCallable},
+    interop::VMDowncast,
     vm::{TModule, VM},
     debug
 };
@@ -109,6 +109,10 @@ impl TRawCode {
                     OpCode::BitwiseAnd => impls::bitand(vm, env, &mut deserializer),
                     OpCode::BitwiseOr => impls::bitor(vm, env, &mut deserializer),
                     OpCode::BitwiseXor => impls::bitxor(vm, env, &mut deserializer),
+
+                    OpCode::Neg => impls::neg(vm, env, &mut deserializer),
+                    OpCode::Not => impls::not(vm, env, &mut deserializer),
+                    OpCode::Invert => impls::invert(vm, env, &mut deserializer),
 
                     OpCode::GetGlobal => {
                         decode!(&mut deserializer, env, GetGlobal { symbol, mut dst });
@@ -348,5 +352,40 @@ mod impls {
         impl eq for BranchEq; impl ne for BranchNe;
         impl gt for BranchGt; impl ge for BranchGe;
         impl lt for BranchLt; impl le for BranchLe;
+    }
+
+    #[inline(always)]
+    pub fn neg<'de>(vm: &VM, env: &mut ExecutionEnvironment, deserializer: &mut Deserializer<'de>) {
+        decode!(deserializer, env, Neg { src, mut dst });
+        if let Some(int) = src.query_integer() {
+            *dst = int.neg().into();
+            return;
+        } else if let Some(float) = src.query_float() {
+            *dst = float.neg().into();
+            return;
+        }
+        *dst = tcall!(vm, TValue::neg(src));
+    }
+
+    #[inline(always)]
+    pub fn invert<'de>(vm: &VM, env: &mut ExecutionEnvironment, deserializer: &mut Deserializer<'de>) {
+        use crate::interop::vmops::Invert;
+
+        decode!(deserializer, env, Invert { src, mut dst });
+        if let Some(int) = src.query_integer() {
+            *dst = int.invert().into();
+            return;
+        }
+        *dst = tcall!(vm, TValue::invert(src));
+    }
+
+    #[inline(always)]
+    pub fn not<'de>(vm: &VM, env: &mut ExecutionEnvironment, deserializer: &mut Deserializer<'de>) {
+        decode!(deserializer, env, Not { src, mut dst });
+        if let Some(int) = src.query_bool() {
+            *dst = int.not().into();
+            return;
+        }
+        *dst = tcall!(vm, TValue::not(src));
     }
 }

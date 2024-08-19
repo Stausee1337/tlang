@@ -103,6 +103,16 @@ pub fn try_as_isize<'a>(_bigint: impl Into<SignedSlice<'a>>) -> Option<isize> {
     todo!()
 }
 
+// UNARY
+
+pub fn neg<'a>(_this: impl Into<SignedSlice<'a>>) -> GCRef<TBigint> {
+    todo!()
+}
+
+pub fn invert<'a>(_this: impl Into<SignedSlice<'a>>) -> GCRef<TBigint> {
+    todo!()
+}
+
 // COMPARISONS
 
 pub fn lt<'a>(_lhs: impl Into<SignedSlice<'a>>, _rhs: impl Into<SignedSlice<'a>>) -> bool {

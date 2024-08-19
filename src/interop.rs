@@ -265,5 +265,10 @@ pub mod vmops {
     define_trait!(Ge, ge);
     define_trait!(Lt, lt);
     define_trait!(Le, le);
+
+    pub trait Invert {
+        type Output;
+        fn invert(self) -> Self::Output;
+    }
 }
 

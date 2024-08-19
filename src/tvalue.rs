@@ -425,14 +425,6 @@ impl Atom for HashTable<(Symbol, TValue)> {
 #[derive(Clone, Copy)]
 pub struct TBool(bool);
 
-impl std::ops::Not for TBool {
-    type Output = Self;
-
-    fn not(self) -> Self::Output {
-        TBool(!self.0)
-    }
-}
-
 impl TBool {
     #[inline(always)]
     pub const fn as_bool(self) -> bool {
@@ -479,6 +471,22 @@ impl VMDowncast for TBool {
     fn vmdowncast(value: TValue, _vm: &VM) -> Option<Self> {
         value.query_bool()
     }
+}
+
+impl std::ops::Not for TBool {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        TBool(!self.0)
+    }
+}
+
+pub fn bool_init_unarys(mut ttype: GCRef<TType>) {
+    let vm = ttype.vm();
+
+    ttype.define_method(Symbol![not], TFunction::rustfunc(
+            vm.modules().empty(), Some("bool::not"),
+            <TBool as std::ops::Not>::not));
 }
 
 #[repr(C)]
@@ -648,14 +656,14 @@ impl GetHash for GCRef<TString> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum IntegerKind {
+enum IntegerKind {
     Int32(i32),
     Bigint(GCRef<TBigint>),
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct TInteger(pub(super) IntegerKind);
+pub struct TInteger(IntegerKind);
 
 impl TInteger {
     pub fn as_usize(&self) -> Option<usize> {
@@ -711,6 +719,50 @@ impl Display for TInteger {
             IntegerKind::Bigint(bigint) => bigint.fmt(f)
         }
     }
+}
+
+impl std::ops::Neg for TInteger {
+    type Output = Self;
+
+    #[inline(always)]
+    fn neg(self) -> Self::Output {
+        match self.0 {
+            IntegerKind::Int32(int) => {
+                let kind = int.checked_neg()
+                    .map(|int| IntegerKind::Int32(int))
+                    .unwrap_or_else(|| IntegerKind::Bigint(bigint::neg(&to_bigint(int))));
+                TInteger(kind)
+            }
+            IntegerKind::Bigint(bigint) =>
+                TInteger(IntegerKind::Bigint(bigint::neg(bigint)))
+        }
+    }
+}
+
+impl crate::interop::vmops::Invert for TInteger {
+    type Output = Self;
+
+    #[inline(always)]
+    fn invert(self) -> Self::Output {
+        match self.0 {
+            IntegerKind::Int32(int) =>
+                TInteger(IntegerKind::Int32(!int)),
+            IntegerKind::Bigint(bigint) =>
+                TInteger(IntegerKind::Bigint(bigint::invert(bigint)))
+        }
+    }
+}
+
+pub fn int_init_unarys(mut ttype: GCRef<TType>) {
+    let vm = ttype.vm();
+
+    ttype.define_method(Symbol![neg], TFunction::rustfunc(
+            vm.modules().empty(), Some("int::neg"),
+            <TInteger as std::ops::Neg>::neg));
+
+    ttype.define_method(Symbol![invert], TFunction::rustfunc(
+            vm.modules().empty(), Some("int::invert"),
+            <TInteger as crate::interop::vmops::Invert>::invert));
 }
 
 macro_rules! impl_int_safe {
@@ -895,6 +947,22 @@ impl VMDowncast for TFloat {
     }
 }
 
+impl std::ops::Neg for TFloat {
+    type Output = Self;
+
+    #[inline(always)]
+    fn neg(self) -> Self::Output {
+        TFloat(-self.0)
+    }
+}
+
+pub fn float_init_unarys(mut ttype: GCRef<TType>) {
+    let vm = ttype.vm();
+
+    ttype.define_method(Symbol![neg], TFunction::rustfunc(
+            vm.modules().empty(), Some("float::neg"),
+            <TInteger as std::ops::Neg>::neg));
+}
 
 macro_rules! impl_float_arithmetic {
     ($op:ident, $ty:ident, $fn:ident) => { 
