@@ -128,7 +128,12 @@ impl TRawCode {
                         }
                     }
 
-                    OpCode::BranchEq => impls::branch_eq(vm, env, &mut deserializer),
+                    OpCode::BranchEq => impls::eq(vm, env, &mut deserializer),
+                    OpCode::BranchNe => impls::ne(vm, env, &mut deserializer),
+                    OpCode::BranchGt => impls::gt(vm, env, &mut deserializer),
+                    OpCode::BranchGe => impls::ge(vm, env, &mut deserializer),
+                    OpCode::BranchLt => impls::lt(vm, env, &mut deserializer),
+                    OpCode::BranchLe => impls::le(vm, env, &mut deserializer),
 
                     OpCode::Return => {
                         decode!(&mut deserializer, env, Return { value });
@@ -300,7 +305,7 @@ mod impls {
                     *dst = lhs.$fnname(rhs).into();
                     return;
                 }
-                todo!()
+                *dst = tcall!(vm, TValue::$fnname(lhs, rhs));
             }
         };
     }
@@ -319,12 +324,29 @@ mod impls {
         impl bitand for BitwiseAnd; impl bitor for BitwiseOr; impl bitxor for BitwiseXor;
     }
 
-    pub fn branch_eq<'de>(vm: &VM, env: &ExecutionEnvironment, deserializer: &mut Deserializer<'de>) {
-        decode!(deserializer, env, BranchEq { lhs, rhs, true_target, false_target });
-        if TBool::as_bool(tcall!(vm, TValue::eq(lhs, rhs))) {
-            deserializer.stream().jump(true_target);
-        } else {
-            deserializer.stream().jump(false_target);
-        }
+    macro_rules! branch_impl {
+        ($fnname:ident, $inname:ident) => {    
+            #[inline(always)]
+            pub fn $fnname<'de>(vm: &VM, env: &ExecutionEnvironment, deserializer: &mut Deserializer<'de>) {
+                decode!(deserializer, env, $inname { lhs, rhs, true_target, false_target });
+                if TBool::as_bool(tcall!(vm, TValue::$fnname(lhs, rhs))) {
+                    deserializer.stream().jump(true_target);
+                } else {
+                    deserializer.stream().jump(false_target);
+                }
+            }
+        };
+    }
+
+    macro_rules! iterate_branches {
+        ($(impl $fnname:ident for $inname:ident;)*) => {
+            $(branch_impl!($fnname, $inname);)*
+        };
+    }
+
+    iterate_branches! {
+        impl eq for BranchEq; impl ne for BranchNe;
+        impl gt for BranchGt; impl ge for BranchGe;
+        impl lt for BranchLt; impl le for BranchLe;
     }
 }

@@ -1,9 +1,9 @@
-use std::{rc::Rc, any::TypeId, sync::OnceLock, hash::BuildHasherDefault};
+use std::{rc::Rc, any::TypeId, sync::OnceLock};
 
-use ahash::AHasher;
-use hashbrown::hash_map::{RawEntryMut, RawVacantEntryMut};
+use hashbrown::hash_map::RawEntryMut;
 
-use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, self, TString, TValue, Typed, TProperty, Accessor, TObject, TFunction, TInteger, TBool}};
+use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, TString, TValue, Typed, TObject, TFunction, TInteger, TBool, TFloat, self}, interop::VMCast};
+use tlang_macros::tcall;
 
 #[macro_export]
 #[cfg(debug_assertions)]
@@ -79,6 +79,7 @@ impl VM {
 }
 
 pub struct Primitives {
+    float: OnceLock<GCRef<TType>>,
     int: OnceLock<GCRef<TType>>,
     bool: OnceLock<GCRef<TType>>,
     string: OnceLock<GCRef<TType>>
@@ -87,6 +88,7 @@ pub struct Primitives {
 impl Primitives {
     fn lazy() -> Self {
         Primitives {
+            float: OnceLock::new(),
             int: OnceLock::new(),
             string: OnceLock::new(),
             bool: OnceLock::new()
@@ -95,8 +97,30 @@ impl Primitives {
 }
 
 impl GCRef<Primitives> {
-    pub fn float_type(&self) -> GCRef<TType> {
-        todo!()
+    pub fn float_type(self) -> GCRef<TType> {
+        *self.float.get_or_init(|| {
+            let vm = self.vm();
+            let mut ttype = vm.heap().allocate_atom(TType {
+                base: TObject::base(&vm, vm.types().query::<TType>()),
+                basety: Some(vm.types().query::<TObject>()),
+                basesize: 0, // primitive
+                name: TString::from_slice(&vm, "float"),
+                modname: TString::from_slice(&vm, "prelude"),
+                variable: false
+            });
+
+            ttype.define_method(Symbol![toString], TFunction::rustfunc(
+                    vm.modules().empty(), Some("float::toString"),
+                    move |this: TFloat| {
+                        let vm = self.vm();
+                        TString::from_slice(&vm, &format!("{this}"))
+                    }));
+
+            tvalue::float_init_arithmetics(ttype);
+            tvalue::float_init_cmps(ttype);
+
+            ttype
+        })
     }
 
     pub fn int_type(self) -> GCRef<TType> {
@@ -117,6 +141,9 @@ impl GCRef<Primitives> {
                         let vm = self.vm();
                         TString::from_slice(&vm, &format!("{this}"))
                     }));
+
+            tvalue::int_init_arithmetics(ttype);
+            tvalue::int_init_cmps(ttype);
 
             ttype
         })
@@ -207,7 +234,6 @@ impl RustTypeInterner {
 }
 
 impl GCRef<RustTypeInterner> {
-    // return T::initialize_entry(&vm, entry);
 
     #[inline(never)]
     pub fn query<T: Typed>(&mut self) -> GCRef<TType> {
@@ -218,7 +244,6 @@ impl GCRef<RustTypeInterner> {
         match entry {
             RawEntryMut::Occupied(ty) => *ty.get(),
             RawEntryMut::Vacant(vacant) => {
-                // todo!("initialize vacant entry {:p}", vm);
                 T::initialize_entry(&vm, vacant)
             }
         }

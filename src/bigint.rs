@@ -91,11 +91,33 @@ pub fn to_bigint(int: i32) -> (Sign, [u8; 4]) {
     (sign, int.to_le_bytes())
 }
 
+pub fn smart_to_f64<'a>(_bigint: impl Into<SignedSlice<'a>>) -> f64 {
+    todo!()
+}
+
 pub fn try_as_usize<'a>(_bigint: impl Into<SignedSlice<'a>>) -> Option<usize> {
     todo!()
 }
 
 pub fn try_as_isize<'a>(_bigint: impl Into<SignedSlice<'a>>) -> Option<isize> {
+    todo!()
+}
+
+// COMPARISONS
+
+pub fn lt<'a>(_lhs: impl Into<SignedSlice<'a>>, _rhs: impl Into<SignedSlice<'a>>) -> bool {
+    todo!()
+}
+
+pub fn le<'a>(_lhs: impl Into<SignedSlice<'a>>, _rhs: impl Into<SignedSlice<'a>>) -> bool {
+    todo!()
+}
+
+pub fn gt<'a>(_lhs: impl Into<SignedSlice<'a>>, _rhs: impl Into<SignedSlice<'a>>) -> bool {
+    todo!()
+}
+
+pub fn ge<'a>(_lhs: impl Into<SignedSlice<'a>>, _rhs: impl Into<SignedSlice<'a>>) -> bool {
     todo!()
 }
 

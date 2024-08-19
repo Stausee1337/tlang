@@ -1,5 +1,6 @@
 
 print("Hello, Wizard!");
 print(12);
-print(11 == 11);
+print(13 >= 12);
+print(0.7 < 0.1);
 

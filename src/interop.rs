@@ -236,3 +236,34 @@ impl<In: VMArgs, R: VMDowncast> From<GCRef<TFunction>> for TPolymorphicCallable<
         }
     }
 }
+
+pub mod vmops {
+    macro_rules! define_trait {
+        ($tname:ident, $fname:ident) => {
+            pub trait $tname<Rhs = Self> {
+                fn $fname(self, rhs: Rhs) -> crate::tvalue::TBool;
+            }
+        };
+    }
+
+    /*define_trait!(Add, add);
+    define_trait!(Sub, sub);
+    define_trait!(Mul, mul);
+    define_trait!(Div, div);
+    define_trait!(Rem, rem);
+
+    define_trait!(Shl, shl);
+    define_trait!(Shr, shr);
+
+    define_trait!(BitAnd, bitand);
+    define_trait!(BitOr, bitor);
+    define_trait!(BitXor, bitxor);*/
+
+    define_trait!(Eq, eq);
+    define_trait!(Ne, ne);
+    define_trait!(Gt, gt);
+    define_trait!(Ge, ge);
+    define_trait!(Lt, lt);
+    define_trait!(Le, le);
+}
+

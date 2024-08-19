@@ -397,6 +397,13 @@ impl Typed for TObject {
                     TBool::from_bool(this.encoded() == other.encoded())
                 }));
 
+        ttype.define_method(Symbol![ne], TFunction::rustfunc(
+                vm.modules().empty(), Some("object::ne"), move |this: TValue, other: TValue| {
+                    let vm = ttype.vm();
+                    let eq: TBool = tcall!(&vm, TValue::eq(this, other));
+                    !eq
+                }));
+
         ttype.define_method(Symbol![toString], TFunction::rustfunc(
                 vm.modules().empty(), Some("object::toString"), |_this: TValue| "object {}"));
 
@@ -418,6 +425,14 @@ impl Atom for HashTable<(Symbol, TValue)> {
 #[derive(Clone, Copy)]
 pub struct TBool(bool);
 
+impl std::ops::Not for TBool {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        TBool(!self.0)
+    }
+}
+
 impl TBool {
     #[inline(always)]
     pub const fn as_bool(self) -> bool {
@@ -434,6 +449,13 @@ impl Into<TValue> for TBool {
     #[inline(always)]
     fn into(self) -> TValue {
         TValue::bool(self.0)
+    }
+}
+
+impl From<bool> for TBool {
+    #[inline(always)]
+    fn from(value: bool) -> Self {
+        TBool(value)
     }
 }
 
@@ -704,8 +726,7 @@ macro_rules! impl_int_safe {
 
 macro_rules! impl_int_arithmetic {
     ($op:ident, $ty:ident, $fn:ident, $($checked_fn:ident)?) => { 
-        use std::ops::$op;
-        impl $op for $ty {
+        impl std::ops::$op for $ty {
             type Output = $ty;
 
             #[inline(always)]
@@ -722,12 +743,35 @@ macro_rules! impl_int_arithmetic {
                 }
             }
         }
+
+        impl std::ops::$op<TValue> for $ty {
+            type Output = TValue;
+
+            #[inline(always)]
+            fn $fn(self, rhs: TValue) -> TValue {
+                use std::ops::$op;
+
+                if let Some(rhs) = rhs.query_integer() {
+                    return $op::$fn(self, rhs).into();
+                }
+                panic!("Not implemented");
+            }
+        }
     };
 }
 
 macro_rules! iter_int_arithmetics {
     ($(impl $op:ident for $ty:ident in ($fn:ident$(, $checked_fn:ident)?);)*) => {
         $(impl_int_arithmetic!($op, $ty, $fn, $($checked_fn)?);)*
+
+        pub(crate) fn int_init_arithmetics(mut ttype: GCRef<TType>) {
+            let vm = ttype.vm();
+            $(
+                ttype.define_method(Symbol![$fn], TFunction::rustfunc(
+                        vm.modules().empty(), Some(concat!("int::", stringify!($op))),
+                        <TInteger as std::ops::$op<TValue>>::$fn));
+            )*
+        }
     };
 }
 
@@ -746,6 +790,57 @@ iter_int_arithmetics! {
     impl BitXor for TInteger in (bitxor);
 }
 
+macro_rules! impl_int_cmp {
+    ($op:ident, $ty:ident, $fn:ident) => { 
+        impl $crate::interop::vmops::$op for $ty {
+            #[inline(always)]
+            fn $fn(self, rhs: Self) -> TBool {
+                match (self.0, rhs.0) {
+                    (IntegerKind::Int32(lhs), IntegerKind::Int32(rhs)) =>
+                        lhs.$fn(&rhs).into(),
+                    (IntegerKind::Int32(lhs), IntegerKind::Bigint(rhs)) =>
+                        bigint::$fn(&to_bigint(lhs), rhs).into(),
+                    (IntegerKind::Bigint(lhs), IntegerKind::Int32(rhs)) =>
+                        bigint::$fn(lhs, &to_bigint(rhs)).into(),
+                    (IntegerKind::Bigint(lhs), IntegerKind::Bigint(rhs)) =>
+                        bigint::$fn(lhs, rhs).into(),
+                }
+            }
+        }
+
+        impl $crate::interop::vmops::$op<TValue> for $ty {
+            #[inline(always)]
+            fn $fn(self, rhs: TValue) -> TBool {
+                use $crate::interop::vmops::$op;
+
+                if let Some(rhs) = rhs.query_integer() {
+                    return $op::$fn(self, rhs).into();
+                }
+                panic!("Not implemented");
+            }
+        }
+    };
+}
+
+macro_rules! iter_int_cmps {
+    ($(impl $op:ident for $ty:ident in $fn:ident;)*) => {
+        $(impl_int_cmp!($op, $ty, $fn);)*
+
+        pub(crate) fn int_init_cmps(mut ttype: GCRef<TType>) {
+            let vm = ttype.vm();
+            $(
+                ttype.define_method(Symbol![$fn], TFunction::rustfunc(
+                        vm.modules().empty(), Some(concat!("int::", stringify!($op))),
+                        <TInteger as $crate::interop::vmops::$op<TValue>>::$fn));
+            )*
+        }
+    };
+}
+
+iter_int_cmps! {
+    impl Lt for TInteger in lt; impl Le for TInteger in le;
+    impl Gt for TInteger in gt; impl Ge for TInteger in ge;
+}
 
 impl Into<TValue> for TInteger {
     #[inline(always)]
@@ -757,10 +852,19 @@ impl Into<TValue> for TInteger {
     }
 }
 
+impl Into<TFloat> for TInteger {
+    fn into(self) -> TFloat {
+        match self.0 {
+            IntegerKind::Int32(int) => TFloat(int as f64),
+            IntegerKind::Bigint(bigint) =>
+                TFloat(bigint::smart_to_f64(bigint))
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct TFloat(pub(super) f64);
-
+pub struct TFloat(f64);
 
 impl TFloat {
     pub const fn as_float(self) -> f64 {
@@ -769,6 +873,12 @@ impl TFloat {
 
     pub const fn from_float(float: f64) -> Self {
         TFloat(float)
+    }
+}
+
+impl Display for TFloat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{}", self.0))
     }
 }
 
@@ -788,12 +898,28 @@ impl VMDowncast for TFloat {
 
 macro_rules! impl_float_arithmetic {
     ($op:ident, $ty:ident, $fn:ident) => { 
-        impl $op for $ty {
+        impl std::ops::$op for $ty {
             type Output = $ty;
 
             #[inline(always)]
             fn $fn(self, rhs: Self) -> Self::Output {
                 Self(self.0.$fn(rhs.0))
+            }
+        }
+
+        impl std::ops::$op<TValue> for $ty {
+            type Output = TValue;
+
+            #[inline(always)]
+            fn $fn(self, rhs: TValue) -> TValue {
+                use std::ops::$op;
+
+                if let Some(rhs) = rhs.query_float() {
+                    return $op::$fn(self, rhs).into();
+                } else if let Some(rhs) = rhs.query_integer() {
+                    return $op::<TFloat>::$fn(self, rhs.into()).into();
+                }
+                panic!("Not implemented");
             }
         }
     };
@@ -802,6 +928,15 @@ macro_rules! impl_float_arithmetic {
 macro_rules! iter_float_arithmetics {
     ($(impl $op:ident for $ty:ident in $fn:ident;)*) => {
         $(impl_float_arithmetic!($op, $ty, $fn);)*
+
+        pub(crate) fn float_init_arithmetics(mut ttype: GCRef<TType>) {
+            let vm = ttype.vm();
+            $(
+                ttype.define_method(Symbol![$fn], TFunction::rustfunc(
+                        vm.modules().empty(), Some(concat!("float::", stringify!($op))),
+                        <TFloat as std::ops::$op<TValue>>::$fn));
+            )*
+        }
     };
 }
 
@@ -811,6 +946,51 @@ iter_float_arithmetics! {
     impl Mul for TFloat in mul;
     impl Div for TFloat in div;
     impl Rem for TFloat in rem;
+}
+
+macro_rules! impl_float_cmp {
+    ($op:ident, $ty:ident, $fn:ident) => { 
+        impl $crate::interop::vmops::$op for $ty {
+            #[inline(always)]
+            fn $fn(self, rhs: Self) -> TBool {
+                TBool(self.0.$fn(&rhs.0))
+            }
+        }
+
+        impl $crate::interop::vmops::$op<TValue> for $ty {
+            #[inline(always)]
+            fn $fn(self, rhs: TValue) -> TBool {
+                use $crate::interop::vmops::$op;
+
+                if let Some(rhs) = rhs.query_float() {
+                    return $op::$fn(self, rhs).into();
+                } else if let Some(rhs) = rhs.query_integer() {
+                    return $op::<TFloat>::$fn(self, rhs.into()).into();
+                }
+                panic!("Not implemented");
+            }
+        }
+    };
+}
+
+macro_rules! iter_float_cmps {
+    ($(impl $op:ident for $ty:ident in $fn:ident;)*) => {
+        $(impl_float_cmp!($op, $ty, $fn);)*
+
+        pub(crate) fn float_init_cmps(mut ttype: GCRef<TType>) {
+            let vm = ttype.vm();
+            $(
+                ttype.define_method(Symbol![$fn], TFunction::rustfunc(
+                        vm.modules().empty(), Some(concat!("float::", stringify!($op))),
+                        <TFloat as $crate::interop::vmops::$op<TValue>>::$fn));
+            )*
+        }
+    };
+}
+
+iter_float_cmps! {
+    impl Lt for TFloat in lt; impl Le for TFloat in le;
+    impl Gt for TFloat in gt; impl Ge for TFloat in ge;
 }
 
 tobject! {
@@ -1138,7 +1318,8 @@ where
         mut_current = current.basety;
     }
 
-    R::vmdowncast(found.unwrap(), vm).unwrap()
+    let found = found.unwrap();
+    R::vmdowncast(found, vm).unwrap()
 }
 
 pub fn print(module: GCRef<TModule>, msg: TValue) {
