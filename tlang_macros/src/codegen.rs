@@ -753,7 +753,7 @@ pub fn generate_tcall(token_stream: TokenStream) -> Result<TokenStream, syn::Err
             let value: #ty = #self_;
             // TODO: intern symbol #sym for messages in error resolval
             let resolved_func: tlang::interop::TPolymorphicCallable<_, _> = tlang::tvalue::resolve_by_symbol(
-                #vm, tlang_macros::Symbol![#sym], value);
+                #vm, tlang_macros::Symbol![#sym], value, false);
             // TODO: check for method and if self should be part of the call
             resolved_func(#arguments)
         }

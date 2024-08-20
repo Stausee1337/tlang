@@ -131,13 +131,13 @@ impl TRawCode {
 
                     OpCode::GetAttribute => {
                         decode!(&mut deserializer, env, GetAttribute { base, attribute, mut dst });
-                        let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base);
+                        let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base, true);
                         *dst = *access;
                     }
 
                     OpCode::SetAttribute => {
                         decode!(&mut deserializer, env, SetAttribute { base, attribute, src });
-                        let mut access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base);
+                        let mut access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base, true);
                         *access = src;
                     }
 

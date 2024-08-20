@@ -385,7 +385,7 @@ impl Typed for TObject {
             base: Self::base_with_descriptor(vm, unsafe { GCRef::null() }, None),
             basesize: std::mem::size_of::<Self>(),
             basety: None, // There's nothing above Object in the hierarchy
-            name: TString::from_slice(vm, "object"),
+            name: TString::from_slice(vm, "Object"),
             modname: TString::from_slice(vm, "prelude"),
             variable: true
         });
@@ -393,20 +393,23 @@ impl Typed for TObject {
 
         ttype.base = TObject::base(vm, vm.types().query::<TType>());
 
+        let mut prelude = vm.modules().prelude();
+        prelude.set_global(Symbol![Object], ttype.into(), true);
+
         ttype.define_method(Symbol![eq], TFunction::rustfunc(
-                vm.modules().empty(), Some("object::eq"), |this: TValue, other: TValue| {
+                prelude, Some("object::eq"), |this: TValue, other: TValue| {
                     TBool::from_bool(this.encoded() == other.encoded())
                 }));
 
         ttype.define_method(Symbol![ne], TFunction::rustfunc(
-                vm.modules().empty(), Some("object::ne"), move |this: TValue, other: TValue| {
+                prelude, Some("object::ne"), move |this: TValue, other: TValue| {
                     let vm = ttype.vm();
                     let eq: TBool = tcall!(&vm, TValue::eq(this, other));
                     !eq
                 }));
 
         ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                vm.modules().empty(), Some("object::toString"), move |this: TValue| {
+                prelude, Some("object::toString"), move |this: TValue| {
                     let vm = ttype.vm();
                     TString::from_slice(&vm, &format!("{} {{}}", this.ttype(&vm).unwrap().name))
                 }));
@@ -488,8 +491,10 @@ impl std::ops::Not for TBool {
 pub fn bool_init_unarys(mut ttype: GCRef<TType>) {
     let vm = ttype.vm();
 
+    let prelude = vm.modules().prelude();
+
     ttype.define_method(Symbol![not], TFunction::rustfunc(
-            vm.modules().empty(), Some("bool::not"),
+            prelude, Some("bool::not"),
             <TBool as std::ops::Not>::not));
 }
 
@@ -760,12 +765,14 @@ impl crate::interop::vmops::Invert for TInteger {
 pub fn int_init_unarys(mut ttype: GCRef<TType>) {
     let vm = ttype.vm();
 
+    let prelude = vm.modules().prelude();
+
     ttype.define_method(Symbol![neg], TFunction::rustfunc(
-            vm.modules().empty(), Some("int::neg"),
+            prelude, Some("int::neg"),
             <TInteger as std::ops::Neg>::neg));
 
     ttype.define_method(Symbol![invert], TFunction::rustfunc(
-            vm.modules().empty(), Some("int::invert"),
+            prelude, Some("int::invert"),
             <TInteger as crate::interop::vmops::Invert>::invert));
 }
 
@@ -822,9 +829,10 @@ macro_rules! iter_int_arithmetics {
 
         pub(crate) fn int_init_arithmetics(mut ttype: GCRef<TType>) {
             let vm = ttype.vm();
+            let prelude = vm.modules().prelude();
             $(
                 ttype.define_method(Symbol![$fn], TFunction::rustfunc(
-                        vm.modules().empty(), Some(concat!("int::", stringify!($op))),
+                        prelude, Some(concat!("int::", stringify!($op))),
                         <TInteger as std::ops::$op<TValue>>::$fn));
             )*
         }
@@ -884,9 +892,10 @@ macro_rules! iter_int_cmps {
 
         pub(crate) fn int_init_cmps(mut ttype: GCRef<TType>) {
             let vm = ttype.vm();
+            let prelude = vm.modules().prelude();
             $(
                 ttype.define_method(Symbol![$fn], TFunction::rustfunc(
-                        vm.modules().empty(), Some(concat!("int::", stringify!($op))),
+                        prelude, Some(concat!("int::", stringify!($op))),
                         <TInteger as $crate::interop::vmops::$op<TValue>>::$fn));
             )*
         }
@@ -964,7 +973,7 @@ pub fn float_init_unarys(mut ttype: GCRef<TType>) {
     let vm = ttype.vm();
 
     ttype.define_method(Symbol![neg], TFunction::rustfunc(
-            vm.modules().empty(), Some("float::neg"),
+            vm.modules().prelude(), Some("float::neg"),
             <TInteger as std::ops::Neg>::neg));
 }
 
@@ -1003,9 +1012,10 @@ macro_rules! iter_float_arithmetics {
 
         pub(crate) fn float_init_arithmetics(mut ttype: GCRef<TType>) {
             let vm = ttype.vm();
+            let prelude = vm.modules().prelude();
             $(
                 ttype.define_method(Symbol![$fn], TFunction::rustfunc(
-                        vm.modules().empty(), Some(concat!("float::", stringify!($op))),
+                        prelude, Some(concat!("float::", stringify!($op))),
                         <TFloat as std::ops::$op<TValue>>::$fn));
             )*
         }
@@ -1051,9 +1061,10 @@ macro_rules! iter_float_cmps {
 
         pub(crate) fn float_init_cmps(mut ttype: GCRef<TType>) {
             let vm = ttype.vm();
+            let mut prelude = vm.modules().prelude();
             $(
                 ttype.define_method(Symbol![$fn], TFunction::rustfunc(
-                        vm.modules().empty(), Some(concat!("float::", stringify!($op))),
+                        prelude, Some(concat!("float::", stringify!($op))),
                         <TFloat as $crate::interop::vmops::$op<TValue>>::$fn));
             )*
         }
@@ -1119,21 +1130,30 @@ impl Typed for TType {
             modname: TString::from_slice(vm, "prelude"),
             variable: true
         });
+
         let int = vm.heap().allocate_atom(12);
         entry.insert(TypeId::of::<Self>(), ttype);
 
         ttype.base = TObject::base(vm, ttype);
         ttype.basety = Some(vm.types().query::<TObject>());
 
+        let mut prelude = vm.modules().prelude();
+        prelude.set_global(Symbol![Type], ttype.into(), true);
+
         ttype.define_property(
             Symbol![basety],
-            TProperty::offset::<TType, Option<GCRef<TType>>>(&vm, Accessor::GET, offset_of!(TType, basety)));
+            TProperty::offset::<TType, Option<GCRef<TType>>>(prelude, Accessor::GET, offset_of!(TType, basety)));
         ttype.define_property(
             Symbol![name],
-            TProperty::offset::<TType, GCRef<TString>>(&vm, Accessor::GET, offset_of!(TType, name)));
+            TProperty::offset::<TType, GCRef<TString>>(prelude, Accessor::GET, offset_of!(TType, name)));
         ttype.define_property(
             Symbol![modname],
-            TProperty::offset::<TType, GCRef<TString>>(&vm, Accessor::GET, offset_of!(TType, modname)));
+            TProperty::offset::<TType, GCRef<TString>>(prelude, Accessor::GET, offset_of!(TType, modname)));
+        ttype.define_method(
+            Symbol![toString],
+            TFunction::rustfunc(prelude, Some("type::toString"), |this: GCRef<TType>| {
+                TString::from_slice(&this.vm(), &format!("[type {}] {{}}", this.name))
+            }));
 
         ttype
         
@@ -1159,28 +1179,29 @@ pub struct TProperty {
 }
 
 impl TProperty {
-    pub fn offset<Slf, P>(vm: &VM, accessor: Accessor, offset: usize) -> GCRef<Self>
+    pub fn offset<Slf, P>(module: GCRef<TModule>, accessor: Accessor, offset: usize) -> GCRef<Self>
     where
         Slf: TPolymorphicObject,
         P: VMCast + VMDowncast + Copy + 'static
     {
         let get = if accessor.contains(Accessor::GET) {
-            Some(TFunction::rustfunc(vm.modules().empty(), None, move |object: TPolymorphicWrapper<Slf>| {
+            Some(TFunction::rustfunc(module, None, move |object: TPolymorphicWrapper<Slf>| {
                 unsafe { *object.raw_access::<P>(offset) }
             }))
         } else {
             None
         };
         let set = if accessor.contains(Accessor::SET) {
-            Some(TFunction::rustfunc(vm.modules().empty(), None, move |object: TPolymorphicWrapper<Slf>, value: P| {
+            Some(TFunction::rustfunc(module, None, move |object: TPolymorphicWrapper<Slf>, value: P| {
                 unsafe { *object.raw_access::<P>(offset) = value; }
             }))
         } else {
             None
         };
 
+        let vm = module.vm();
         vm.heap().allocate_atom(Self {
-            base: TObject::base(vm, vm.types().query::<Self>()),
+            base: TObject::base(&vm, vm.types().query::<Self>()),
             get, set
         })
     }
@@ -1201,13 +1222,15 @@ impl Typed for TProperty {
         });
         entry.insert(TypeId::of::<Self>(), ttype);
 
+        let prelude = vm.modules().prelude();
+
         ttype.define_property(
             Symbol![get],
-            TProperty::offset::<Self, Option<GCRef<TFunction>>>(vm, Accessor::GET, offset_of!(TProperty, get)));
+            TProperty::offset::<Self, Option<GCRef<TFunction>>>(prelude, Accessor::GET, offset_of!(TProperty, get)));
 
         ttype.define_property(
             Symbol![set],
-            TProperty::offset::<Self, Option<GCRef<TFunction>>>(vm, Accessor::GET, offset_of!(TProperty, set)));
+            TProperty::offset::<Self, Option<GCRef<TFunction>>>(prelude, Accessor::GET, offset_of!(TProperty, set)));
 
         ttype
     }
@@ -1249,9 +1272,29 @@ impl Typed for TFunction {
         });
         entry.insert(TypeId::of::<Self>(), ttype);
 
+        let mut prelude = vm.modules().prelude();
+        prelude.set_global(Symbol![Function], ttype.into(), true);
+
         ttype.define_property(
             Symbol![name],
-            TProperty::offset::<Self, Option<GCRef<TString>>>(vm, Accessor::GET, offset_of!(Self, name)));
+            TProperty::offset::<Self, Option<GCRef<TString>>>(prelude, Accessor::GET, offset_of!(Self, name)));
+
+        ttype.define_method(
+            Symbol![toString],
+            TFunction::rustfunc(prelude, Some("function::toString"), |this: GCRef<TFunction>| {
+                let name = if let Some(name) = this.name {
+                    name.as_slice()
+                } else {
+                    "(anonymous)"
+                };
+                let mut string = format!("def {name} ");
+                if let TFnKind::Nativefunc(..) = this.kind {
+                    string.push_str("[Native Code]");
+                } else {
+                    string.push_str("{}");
+                }
+                TString::from_slice(&this.vm(), &string)
+            }));
 
         ttype
     }
@@ -1371,16 +1414,18 @@ where
 }
 
 #[inline(always)]
-pub fn resolve_by_symbol<'v, T, R>(vm: &VM, name: Symbol, value: T) -> R
+pub fn resolve_by_symbol<'v, T, R>(vm: &VM, name: Symbol, value: T, resolve_to_attribute: bool) -> R
 where
     T: VMCast,
     R: tlang::interop::VMPropertyCast
 {
     let value = value.vmcast(vm);
-    if let Some(mut tobject) = value.query_tobject() {
-        if tobject.ty.variable {
-            if let Some(found) = tobject.get_attribute(name) {
-                return R::propcast(value, found, true, vm);
+    if resolve_to_attribute {
+        if let Some(mut tobject) = value.query_tobject() {
+            if tobject.ty.variable {
+                if let Some(found) = tobject.get_attribute(name) {
+                    return R::propcast(value, found, true, vm);
+                }
             }
         }
     }

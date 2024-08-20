@@ -89,17 +89,8 @@ fn main() -> ExitCode {
         };
 
         let mut module = TModule::new(&vm, TString::from_slice(&vm, modname));
+        module.import("tlang:prelude", None);
         module.set_source(Some(source));
-
-        let printfn = TFunction::rustfunc(module, Some("print"), move |msg| {
-            tvalue::print(module, msg);
-        });
-
-        module.set_global(
-            Symbol![print],
-            printfn.into(),
-            true
-        );
 
         let generator = BytecodeGenerator::new(module);
         let module_func: TPolymorphicCallable<_, ()> = codegen::generate_module(ast, generator).unwrap().into();

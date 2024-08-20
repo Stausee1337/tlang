@@ -34,7 +34,15 @@ impl VM {
             let heap = Box::new(Heap::init(me.clone()));
             Self::create(heap)
         });
-        let ttype = vm.types().query::<TType>();
+
+        let _ttype = vm.types().query::<TType>();
+        vm.primitives().float_type();
+        vm.primitives().int_type();
+        vm.primitives().bool_type();
+        vm.primitives().string_type();
+
+        init_prelude_functions(&vm);
+
         vm
     }
 
@@ -78,6 +86,15 @@ impl VM {
     }
 }
 
+fn init_prelude_functions(vm: &VM) {
+    let mut prelude = vm.modules().prelude();
+
+    let printfn = TFunction::rustfunc(prelude, Some("print"), move |msg| {
+        tvalue::print(prelude, msg);
+    });
+    prelude.set_global(Symbol![print], printfn.into(), true);
+}
+
 pub struct Primitives {
     float: OnceLock<GCRef<TType>>,
     int: OnceLock<GCRef<TType>>,
@@ -109,8 +126,11 @@ impl GCRef<Primitives> {
                 variable: false
             });
 
+            let mut prelude = vm.modules().prelude();
+            prelude.set_global(Symbol![float], ttype.into(), true);
+
             ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                    vm.modules().empty(), Some("float::toString"),
+                    prelude, Some("float::toString"),
                     move |this: TFloat| {
                         let vm = self.vm();
                         TString::from_slice(&vm, &format!("{this}"))
@@ -135,8 +155,11 @@ impl GCRef<Primitives> {
                 variable: false
             });
 
+            let mut prelude = vm.modules().prelude();
+            prelude.set_global(Symbol![int], ttype.into(), true);
+
             ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                    vm.modules().empty(), Some("int::toString"),
+                    prelude, Some("int::toString"),
                     move |this: TInteger| {
                         let vm = self.vm();
                         TString::from_slice(&vm, &format!("{this}"))
@@ -161,8 +184,11 @@ impl GCRef<Primitives> {
                 variable: false
             });
 
+            let mut prelude = vm.modules().prelude();
+            prelude.set_global(Symbol![bool], ttype.into(), true);
+
             ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                    vm.modules().empty(), Some("bool::toString"),
+                    prelude, Some("bool::toString"),
                     move |this: TBool| {
                         let vm = self.vm();
                         TString::from_slice(&vm, &format!("{this}"))
@@ -184,8 +210,11 @@ impl GCRef<Primitives> {
                 variable: false
             });
 
+            let mut prelude = vm.modules().prelude();
+            prelude.set_global(Symbol![string], ttype.into(), true);
+
             ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                    vm.modules().empty(), Some("string::toString"), |this: GCRef<TString>| this));
+                    prelude, Some("string::toString"), |this: GCRef<TString>| this));
 
             ttype
         })
@@ -199,23 +228,44 @@ impl Atom for Primitives {
 }
 
 pub struct TModules {
-    empty: OnceLock<GCRef<TModule>>
+    imported: hashbrown::HashMap<String, GCRef<TModule>>,
+    prelude: OnceLock<GCRef<TModule>>,
 }
 
 impl TModules {
     pub fn new() -> Self {
         Self {
-            empty: OnceLock::new()
+            imported: Default::default(),
+            prelude: OnceLock::new()
         }
     }
 }
 
 impl GCRef<TModules> {
-    pub fn empty(&self) -> GCRef<TModule> {
-        *self.empty.get_or_init(|| {
+    pub fn prelude(&self) -> GCRef<TModule> {
+        *self.prelude.get_or_init(|| {
             let vm = self.vm();
-            TModule::new(&vm, TString::from_slice(&vm, "empty"))
+            let module = TModule::new(&vm, TString::from_slice(&vm, "prelude"));
+            vm.modules().insert("tlang:prelude", module);
+            module
         })
+    }
+
+    pub fn get(&mut self, key: &str) -> Option<GCRef<TModule>> {
+        self.imported.get(key).map(|module| *module)
+    }
+
+    pub fn insert(&mut self, key: &str, module: GCRef<TModule>) {
+        match self.imported
+            .raw_entry_mut()
+            .from_key(key) {
+            RawEntryMut::Occupied(..) => {
+                panic!("module is already imported");
+            }
+            RawEntryMut::Vacant(entry) => {
+                entry.insert(key.to_string(), module);
+            }
+        }
     }
 }
 
@@ -329,5 +379,27 @@ impl GCRef<TModule> {
         }
 
         Ok(&mut entry.1)
+    }
+
+    pub fn iter(&mut self) -> impl Iterator<Item = (Symbol, TValue)> + '_ {
+        self.table.iter().map(|entry| (entry.0, entry.1))
+    }
+
+    pub fn import(&mut self, path: &str, what: Option<&mut dyn Iterator<Item = Symbol>>) {
+        // FIXME: call into import logic here to resolve
+        // file bound modules as well
+        let Some(mut module) = self.vm().modules().get(path) else {
+            panic!("could not find module {path}");
+        };
+        if let Some(filter) = what {
+            for name in filter.into_iter() {
+                let value = module.get_global(name).unwrap();
+                self.set_global(name, value, true);
+            }
+        } else {
+            for (name, value) in module.iter() {
+                self.set_global(name, value, true);
+            }
+        }
     }
 }
