@@ -6,8 +6,8 @@ use crate::{
     },
     memory::GCRef,
     symbol::Symbol,
-    tvalue::{TBool, TFunction, TInteger, TValue},
-    interop::VMDowncast,
+    tvalue::{TBool, TFunction, TInteger, TValue, resolve_by_symbol},
+    interop::{VMDowncast, TPropertyAccess},
     vm::{TModule, VM},
     debug
 };
@@ -87,7 +87,7 @@ trait DecodeDeref {
 }
 
 impl TRawCode {
-    pub fn evaluate<'a>(&self, module: GCRef<TModule>, args: TArgsBuffer) -> TValue {
+    pub fn evaluate<'a>(&self, mut module: GCRef<TModule>, args: TArgsBuffer) -> TValue {
         self.with_environment(module, args, |vm, env, mut deserializer| {
             loop {
                 let op: OpCode = deserializer.next().unwrap();
@@ -114,9 +114,31 @@ impl TRawCode {
                     OpCode::Not => impls::not(vm, env, &mut deserializer),
                     OpCode::Invert => impls::invert(vm, env, &mut deserializer),
 
+                    OpCode::DeclareGlobal => {
+                        decode!(&mut deserializer, env, DeclareGlobal { symbol, init, constant });
+                        module.set_global(symbol, init, constant);
+                    }
+
                     OpCode::GetGlobal => {
                         decode!(&mut deserializer, env, GetGlobal { symbol, mut dst });
                         *dst = module.get_global(symbol).unwrap();
+                    }
+
+                    OpCode::SetGlobal => {
+                        decode!(&mut deserializer, env, SetGlobal { symbol, src });
+                        *module.get_global_mut(symbol).unwrap() = src;
+                    }
+
+                    OpCode::GetAttribute => {
+                        decode!(&mut deserializer, env, GetAttribute { base, attribute, mut dst });
+                        let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base);
+                        *dst = *access;
+                    }
+
+                    OpCode::SetAttribute => {
+                        decode!(&mut deserializer, env, SetAttribute { base, attribute, src });
+                        let mut access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base);
+                        *access = src;
                     }
 
                     OpCode::Branch => {
@@ -180,7 +202,7 @@ impl Decode for Operand {
     fn decode(&self, env: &ExecutionEnvironment) -> TValue {
         match self.to_rust() {
             OperandKind::Null => TValue::null(),
-            OperandKind::Bool(bool) => bool.decode(env),
+            OperandKind::Bool(bool) => TBool::from_bool(bool).into(),
             OperandKind::Register(reg) => reg.decode(env),
             OperandKind::Descriptor(desc) => desc.decode(env),
             OperandKind::Int32(int) => int.decode(env),
@@ -213,11 +235,11 @@ impl DecodeMut for Operand {
 }
 
 impl Decode for bool {
-    type Output = TValue;
+    type Output = bool;
 
     #[inline(always)]
-    fn decode(&self, _env: &ExecutionEnvironment) -> TValue {
-        TBool::from_bool(*self).into()
+    fn decode(&self, _env: &ExecutionEnvironment) -> bool {
+        *self
     }
 }
 

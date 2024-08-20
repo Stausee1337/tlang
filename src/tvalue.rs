@@ -406,7 +406,10 @@ impl Typed for TObject {
                 }));
 
         ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                vm.modules().empty(), Some("object::toString"), |_this: TValue| "object {}"));
+                vm.modules().empty(), Some("object::toString"), move |this: TValue| {
+                    let vm = ttype.vm();
+                    TString::from_slice(&vm, &format!("{} {{}}", this.ttype(&vm).unwrap().name))
+                }));
 
 
         ttype
@@ -1236,15 +1239,19 @@ impl Typed for TFunction {
             vm: &VM,
             entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
         ) -> GCRef<TType> { 
-        let ttype = vm.heap().allocate_atom(TType {
+        let mut ttype = vm.heap().allocate_atom(TType {
             base: TObject::base(vm, vm.types().query::<TType>()),
-            basety: None,
+            basety: Some(vm.types().query::<TObject>()),
             basesize: std::mem::size_of::<Self>(),
             name: TString::from_slice(vm, "function"),
             modname: TString::from_slice(vm, "prelude"),
             variable: false
         });
         entry.insert(TypeId::of::<Self>(), ttype);
+
+        ttype.define_property(
+            Symbol![name],
+            TProperty::offset::<Self, Option<GCRef<TString>>>(vm, Accessor::GET, offset_of!(Self, name)));
 
         ttype
     }
@@ -1371,8 +1378,10 @@ where
 {
     let value = value.vmcast(vm);
     if let Some(mut tobject) = value.query_tobject() {
-        if let Some(found) = tobject.get_attribute(name) {
-            return R::propcast(value, found, vm);
+        if tobject.ty.variable {
+            if let Some(found) = tobject.get_attribute(name) {
+                return R::propcast(value, found, true, vm);
+            }
         }
     }
     
@@ -1380,10 +1389,9 @@ where
 
     while let Some(mut current) = mut_current {
         if let Some(val) = current.base.get_attribute(name) {
-            return R::propcast(value, val, vm)
-        } else {
-            mut_current = current.basety.clone();
+            return R::propcast(value, val, false, vm)
         }
+        mut_current = current.basety.clone();
     }
     
     panic!("Could not find property");

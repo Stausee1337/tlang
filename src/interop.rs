@@ -238,11 +238,11 @@ impl<In: VMArgs, R: VMDowncast> From<GCRef<TFunction>> for TPolymorphicCallable<
 }
 
 pub trait VMPropertyCast {
-    fn propcast(this: TValue, value: &mut TValue, vm: &VM) -> Self;
+    fn propcast(this: TValue, value: &mut TValue, writeable: bool, vm: &VM) -> Self;
 }
 
 impl<T: VMDowncast> VMPropertyCast for T {
-    fn propcast(_this: TValue, value: &mut TValue, vm: &VM) -> T {
+    fn propcast(_this: TValue, value: &mut TValue, _writeable: bool, vm: &VM) -> T {
         T::vmdowncast(*value, vm).unwrap()
     }
 }
@@ -262,29 +262,31 @@ pub struct TPropertyAccess<T: VMDowncast + VMCast + Copy + 'static> {
     copy: OnceCell<T>,
     place: MaybeUninit<T>,
     write: bool,
+    /// Flag to see if an attribute is considered writeable
+    /// Properties provide thier own mechanism to check if a write is legal
+    writeable: bool,
     kind: AccessKind
 }
 
 impl<T: VMDowncast + VMCast + Copy + 'static> VMPropertyCast for TPropertyAccess<T> {
-    fn propcast(this: TValue, value: &mut TValue, vm: &VM) -> Self {
+    fn propcast(this: TValue, value: &mut TValue, writeable: bool, vm: &VM) -> Self {
+        let kind;
         if let Some(property) = GCRef::<TProperty>::vmdowncast(*value, vm) {
-            return TPropertyAccess {
-                kind: AccessKind::Property {
-                    property, this,
-                },
-                copy: OnceCell::new(),
-                place: MaybeUninit::uninit(),
-                write: false
+            kind = AccessKind::Property {
+                property, this,
             };
-        }
-        TPropertyAccess {
-            kind: AccessKind::Attribute {
+        } else {
+            kind = AccessKind::Attribute {
                 vm: vm.heap().vm(),
                 attribute_val: &mut *value,
-            },
+            };
+        }
+        return TPropertyAccess {
+            kind,
             copy: OnceCell::new(),
             place: MaybeUninit::uninit(),
-            write: false
+            write: false,
+            writeable
         }
     }
 }
@@ -322,6 +324,9 @@ impl<T: VMDowncast + VMCast + Copy + 'static> std::ops::Deref for TPropertyAcces
 
 impl<T: VMDowncast + VMCast + Copy + 'static> std::ops::DerefMut for TPropertyAccess<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        if !self.writeable && matches!(self.kind, AccessKind::Attribute { .. }) {
+            panic!("cannot set property");
+        }
         self.write = true;
         unsafe { self.place.assume_init_mut() }
     }
