@@ -10,7 +10,7 @@ extern crate self as tlang;
 use bumpalo::Bump;
 use getopts::{Options, ParsingStyle};
 
-use crate::{bytecode::BytecodeGenerator, interop::TPolymorphicCallable,  tvalue::{TString, TFunction}, symbol::Symbol, vm::TModule};
+use crate::{bytecode::BytecodeGenerator, interop::TPolymorphicCallable,  tvalue::TString, vm::TModule};
 
 mod lexer;
 mod symbol;

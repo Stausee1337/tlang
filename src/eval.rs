@@ -37,6 +37,12 @@ impl TArgsBuffer {
         }
         TArgsIterator { inner: self.0, current: 0 }
     }
+    
+    pub fn prepend(self, tvalue: TValue) -> Self {
+        let mut args = self.0;
+        args.insert(0, tvalue);
+        TArgsBuffer(args)
+    }
 }
 
 pub struct TArgsIterator {
@@ -132,7 +138,11 @@ impl TRawCode {
                     OpCode::GetAttribute => {
                         decode!(&mut deserializer, env, GetAttribute { base, attribute, mut dst });
                         let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base, true);
-                        *dst = *access;
+                        if let Some(tfunction) = access.as_method() {
+                            *dst = tfunction.bind(base).into();
+                        } else {
+                            *dst = *access;
+                        }
                     }
 
                     OpCode::SetAttribute => {

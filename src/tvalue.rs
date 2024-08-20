@@ -3,6 +3,7 @@ use std::{mem::{transmute, MaybeUninit, offset_of}, fmt::Display, alloc::Layout,
 
 use ahash::AHasher;
 use allocator_api2::alloc::Global;
+use bitflags::bitflags;
 use hashbrown::{hash_map::RawVacantEntryMut, HashTable, hash_table::Entry};
 use tlang_macros::tcall;
 
@@ -284,10 +285,14 @@ impl TValue {
 
     #[inline(always)]
     const fn as_object<T>(&self) -> Option<GCRef<T>> {
+        unsafe { self.as_object_unsafe() }
+    }
+
+    const unsafe fn as_object_unsafe<T>(&self) -> Option<GCRef<T>> {
         // This will still yield None, if the GCRef<..>,
         // which contains a NonNull, actually is null
         // So `TValue::null()` -> None
-        Some(self.as_gcref())
+        transmute(self.as_gcref::<T>())
     }
 }
 
@@ -1105,8 +1110,12 @@ impl GCRef<TType> {
         self.base.set_attribute(name, property.into());
     }
 
-    pub fn define_method(&mut self, name: Symbol, method: GCRef<TFunction>) {
-        // TODO: make method a method
+    pub fn define_method(&mut self, name: Symbol, mut method: GCRef<TFunction>) {
+        method.flags.insert(FunctionFlags::METHOD);
+        self.base.set_attribute(name, method.into());
+    }
+
+    pub fn define_static_method(&mut self, name: Symbol, method: GCRef<TFunction>) { 
         self.base.set_attribute(name, method.into());
     }
 }
@@ -1126,7 +1135,7 @@ impl Typed for TType {
             base: TObject::base_with_descriptor(vm, unsafe { GCRef::null() }, None),
             basety: None,
             basesize: std::mem::size_of::<Self>(),
-            name: TString::from_slice(vm, "type"),
+            name: TString::from_slice(vm, "Type"),
             modname: TString::from_slice(vm, "prelude"),
             variable: true
         });
@@ -1153,6 +1162,11 @@ impl Typed for TType {
             Symbol![toString],
             TFunction::rustfunc(prelude, Some("type::toString"), |this: GCRef<TType>| {
                 TString::from_slice(&this.vm(), &format!("[type {}] {{}}", this.name))
+            }));
+        ttype.define_static_method(
+            Symbol![of],
+            TFunction::rustfunc(prelude, Some("type::of"), move |value: TValue| {
+                value.ttype(&prelude.vm())
             }));
 
         ttype
@@ -1240,10 +1254,17 @@ impl Typed for TProperty {
     }
 }
 
+bitflags! {
+pub struct FunctionFlags: u32 {
+    const METHOD = 0b01;
+}
+}
+
 tobject! {
 pub struct TFunction {
     pub name: Option<GCRef<TString>>,
     pub module: GCRef<TModule>,
+    pub flags: FunctionFlags,
     pub kind: TFnKind
 }
 }
@@ -1251,7 +1272,8 @@ pub struct TFunction {
 #[repr(C)]
 pub enum TFnKind {
     Function(TRawCode),
-    Nativefunc(Nativefunc)
+    Nativefunc(Nativefunc),
+    BoundMethod(GCRef<TFunction>, TValue),
 }
 
 unsafe impl std::marker::Sync for TFnKind {}
@@ -1290,6 +1312,8 @@ impl Typed for TFunction {
                 let mut string = format!("def {name} ");
                 if let TFnKind::Nativefunc(..) = this.kind {
                     string.push_str("[Native Code]");
+                } else if let TFnKind::BoundMethod(..) = this.kind {
+                    string.push_str("[Bound Method]");
                 } else {
                     string.push_str("{}");
                 }
@@ -1321,6 +1345,7 @@ impl TFunction {
             base: TObject::base(&vm, vm.types().query::<Self>()),
             name: name.map(|name| TString::from_slice(&vm, name)),
             module,
+            flags: FunctionFlags::empty(),
             kind: TFnKind::Nativefunc(Nativefunc {
                 id,
                 closure: closure as *const (),
@@ -1340,7 +1365,11 @@ impl GCRef<TFunction> {
             TFnKind::Function(code) =>
                 code.evaluate(self.module, arguments),
             TFnKind::Nativefunc(n @ Nativefunc { traitfn, .. })=>
-                traitfn(n, self.module, arguments)
+                traitfn(n, self.module, arguments),
+            TFnKind::BoundMethod(tfunction, base) => {
+                let arguments = arguments.prepend(*base);
+                tfunction.call(arguments)
+            }
         }
     }
 
@@ -1352,8 +1381,21 @@ impl GCRef<TFunction> {
     {
         match &self.kind {
             TFnKind::Function(..) => CallResult::NotImplemented(args),
+            TFnKind::BoundMethod(..) => CallResult::NotImplemented(args),
             TFnKind::Nativefunc(n) => n.call(args)
         }
+    }
+
+    pub fn bind(&self, this: TValue) -> GCRef<TFunction> {
+        debug!("created method wrapper for function {:?}", self.name);
+        let vm = self.vm();
+        vm.heap().allocate_atom(TFunction {
+            base: TObject::base(&vm, vm.types().query::<TFunction>()),
+            name: self.name,
+            module: self.module,
+            kind: TFnKind::BoundMethod(*self, this),
+            flags: FunctionFlags::empty()
+        })
     }
 }
 
@@ -1420,6 +1462,7 @@ where
     R: tlang::interop::VMPropertyCast
 {
     let value = value.vmcast(vm);
+
     if resolve_to_attribute {
         if let Some(mut tobject) = value.query_tobject() {
             if tobject.ty.variable {

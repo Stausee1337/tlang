@@ -11,3 +11,18 @@ print(print);
 print(Type);
 print(string.toString);
 
+const Function = Type.of(print);
+
+print(Function);
+
+print(Function.name);
+print(Function.name.get);
+print(Function.name.set);
+
+print(string.name);
+
+var lazyToString = "Guys > Girls".toString;
+
+print(lazyToString);
+print(lazyToString());
+

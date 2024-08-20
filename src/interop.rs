@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, cell::{Cell, OnceCell}, mem::MaybeUninit, rc::Rc};
 
-use crate::{memory::GCRef, tvalue::{TObject, TValue, TString, Typed, TInteger, TFunction, CallResult, TProperty}, vm::VM, eval::TArgsBuffer};
+use crate::{memory::GCRef, tvalue::{TObject, TValue, TString, Typed, TInteger, TFunction, CallResult, TProperty, FunctionFlags}, vm::VM, eval::TArgsBuffer};
 
 
 pub struct TPolymorphicWrapper<T: TPolymorphicObject> {
@@ -183,6 +183,26 @@ pub struct TPolymorphicCallable<In: VMArgs, R: VMDowncast> {
     _phantom: PhantomData<(In, R)>
 }
 
+impl<In: VMArgs, R: VMDowncast> TPolymorphicCallable<In, R> {
+    #[inline]
+    pub fn is_method(&self) -> bool {
+        match self.inner {
+            CallableInner::Polymorph(tobject) =>
+                true, // callable object are always implemented via methods
+            CallableInner::Function(tfunction) =>
+                tfunction.flags.contains(FunctionFlags::METHOD),
+        }
+    }
+
+    #[inline]
+    pub fn reencode<In2: VMArgs, R2: VMDowncast>(self) -> TPolymorphicCallable<In2, R2> {
+        TPolymorphicCallable::<In2, R2> {
+            inner: self.inner,
+            _phantom: PhantomData::default()
+        }
+    }
+}
+
 impl<In: VMArgs, R: VMDowncast> VMCast for TPolymorphicCallable<In, R> {
     fn vmcast(self, vm: &VM) -> TValue {
         match self.inner {
@@ -268,19 +288,41 @@ pub struct TPropertyAccess<T: VMDowncast + VMCast + Copy + 'static> {
     kind: AccessKind
 }
 
+impl<T: VMDowncast + VMCast + Copy + 'static> TPropertyAccess<T> {
+    pub fn as_method(&self) -> Option<GCRef<TFunction>> {
+        let AccessKind::Attribute { vm, attribute_val } = &self.kind else {
+            return None;
+        };
+        if self.writeable {
+            return None;
+        }
+        let value = unsafe { **attribute_val };
+        let Some(tfunction) = value.query_object::<TFunction>(vm) else {
+            return None;
+        };
+        if !tfunction.flags.contains(FunctionFlags::METHOD) {
+            return None;
+        }
+        Some(tfunction)
+    }
+}
+
 impl<T: VMDowncast + VMCast + Copy + 'static> VMPropertyCast for TPropertyAccess<T> {
     fn propcast(this: TValue, value: &mut TValue, writeable: bool, vm: &VM) -> Self {
-        let kind;
-        if let Some(property) = GCRef::<TProperty>::vmdowncast(*value, vm) {
-            kind = AccessKind::Property {
-                property, this,
-            };
-        } else {
-            kind = AccessKind::Attribute {
+        let kind = 'kind: {
+            if !writeable { // if properties are accessed as writeable, these are direct
+                            // accesses, and need to be resolved as attributes
+                if let Some(property) = GCRef::<TProperty>::vmdowncast(*value, vm) {
+                    break 'kind AccessKind::Property {
+                        property, this,
+                    };
+                }
+            }
+            AccessKind::Attribute {
                 vm: vm.heap().vm(),
                 attribute_val: &mut *value,
-            };
-        }
+            }
+        };
         return TPropertyAccess {
             kind,
             copy: OnceCell::new(),
@@ -303,12 +345,12 @@ impl<T: VMDowncast + VMCast + Copy + 'static> TPropertyAccess<T> {
                 };
                 let getter: TPolymorphicCallable<_, T> = getter.into();
                 let value = getter(*this);
-                self.copy.set(value);
+                self.copy.set(value).map_err(|_err| ()).expect("copy is empty"); 
                 return self.get();
             }
             AccessKind::Attribute { attribute_val: value, vm } => {
                 let value = T::vmdowncast(unsafe { **value }, &vm).unwrap(); 
-                self.copy.set(value);
+                self.copy.set(value).map_err(|_err| ()).expect("copy is empty"); 
                 return self.get();
             }
         }

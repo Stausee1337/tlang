@@ -746,7 +746,9 @@ pub fn generate_tcall(token_stream: TokenStream) -> Result<TokenStream, syn::Err
 
     let self_ = tcall.polymorphic.args.first()
         .ok_or_else(|| syn::Error::new(tcall.polymorphic.span(), "expected, at least, first self argument"))?;
-    let arguments = &tcall.polymorphic.args;
+    let self_ = self_.clone();
+    
+    let arguments: Punctuated<Expr, Token![,]> = Punctuated::from_iter(tcall.polymorphic.args.into_pairs().skip(1));
 
     Ok(quote! {
         {
@@ -754,8 +756,12 @@ pub fn generate_tcall(token_stream: TokenStream) -> Result<TokenStream, syn::Err
             // TODO: intern symbol #sym for messages in error resolval
             let resolved_func: tlang::interop::TPolymorphicCallable<_, _> = tlang::tvalue::resolve_by_symbol(
                 #vm, tlang_macros::Symbol![#sym], value, false);
-            // TODO: check for method and if self should be part of the call
-            resolved_func(#arguments)
+            if resolved_func.is_method() {
+                resolved_func(#self_, #arguments)
+            } else {
+                let resolved_func2: tlang::interop::TPolymorphicCallable<_, _> = resolved_func.reencode();
+                resolved_func2(#arguments)
+            }
         }
     })
 }
