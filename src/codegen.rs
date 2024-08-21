@@ -169,13 +169,14 @@ impl<'ast> GeneratorNode for ForLoop<'ast> {
         let iterator = generator.allocate_reg();
         generator.emit_get_iterator(iterator, iterable);
 
-        // TODO: optimize while (true) { ... } loop not to have a condition block
         generate_small_branch(start_block, forward_block, generator);
-        generator.set_current_block(forward_block);
-        generator.emit_next_iterator(iterator, loop_body, end_block);
-
-        generator.set_current_block(loop_body);
         generator.with_rib(RibKind::Loop, |generator| {
+            generator.set_current_block(forward_block);
+            let dst = generator.declare_local(self.var.symbol);
+            generator.emit_next_iterator(dst, iterator, loop_body, end_block);
+
+            generator.set_current_block(loop_body);
+
             generator.set_loop_ctx(forward_block, end_block);
             generate_body(self.body, generator)?;
             generator.emit_branch(forward_block);

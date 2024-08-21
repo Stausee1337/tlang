@@ -5,11 +5,11 @@ print(13 >= 12);
 print(0.7 < 0.1);
 
 print(-12);
-print(0.1 + 0.2);
+print(12 / 5);
 
 print(print);
 print(Type);
-print(string.toString);
+print(string.fmt);
 
 const Function = Type.of(print);
 
@@ -22,12 +22,13 @@ print(Function.name.set);
 print(string.name);
 
 var message = "Guys > Girls";
-var lazyToString = message.toString;
+var lazy_fmt = message.fmt;
 
-print(lazyToString);
-print(lazyToString());
+print(lazy_fmt);
+print(lazy_fmt());
 
-print(message.toString());
+print(message.eq);
+print(message.eq("Guys > Girls"));
 
 print(Type.of(12));
 

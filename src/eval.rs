@@ -1,4 +1,6 @@
-use tlang_macros::decode;
+use std::time::Instant;
+
+use tlang_macros::{decode, tcall, tget};
 
 use crate::{
     bytecode::{
@@ -98,6 +100,7 @@ impl TRawCode {
             loop {
                 let op: OpCode = deserializer.next().unwrap();
                 debug!("{op:?}");
+                // let now = Instant::now();
                 match op {
                     OpCode::Mov => {
                         decode!(&mut deserializer, env, Mov { src, mut dst });
@@ -106,7 +109,7 @@ impl TRawCode {
                     OpCode::Add => impls::add(vm, env, &mut deserializer),
                     OpCode::Sub => impls::sub(vm, env, &mut deserializer),
                     OpCode::Mul => impls::mul(vm, env, &mut deserializer),
-                    OpCode::Div => impls::mul(vm, env, &mut deserializer),
+                    OpCode::Div => impls::div(vm, env, &mut deserializer),
                     OpCode::Mod => impls::rem(vm, env, &mut deserializer),
 
                     OpCode::LeftShift => impls::shl(vm, env, &mut deserializer),
@@ -178,7 +181,6 @@ impl TRawCode {
 
                     OpCode::Call => {
                         decode!(&mut deserializer, env, Call { arguments, callee, mut dst });
-                        // let callee: GCRef<TFunction> = VMDowncast::vmdowncast(callee, vm).unwrap();
                         if let Some(callee) = callee.query_object::<TFunction>(vm) {
                             *dst = callee.call(arguments);
                         } else {
@@ -200,8 +202,26 @@ impl TRawCode {
                         }
                     }
 
+                    OpCode::GetIterator => {
+                        decode!(&mut deserializer, env, GetIterator { iterable, mut dst });
+                        *dst = tcall!(vm, TValue::get_iterator(iterable));
+                    }
+
+                    OpCode::NextIterator => {
+                        decode!(&mut deserializer, env, NextIterator { iterator, loop_target, end_target, mut dst });
+                        if TBool::as_bool(tcall!(vm, TValue::next(iterator))) {
+                            *dst = *tget!(vm, TValue::current(iterator));
+                            deserializer.stream().jump(loop_target);
+                        } else {
+                            deserializer.stream().jump(end_target);
+                        }
+                    }
+
+                    OpCode::Noop => (),
+
                     _ => todo!(),
                 }
+                // debug!("perf {:?}", now.elapsed());
             }
         })
     }
@@ -291,7 +311,6 @@ impl Decode for Register {
     #[inline(always)]
     fn decode(&self, env: &ExecutionEnvironment) -> TValue {
         let idx = self.index();
-        debug!("  -> Decode {idx}");
         idx.checked_sub(env.arguments.len())
             .map(|idx| env.registers[idx])
             .unwrap_or_else(|| env.arguments[idx])
@@ -302,7 +321,6 @@ impl DecodeMut for Register {
     #[inline(always)]
     fn decode_mut<'l>(&self, env: &'l mut ExecutionEnvironment) -> &'l mut TValue {
         let idx = self.index();
-        debug!("  -> DecodeMut {idx}");
         idx.checked_sub(env.arguments.len())
             .map(|idx| env.registers.get_mut(idx).unwrap())
             .unwrap_or_else(|| env.arguments.get_mut(idx).unwrap())
@@ -349,6 +367,15 @@ mod impls {
         todo!()
     }
 
+    macro_rules! float_arithmetic {
+        (add => $($body:tt)*) => { $($body)* };
+        (sub => $($body:tt)*) => { $($body)* };
+        (mul => $($body:tt)*) => { $($body)* };
+        (div => $($body:tt)*) => { $($body)* };
+        (rem => $($body:tt)*) => { $($body)* };
+        ($_:ident => $($body:tt)*) => { };
+    }
+
     macro_rules! arithmetic_impl {
         ($fnname: ident, $inname: ident) => {
             #[inline(always)]
@@ -359,6 +386,12 @@ mod impls {
                 if let Some((lhs, rhs)) = lhs_int.zip(rhs_int) {
                     *dst = lhs.$fnname(rhs).into();
                     return;
+                }
+                float_arithmetic! { $fnname =>
+                    if let Some(lhs) = lhs.query_float() {
+                        *dst = lhs.$fnname(rhs);
+                        return;
+                    }
                 }
                 *dst = tcall!(vm, TValue::$fnname(lhs, rhs));
             }
@@ -379,11 +412,33 @@ mod impls {
         impl bitand for BitwiseAnd; impl bitor for BitwiseOr; impl bitxor for BitwiseXor;
     }
 
+    macro_rules! if_integer_comp {
+        (eq => $($body:tt)*) => {};
+        (ne => $($body:tt)*) => {};
+        ($_:ident => $($body:tt)*) => {
+            { $($body)* }
+        };
+    }
+
     macro_rules! branch_impl {
         ($fnname:ident, $inname:ident) => {    
             #[inline(always)]
             pub fn $fnname<'de>(vm: &VM, env: &ExecutionEnvironment, deserializer: &mut Deserializer<'de>) {
                 decode!(deserializer, env, $inname { lhs, rhs, true_target, false_target });
+                if_integer_comp! { $fnname =>
+                    use $crate::interop::vmops::*;
+
+                    let lhs_int: Option<TInteger> = lhs.query_integer();
+                    let rhs_int: Option<TInteger> = rhs.query_integer();
+                    if let Some((lhs, rhs)) = lhs_int.zip(rhs_int) {
+                        if lhs.$fnname(rhs).as_bool() {
+                            deserializer.stream().jump(true_target);
+                        } else {
+                            deserializer.stream().jump(false_target);
+                        }
+                        return;
+                    }
+                }
                 if TBool::as_bool(tcall!(vm, TValue::$fnname(lhs, rhs))) {
                     deserializer.stream().jump(true_target);
                 } else {

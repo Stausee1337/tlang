@@ -525,6 +525,16 @@ impl BytecodeGenerator {
         do_work(self)?;
         let func = self.function_stack.pop().unwrap();
 
+        // struct N;
+        // let mut n = N;
+        // impl std::fmt::Write for N {
+        //     fn write_str(&mut self, s: &str) -> FmtResult {
+        //         print!("{s}");
+        //         Ok(())
+        //     }
+        // }
+        // FunctionDisassembler::dissassemble(&func, &mut n).unwrap();
+
         let func = TFunction::from_codegen(&self.vm(), func, self.module);
         if let Err(crate::vm::GlobalErr::Redeclared(..)) = self.module.set_global(name.symbol, func.into(), true) {
             todo!("codegen errors that are more like runtime errors? Keep going?");
@@ -608,15 +618,6 @@ impl BytecodeGenerator {
     }
 
     pub fn root_function(self) -> GCRef<TFunction> {
-        // struct N;
-        // let mut n = N;
-        // impl std::fmt::Write for N {
-        //     fn write_str(&mut self, s: &str) -> FmtResult {
-        //         print!("{s}");
-        //         Ok(())
-        //     }
-        // }
-        // FunctionDisassembler::dissassemble(&self.root_fn, &mut n).unwrap();
         TFunction::from_codegen(&self.vm(), self.root_fn, self.module)
     }
 }
@@ -1057,11 +1058,12 @@ define_instructions! {
 
     GetIterator { dst: Operand, iterable: Operand },
     NextIterator {
+        dst: Operand,
         iterator: Operand,
         loop_target: CodeLabel,
         end_target: CodeLabel
     },
 
     Error,
-    Noop = 0x80
+    Noop
 }

@@ -45,6 +45,13 @@ pub fn tcall(item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro]
+pub fn tget(item: TokenStream) -> TokenStream {
+    codegen::generate_tget(item.into())
+        .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
+        .into()
+}
+
+#[proc_macro]
 pub fn SelfWithBase(item: TokenStream) -> TokenStream {
     codegen::generate_struct_init(item.into())
         .unwrap_or_else(|err| syn::Error::to_compile_error(&err))

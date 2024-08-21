@@ -2,8 +2,9 @@
 #![feature(tuple_trait)]
 #![feature(unboxed_closures)]
 #![feature(more_qualified_paths)]
+#![feature(str_internals)]
 
-use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode};
+use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode, time::Instant};
 
 extern crate self as tlang;
 
@@ -94,7 +95,13 @@ fn main() -> ExitCode {
 
         let generator = BytecodeGenerator::new(module);
         let module_func: TPolymorphicCallable<_, ()> = codegen::generate_module(ast, generator).unwrap().into();
-        module_func();
+
+        let now = Instant::now();
+        {
+            module_func();
+        }
+        let elapsed = now.elapsed();
+        println!("execution time {:?}", elapsed);
 
         drop(vm);
 

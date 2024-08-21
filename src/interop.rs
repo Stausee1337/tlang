@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, cell::{Cell, OnceCell}, mem::MaybeUninit, rc::Rc};
 
-use crate::{memory::GCRef, tvalue::{TObject, TValue, TString, Typed, TInteger, TFunction, CallResult, TProperty, FunctionFlags}, vm::VM, eval::TArgsBuffer};
+use crate::{memory::GCRef, tvalue::{TObject, TValue, TString, Typed, TInteger, TFunction, CallResult, TProperty, FunctionFlags, TBool}, vm::VM, eval::TArgsBuffer};
 
 
 pub struct TPolymorphicWrapper<T: TPolymorphicObject> {
@@ -60,6 +60,12 @@ pub trait VMDowncast: Sized {
 impl VMCast for &str {
     fn vmcast(self, vm: &VM) -> TValue {
         TString::from_slice(vm, self).into()
+    }
+}
+
+impl VMCast for bool {
+    fn vmcast(self, vm: &VM) -> TValue {
+        TBool::from_bool(self).into()
     }
 }
 

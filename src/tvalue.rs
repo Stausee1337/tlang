@@ -413,8 +413,8 @@ impl Typed for TObject {
                     !eq
                 }));
 
-        ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                prelude, Some("object::toString"), move |this: TValue| {
+        ttype.define_method(Symbol![fmt], TFunction::rustfunc(
+                prelude, Some("object::fmt"), move |this: TValue| {
                     let vm = ttype.vm();
                     TString::from_slice(&vm, &format!("{} {{}}", this.ttype(&vm).unwrap().name))
                 }));
@@ -571,6 +571,10 @@ impl TString {
         }
     }
 
+    pub fn get_iterator(&self) -> GCRef<TStringIterator> {
+        todo!()
+    }
+
     #[inline]
     pub fn size(&self) -> usize {
         self.normalize().size
@@ -644,7 +648,6 @@ impl VMDowncast for GCRef<TString> {
     }
 }
 
-
 impl PartialEq for GCRef<TString> {
     fn eq(&self, other: &Self) -> bool {
         self.as_slice().eq(other.as_slice())
@@ -666,6 +669,50 @@ impl std::fmt::Debug for GCRef<TString> {
 impl GetHash for GCRef<TString> {
     fn get_hash_code(&self) -> u64 {
         self.vm().hash_state.hash_one(self.as_slice())
+    }
+}
+
+tobject! {
+pub struct TStringIterator {
+    backing_string: GCRef<TString>,
+    byte_offset: usize,
+    current_codepoint: Option<char>
+}
+}
+
+impl GCRef<TStringIterator> {
+    /*pub fn next(&mut self) -> bool {
+        struct InnerIterator<'a> {
+            bytes: &'a [u8],
+            offset: &'a mut usize
+        }
+
+        impl<'a> Iterator for InnerIterator<'a> {
+            type Item = u8;
+            fn next(&mut self) -> Option<Self::Item> {
+                *self.offset += 1;
+            }
+        }
+        std::slice::Iter
+
+
+        let codepoint = unsafe {
+            core::str::next_code_point(&mut bytes_iter);
+        };
+        todo!()
+    }
+
+    pub fn current(&self) -> TValue {
+        let Some(codepoint) = self.current_codepoint else {
+            panic!("Iterator is not even initialized. Call next() first");
+        };
+        todo!()
+    }*/
+}
+
+impl Typed for TStringIterator {
+    fn initialize(vm: &VM) -> GCRef<TType> {
+        todo!()
     }
 }
 
@@ -1159,8 +1206,8 @@ impl Typed for TType {
             Symbol![modname],
             TProperty::offset::<TType, GCRef<TString>>(prelude, Accessor::GET, offset_of!(TType, modname)));
         ttype.define_method(
-            Symbol![toString],
-            TFunction::rustfunc(prelude, Some("type::toString"), |this: GCRef<TType>| {
+            Symbol![fmt],
+            TFunction::rustfunc(prelude, Some("type::fmt"), |this: GCRef<TType>| {
                 TString::from_slice(&this.vm(), &format!("[type {}] {{}}", this.name))
             }));
         ttype.define_static_method(
@@ -1302,8 +1349,8 @@ impl Typed for TFunction {
             TProperty::offset::<Self, Option<GCRef<TString>>>(prelude, Accessor::GET, offset_of!(Self, name)));
 
         ttype.define_method(
-            Symbol![toString],
-            TFunction::rustfunc(prelude, Some("function::toString"), |this: GCRef<TFunction>| {
+            Symbol![fmt],
+            TFunction::rustfunc(prelude, Some("function::fmt"), |this: GCRef<TFunction>| {
                 let name = if let Some(name) = this.name {
                     name.as_slice()
                 } else {
@@ -1492,7 +1539,7 @@ pub fn print(module: GCRef<TModule>, msg: TValue) {
         return;
     }
 
-    let msg_str: GCRef<TString> = tcall!(&vm, TValue::toString(msg));
+    let msg_str: GCRef<TString> = tcall!(&vm, TValue::fmt(msg));
 
     println!("{msg_str}");
 }

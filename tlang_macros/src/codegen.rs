@@ -765,3 +765,67 @@ pub fn generate_tcall(token_stream: TokenStream) -> Result<TokenStream, syn::Err
         }
     })
 }
+
+pub fn generate_tget(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+    let tcall: TCall = syn::parse2(token_stream)?;
+    let vm = &tcall.vm;
+
+    let sym;
+    let ty;
+    match tcall.polymorphic.func.as_ref() {
+        Expr::Path(path) => {
+            if path.path.segments.len() < 2 {
+                return Err(
+                    syn::Error::new(tcall.polymorphic.span(), "expected function path of at least 2 segments")
+                );
+            }
+            sym = path.path.segments.last();
+            let pairs = path.path.segments.pairs();
+
+            let mut ty_path = Punctuated::<PathSegment, Token![::]>::new();
+            for pair in pairs {
+                match pair {
+                    Pair::Punctuated(value, punct) => {
+                        ty_path.push_value(value.clone());
+                        ty_path.push_punct(punct.clone());
+                    }
+                    Pair::End(..) => {
+                        ty_path.pop_punct();
+                    }
+                }
+            }
+
+            let path = Path {
+                leading_colon: None,
+                segments: ty_path
+            };
+            ty = TypePath {
+                qself: None,
+                path
+            };
+        },
+        _ => {
+            return Err(
+                syn::Error::new(tcall.polymorphic.span(), "expected polymorphic function path")
+            );
+        }
+    }
+
+    if tcall.polymorphic.args.len() != 1 {
+        return Err(syn::Error::new(tcall.polymorphic.span(), "expected, one (self) argument"));
+    }
+
+    let self_ = tcall.polymorphic.args.first().unwrap();
+
+    let self_ = self_.clone();
+
+    Ok(quote! {
+        {
+            let value: #ty = #self_;
+            // TODO: intern symbol #sym for messages in error resolval
+            let mut resolved_access: tlang::interop::TPropertyAccess<_> = tlang::tvalue::resolve_by_symbol(
+                #vm, tlang_macros::Symbol![#sym], value, true);
+            resolved_access
+        }
+    })
+}

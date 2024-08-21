@@ -129,8 +129,8 @@ impl GCRef<Primitives> {
             let mut prelude = vm.modules().prelude();
             prelude.set_global(Symbol![float], ttype.into(), true);
 
-            ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                    prelude, Some("float::toString"),
+            ttype.define_method(Symbol![fmt], TFunction::rustfunc(
+                    prelude, Some("float::fmt"),
                     move |this: TFloat| {
                         let vm = self.vm();
                         TString::from_slice(&vm, &format!("{this}"))
@@ -158,8 +158,8 @@ impl GCRef<Primitives> {
             let mut prelude = vm.modules().prelude();
             prelude.set_global(Symbol![int], ttype.into(), true);
 
-            ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                    prelude, Some("int::toString"),
+            ttype.define_method(Symbol![fmt], TFunction::rustfunc(
+                    prelude, Some("int::fmt"),
                     move |this: TInteger| {
                         let vm = self.vm();
                         TString::from_slice(&vm, &format!("{this}"))
@@ -187,8 +187,8 @@ impl GCRef<Primitives> {
             let mut prelude = vm.modules().prelude();
             prelude.set_global(Symbol![bool], ttype.into(), true);
 
-            ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                    prelude, Some("bool::toString"),
+            ttype.define_method(Symbol![fmt], TFunction::rustfunc(
+                    prelude, Some("bool::fmt"),
                     move |this: TBool| {
                         let vm = self.vm();
                         TString::from_slice(&vm, &format!("{this}"))
@@ -213,8 +213,10 @@ impl GCRef<Primitives> {
             let mut prelude = vm.modules().prelude();
             prelude.set_global(Symbol![string], ttype.into(), true);
 
-            ttype.define_method(Symbol![toString], TFunction::rustfunc(
-                    prelude, Some("string::toString"), |this: GCRef<TString>| this));
+            ttype.define_method(Symbol![fmt], TFunction::rustfunc(
+                    prelude, Some("string::fmt"), |this: GCRef<TString>| this));
+            ttype.define_method(Symbol![eq], TFunction::rustfunc(
+                    prelude, Some("string::eq"), |this: GCRef<TString>, other: GCRef<TString>| this.eq(&other)));
 
             ttype
         })
