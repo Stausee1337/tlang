@@ -178,9 +178,28 @@ impl TRawCode {
 
                     OpCode::Call => {
                         decode!(&mut deserializer, env, Call { arguments, callee, mut dst });
-                        let callee: GCRef<TFunction> = VMDowncast::vmdowncast(callee, vm).unwrap();
-                        *dst = callee.call(arguments);
+                        // let callee: GCRef<TFunction> = VMDowncast::vmdowncast(callee, vm).unwrap();
+                        if let Some(callee) = callee.query_object::<TFunction>(vm) {
+                            *dst = callee.call(arguments);
+                        } else {
+                            todo!("dispatch other callable");
+                        }
                     }
+
+                    OpCode::MethodCall => {
+                        decode!(&mut deserializer, env, MethodCall { arguments, this, callee, mut dst });
+
+                        let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, callee, this, true);
+                        if let Some(tfunction) = access.as_method() {
+                            let arguments = arguments.prepend(this);
+                            *dst = tfunction.call(arguments);
+                        } else if let Some(tfunction) = (*access).query_object::<TFunction>(vm) {
+                            *dst = tfunction.call(arguments);
+                        } else {
+                            todo!("dispatch other callable");
+                        }
+                    }
+
                     _ => todo!(),
                 }
             }

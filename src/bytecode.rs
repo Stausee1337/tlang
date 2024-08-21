@@ -1048,6 +1048,13 @@ define_instructions! {
         arguments: &'s [Operand],
     },
 
+    MethodCall<'s> {
+        dst: Operand,
+        this: Operand,
+        callee: Symbol,
+        arguments: &'s [Operand],
+    },
+
     GetIterator { dst: Operand, iterable: Operand },
     NextIterator {
         iterator: Operand,

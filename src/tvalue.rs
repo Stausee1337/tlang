@@ -526,7 +526,7 @@ unsafe impl std::marker::Send for StringData {}
 static_assertions::const_assert!(std::mem::size_of::<StringData>() == 8);
 
 impl TString {
-    pub(crate) fn from_slice(vm: &VM, slice: &str) -> GCRef<Self> {
+    pub fn from_slice(vm: &VM, slice: &str) -> GCRef<Self> {
         let size = slice.len();
         let length = TInteger::from_usize(slice.chars().count());
 
@@ -1150,7 +1150,7 @@ impl Typed for TType {
         prelude.set_global(Symbol![Type], ttype.into(), true);
 
         ttype.define_property(
-            Symbol![basety],
+            Symbol![base],
             TProperty::offset::<TType, Option<GCRef<TType>>>(prelude, Accessor::GET, offset_of!(TType, basety)));
         ttype.define_property(
             Symbol![name],

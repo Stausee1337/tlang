@@ -5,7 +5,7 @@ use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop
 
 use crate::bytecode::{Operand, BytecodeGenerator, CodeLabel, RibKind};
 use crate::symbol::Symbol;
-use crate::tvalue::{TString, TFunction};
+use crate::tvalue::TFunction;
 
 #[derive(Debug)]
 pub enum CodegenErr {
@@ -473,22 +473,36 @@ impl<'ast> GeneratorNode for UnaryExpr<'ast> {
     }
 }
 
-impl<'ast> GeneratorNode for CallExpr<'ast> {
-    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
-        let callee = self.callable.generate_bytecode(generator)?.unwrap();
-
+impl<'ast> CallExpr<'ast> {
+    fn generate_arguments(&self, generator: &mut BytecodeGenerator) -> Result<Vec<Operand>, CodegenErr> {
         let mut arguments = vec![];
         for arg in self.args {
             let arg = arg.generate_bytecode(generator)?.unwrap();
             arguments.push(arg);
         }
+        Ok(arguments)
+    }
+}
 
-        // FIXME: Because of serialization issue the `callee` and `dst`
-        // operands end up swaped. This is more of a general issue to
-        // address in serialization, other than here
+impl<'ast> GeneratorNode for CallExpr<'ast> {
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        match self.callable {
+            Expression::AttributeExpr(AttributeExpr { attr, base, .. }) => {
+                // generate method call
+                let this = base.generate_bytecode(generator)?.unwrap();
+                let arguments = self.generate_arguments(generator)?;
+
+                let dst = generator.allocate_reg();
+                generator.emit_method_call(dst, this, attr.symbol, &arguments);
+                return Ok(Some(dst));
+            },
+            _ => ()
+        }
+        let callee = self.callable.generate_bytecode(generator)?.unwrap();
+        let arguments = self.generate_arguments(generator)?;
 
         let dst = generator.allocate_reg();
-        generator.emit_call(dst, callee, &arguments as &[_]);
+        generator.emit_call(dst, callee, &arguments);
         Ok(Some(dst))
     }
 }

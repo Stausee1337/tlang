@@ -21,8 +21,13 @@ print(Function.name.set);
 
 print(string.name);
 
-var lazyToString = "Guys > Girls".toString;
+var message = "Guys > Girls";
+var lazyToString = message.toString;
 
 print(lazyToString);
 print(lazyToString());
+
+print(message.toString());
+
+print(Type.of(12));
 
