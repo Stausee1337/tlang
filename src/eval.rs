@@ -89,158 +89,7 @@ impl TArgsIterator {
 }
 
 impl TRawCode {
-    pub fn evaluate<'a>(&self, mut module: GCRef<TModule>, args: TArgsBuffer) -> TValue {
-        self.with_environment(module, args, |vm, env, mut stream| {
-            loop {
-                let op: OpCode = unsafe { std::mem::transmute(stream.current()) };
-                stream.bump(1);
-                debug!("{op:?}");
-                // let now = Instant::now();
-                match op {
-                    OpCode::Mov => {
-                        decode!(&mut stream, env, Mov { &src, &mut dst });
-                        *dst = src;
-                    }
-                    OpCode::Add => impls::add(vm, env, &mut stream),
-                    OpCode::Sub => impls::sub(vm, env, &mut stream),
-                    OpCode::Mul => impls::mul(vm, env, &mut stream),
-                    OpCode::Div => impls::div(vm, env, &mut stream),
-                    OpCode::Mod => impls::rem(vm, env, &mut stream),
-
-                    OpCode::LeftShift => impls::shl(vm, env, &mut stream),
-                    OpCode::RightShift => impls::shr(vm, env, &mut stream),
-
-                    OpCode::BitwiseAnd => impls::bitand(vm, env, &mut stream),
-                    OpCode::BitwiseOr => impls::bitor(vm, env, &mut stream),
-                    OpCode::BitwiseXor => impls::bitxor(vm, env, &mut stream),
-
-                    OpCode::Neg => impls::neg(vm, env, &mut stream),
-                    OpCode::Not => impls::not(vm, env, &mut stream),
-                    OpCode::Invert => impls::invert(vm, env, &mut stream),
-
-                    OpCode::DeclareGlobal => {
-                        decode!(&mut stream, env, DeclareGlobal { symbol, &init, constant });
-                        module.set_global(symbol, init, constant);
-                    }
-
-                    OpCode::GetGlobal => {
-                        decode!(&mut stream, env, GetGlobal { symbol, &mut dst });
-                        *dst = module.get_global(symbol).unwrap();
-                    }
-
-                    OpCode::SetGlobal => {
-                        decode!(&mut stream, env, SetGlobal { symbol, &src });
-                        *module.get_global_mut(symbol).unwrap() = src;
-                    }
-
-                    OpCode::GetAttribute => {
-                        decode!(&mut stream, env, GetAttribute { &base, attribute, &mut dst });
-                        let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base, true);
-                        if let Some(tfunction) = access.as_method() {
-                            *dst = tfunction.bind(base).into();
-                        } else {
-                            *dst = *access;
-                        }
-                    }
-
-                    OpCode::SetAttribute => {
-                        decode!(&mut stream, env, SetAttribute { &base, attribute, &src });
-                        let mut access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base, true);
-                        *access = src;
-                    }
-
-                    OpCode::GetSubscript => {
-                        todo!("GetSubscript");
-                    }
-
-                    OpCode::SetSubscript => {
-                        todo!("SetSubscript");
-                    }
-
-                    OpCode::Branch => {
-                        decode!(&mut stream, env, Branch { target });
-                        stream.jump(target);
-                    }
-                    OpCode::BranchIf => {
-                        decode!(&mut stream, env, BranchIf { &condition, true_target, false_target });
-                        if impls::truthy(condition, env) {
-                            stream.jump(true_target);
-                        } else {
-                            stream.jump(false_target);
-                        }
-                    }
-
-                    OpCode::BranchEq => impls::eq(vm, env, &mut stream),
-                    OpCode::BranchNe => impls::ne(vm, env, &mut stream),
-                    OpCode::BranchGt => impls::gt(vm, env, &mut stream),
-                    OpCode::BranchGe => impls::ge(vm, env, &mut stream),
-                    OpCode::BranchLt => impls::lt(vm, env, &mut stream),
-                    OpCode::BranchLe => impls::le(vm, env, &mut stream),
-
-                    OpCode::Return => {
-                        decode!(&mut stream, env, Return { &value });
-                        return value;
-                    }
-
-                    OpCode::Call => {
-                        let envcopy: *const _ = &*env;
-                        decode!(&mut stream, env, Call { arguments, &callee, &mut dst });
-                        let arguments = arguments.decode(unsafe { &*envcopy });
-
-                        if let Some(callee) = callee.query_object::<TFunction>(vm) {
-                            *dst = callee.call(arguments);
-                        } else {
-                            todo!("dispatch other callable");
-                        }
-                    }
-
-                    OpCode::MethodCall => {
-                        let envcopy: *const _ = &*env;
-                        decode!(&mut stream, env, MethodCall { arguments, &this, callee, &mut dst });
-                        let arguments = arguments.decode(unsafe { &*envcopy });
-
-                        let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, callee, this, true);
-                        if let Some(tfunction) = access.as_method() {
-                            let arguments = arguments.prepend(this);
-                            *dst = tfunction.call(arguments);
-                        } else if let Some(tfunction) = (*access).query_object::<TFunction>(vm) {
-                            *dst = tfunction.call(arguments);
-                        } else {
-                            todo!("dispatch other callable");
-                        }
-                    }
-
-                    OpCode::GetIterator => {
-                        decode!(&mut stream, env, GetIterator { &iterable, &mut dst });
-                        *dst = tcall!(vm, TValue::get_iterator(iterable));
-                    }
-
-                    OpCode::NextIterator => {
-                        decode!(&mut stream, env, NextIterator { &iterator, loop_target, end_target, &mut dst });
-                        if TBool::as_bool(tcall!(vm, TValue::next(iterator))) {
-                            *dst = *tget!(vm, TValue::current(iterator));
-                            stream.jump(loop_target);
-                        } else {
-                            stream.jump(end_target);
-                        }
-                    }
-
-                    OpCode::Error => {
-                        panic!("Error");
-                    }
-                    OpCode::Noop => (),
-                }
-                // debug!("perf {:?}", now.elapsed());
-            }
-        })
-    }
-
-    fn with_environment<'a, F: FnOnce(&VM, &mut ExecutionEnvironment, CodeStream) -> TValue>(
-        &self,
-        module: GCRef<TModule>,
-        arguments: TArgsBuffer,
-        executor: F,
-    ) -> TValue {
+    pub fn evaluate<'a>(&self, mut module: GCRef<TModule>, arguments: TArgsBuffer) -> TValue {
         let mut registers = vec![TValue::null(); self.registers() + arguments.0.len()];
         for (idx, arg) in arguments.0.iter().enumerate() {
             registers[idx] = *arg;
@@ -251,7 +100,151 @@ impl TRawCode {
         };
         let vm = module.vm();
         let mut stream = CodeStream::from_raw(self);
-        executor(&vm, &mut env, stream)
+        Self::inner_eval(module, &vm, &mut env, stream)
+    }
+
+    fn inner_eval(mut module: GCRef<TModule>, vm: &VM, env: &mut ExecutionEnvironment, mut stream: CodeStream) -> TValue {
+        loop {
+            let op: OpCode = unsafe { std::mem::transmute(stream.current()) };
+            stream.bump(1);
+            debug!("{op:?}");
+            // let now = Instant::now();
+            match op {
+                OpCode::Mov => {
+                    decode!(&mut stream, env, Mov { &src, &mut dst });
+                    *dst = src;
+                }
+                OpCode::Add => impls::add(vm, env, &mut stream),
+                OpCode::Sub => impls::sub(vm, env, &mut stream),
+                OpCode::Mul => impls::mul(vm, env, &mut stream),
+                OpCode::Div => impls::div(vm, env, &mut stream),
+                OpCode::Mod => impls::rem(vm, env, &mut stream),
+
+                OpCode::LeftShift => impls::shl(vm, env, &mut stream),
+                OpCode::RightShift => impls::shr(vm, env, &mut stream),
+
+                OpCode::BitwiseAnd => impls::bitand(vm, env, &mut stream),
+                OpCode::BitwiseOr => impls::bitor(vm, env, &mut stream),
+                OpCode::BitwiseXor => impls::bitxor(vm, env, &mut stream),
+
+                OpCode::Neg => impls::neg(vm, env, &mut stream),
+                OpCode::Not => impls::not(vm, env, &mut stream),
+                OpCode::Invert => impls::invert(vm, env, &mut stream),
+
+                OpCode::DeclareGlobal => {
+                    decode!(&mut stream, env, DeclareGlobal { symbol, &init, constant });
+                    module.set_global(symbol, init, constant);
+                }
+
+                OpCode::GetGlobal => {
+                    decode!(&mut stream, env, GetGlobal { symbol, &mut dst });
+                    *dst = module.get_global(symbol).unwrap();
+                }
+
+                OpCode::SetGlobal => {
+                    decode!(&mut stream, env, SetGlobal { symbol, &src });
+                    *module.get_global_mut(symbol).unwrap() = src;
+                }
+
+                OpCode::GetAttribute => {
+                    decode!(&mut stream, env, GetAttribute { &base, attribute, &mut dst });
+                    let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base, true);
+                    if let Some(tfunction) = access.as_method() {
+                        *dst = tfunction.bind(base).into();
+                    } else {
+                        *dst = *access;
+                    }
+                }
+
+                OpCode::SetAttribute => {
+                    decode!(&mut stream, env, SetAttribute { &base, attribute, &src });
+                    let mut access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base, true);
+                    *access = src;
+                }
+
+                OpCode::GetSubscript => {
+                    todo!("GetSubscript");
+                }
+
+                OpCode::SetSubscript => {
+                    todo!("SetSubscript");
+                }
+
+                OpCode::Branch => {
+                    decode!(&mut stream, env, Branch { target });
+                    stream.jump(target);
+                }
+                OpCode::BranchIf => {
+                    decode!(&mut stream, env, BranchIf { &condition, true_target, false_target });
+                    if impls::truthy(condition, env) {
+                        stream.jump(true_target);
+                    } else {
+                        stream.jump(false_target);
+                    }
+                }
+
+                OpCode::BranchEq => impls::eq(vm, env, &mut stream),
+                OpCode::BranchNe => impls::ne(vm, env, &mut stream),
+                OpCode::BranchGt => impls::gt(vm, env, &mut stream),
+                OpCode::BranchGe => impls::ge(vm, env, &mut stream),
+                OpCode::BranchLt => impls::lt(vm, env, &mut stream),
+                OpCode::BranchLe => impls::le(vm, env, &mut stream),
+
+                OpCode::Return => {
+                    decode!(&mut stream, env, Return { &value });
+                    return value;
+                }
+
+                OpCode::Call => {
+                    let envcopy: *const _ = &*env;
+                    decode!(&mut stream, env, Call { arguments, &callee, &mut dst });
+                    let arguments = arguments.decode(unsafe { &*envcopy });
+
+                    if let Some(callee) = callee.query_object::<TFunction>(vm) {
+                        *dst = callee.call(arguments);
+                    } else {
+                        todo!("dispatch other callable");
+                    }
+                }
+
+                OpCode::MethodCall => {
+                    let envcopy: *const _ = &*env;
+                    decode!(&mut stream, env, MethodCall { arguments, &this, callee, &mut dst });
+                    let arguments = arguments.decode(unsafe { &*envcopy });
+
+                    let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, callee, this, true);
+                    if let Some(tfunction) = access.as_method() {
+                        let arguments = arguments.prepend(this);
+                        *dst = tfunction.call(arguments);
+                    } else if let Some(tfunction) = (*access).query_object::<TFunction>(vm) {
+                        *dst = tfunction.call(arguments);
+                    } else {
+                        todo!("dispatch other callable");
+                    }
+                }
+
+                OpCode::GetIterator => {
+                    decode!(&mut stream, env, GetIterator { &iterable, &mut dst });
+                    *dst = tcall!(vm, TValue::get_iterator(iterable));
+                }
+
+                OpCode::NextIterator => {
+                    decode!(&mut stream, env, NextIterator { &iterator, loop_target, end_target, &mut dst });
+                    if TBool::as_bool(tcall!(vm, TValue::next(iterator))) {
+                        *dst = *tget!(vm, TValue::current(iterator));
+                        stream.jump(loop_target);
+                    } else {
+                        stream.jump(end_target);
+                    }
+                }
+
+                OpCode::Error => {
+                    panic!("Error");
+                }
+                OpCode::Noop => (),
+            }
+            // debug!("perf {:?}", now.elapsed());
+        }
     }
 }
 
