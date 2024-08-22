@@ -142,6 +142,7 @@ fn make_struct(
     structures.extend(quote!(
             #[derive(Clone, Copy, Debug)]
             #[allow(non_camel_case_types)]
+            #[repr(packed)]
             #vis struct #ident #fields_tokens));
     structures.extend(quote! {
         impl Instruction for #ident {

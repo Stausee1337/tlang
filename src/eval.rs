@@ -3,7 +3,7 @@ use tlang_macros::{decode, tcall, tget};
 
 use crate::{
     bytecode::{
-        CodeStream, OpCode, Operand, OperandKind, TRawCode, OperandList
+        CodeStream, OpCode, Operand, TRawCode, OperandList
     },
     memory::GCRef,
     tvalue::{TBool, TFunction, TInteger, TValue, resolve_by_symbol},
@@ -20,17 +20,17 @@ struct ExecutionEnvironment<'l> {
 impl<'l> ExecutionEnvironment<'l> {
     #[inline(always)]
     pub fn decode(&self, op: Operand) -> TValue {
-        match op.to_rust() {
-            OperandKind::Null => TValue::null(),
-            OperandKind::Bool(bool) => TBool::from_bool(bool).into(),
-            OperandKind::Register(reg) => self.registers[reg.index()],
-            OperandKind::Descriptor(desc) => self.descriptors[desc.index()],
-            OperandKind::Int32(int) => TInteger::from_int32(int).into(),
+        match op {
+            Operand::Null => TValue::null(),
+            Operand::Bool(bool) => TBool::from_bool(bool).into(),
+            Operand::Register(reg) => self.registers[reg.index()],
+            Operand::Descriptor(desc) => self.descriptors[desc.index()],
+            Operand::Int32(int) => TInteger::from_int32(int).into(),
         }
     }
 
     pub fn decode_mut(&mut self, op: Operand) -> &mut TValue {
-        let OperandKind::Register(reg) = op.to_rust() else {
+        let Operand::Register(reg) = op else {
             panic!("cannot be decoded as mutable");
         };
         &mut self.registers[reg.index()]

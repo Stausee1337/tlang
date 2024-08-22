@@ -29,7 +29,7 @@ pub trait GeneratorNode {
 
 pub fn generate_module<'ast>(module: Module<'ast>, mut generator: BytecodeGenerator) -> Result<GCRef<TFunction>, CodegenErr> {
     generate_body(module.body, &mut generator)?;
-    generator.emit_return(Operand::null());
+    generator.emit_return(Operand::Null);
     Ok(generator.root_function())
 }
 
@@ -114,7 +114,7 @@ impl<'ast> GeneratorNode for Return<'ast> {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
         let value = if let Some(value) = self.value {
             value.generate_bytecode(generator)?.unwrap()
-        } else { Operand::null() };
+        } else { Operand::Null };
 
         generator.emit_return(value);
 
@@ -225,7 +225,7 @@ impl<'ast> GeneratorNode for Variable<'ast> {
                 span: self.name.span
             });
         } else {
-            Operand::null()
+            Operand::Null
         };
 
         if generator.find_rib(RibKind::Module, 1).is_some() { // declare (and init) global
@@ -245,7 +245,7 @@ impl<'ast> GeneratorNode for Function<'ast> {
         let _ = generator.with_function(self.name, self.params, |generator| {
             generate_body(self.body, generator)?;
             if !generator.is_terminated() {
-                generator.emit_return(Operand::null());
+                generator.emit_return(Operand::Null);
             }
             Ok(())
         })?;
@@ -264,7 +264,7 @@ impl<'ast> GeneratorNode for AssignExpr<'ast> {
                 if let Some(local) = generator.find_local(ident.symbol) {
                     if local.constant {
                         generator.emit_error();
-                        return Ok(Some(Operand::null()));
+                        return Ok(Some(Operand::Null));
                     }
 
                     generator.emit_mov(generator.get_local_reg(ident.symbol), src);
@@ -303,10 +303,10 @@ impl<'ast> GeneratorNode for AssignExpr<'ast> {
 impl GeneratorNode for Literal {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
         Ok(Some(match self.kind {
-            LiteralKind::Null => Operand::null(),
+            LiteralKind::Null => Operand::Null,
             LiteralKind::Integer(int) => generator.make_int(int),
             LiteralKind::Float(float) => generator.make_float(float),
-            LiteralKind::Boolean(bool) => Operand::bool(bool),
+            LiteralKind::Boolean(bool) => Operand::Bool(bool),
             LiteralKind::String(str) => generator.make_string(str),
         }))
     }
@@ -442,11 +442,11 @@ impl<'ast> GeneratorNode for BinaryExpr<'ast> {
                 self.generate_bool(true_target, false_target, generator)?;
 
                 generator.set_current_block(false_target);
-                generator.emit_mov(dst, Operand::bool(false));
+                generator.emit_mov(dst, Operand::Bool(false));
                 generator.emit_branch(end_block);
 
                 generator.set_current_block(true_target);
-                generator.emit_mov(dst, Operand::bool(true));
+                generator.emit_mov(dst, Operand::Bool(true));
                 generator.emit_branch(end_block);
 
                 generator.set_current_block(end_block);

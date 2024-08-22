@@ -7,8 +7,8 @@ use tlang_macros::define_instructions;
 use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed, TObject, FunctionFlags}, symbol::Symbol, parse::Ident, codegen::{self, CodegenErr}, memory::GCRef, vm::{VM, TModule}};
 use index_vec::{IndexVec, define_index_type};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum OperandKind {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Operand {
     Null,
     Bool(bool),
     Register(Register),
@@ -16,74 +16,14 @@ pub enum OperandKind {
     Int32(i32),
 }
 
-#[derive(Clone, Copy)]
-pub struct Operand(u32);
-
-impl Operand {
-    pub const CG_MAX_U32: u32 = 1 << 30;
-
-    const NULL_TAG:  u32 = 0x0 << 29;
-    const BOOL_TAG:  u32 = 0x1 << 29;
-    const REG_TAG:   u32 = 0x2 << 29;
-    const DESC_TAG:  u32 = 0x3 << 29;
-    const INT32_TAG: u32 = 0x4 << 29;
-
-    const VALUE_MASK: u32 = 0x1fffffff;
-    const TAG_MASK:   u32 = 0xe0000000;
-
-    #[inline(always)]
-    pub const fn null() -> Self {
-        Operand(Self::NULL_TAG)
-    }
-
-    #[inline(always)]
-    pub const fn bool(bool: bool) -> Self {
-        let bool = bool as u32;
-        Operand((bool & Self::VALUE_MASK) | Self::BOOL_TAG)
-    }
-
-    #[inline(always)]
-    pub const fn register(reg: Register) -> Self {
-        let reg = reg._raw;
-        debug_assert!(reg < Self::CG_MAX_U32);
-        Operand((reg & Self::VALUE_MASK) | Self::REG_TAG)
-    }
-
-    #[inline(always)]
-    pub const fn descriptor(desc: Descriptor) -> Self {
-        let desc = desc._raw;
-        debug_assert!(desc < Self::CG_MAX_U32);
-        Operand((desc & Self::VALUE_MASK) | Self::DESC_TAG)
-    }
-
-    #[inline(always)]
-    pub const fn int32(int: i32) -> Self {
-        let int = int as u32;
-        debug_assert!(int < Self::CG_MAX_U32);
-        Operand((int & Self::VALUE_MASK) | Self::INT32_TAG)
-    }
-
-    #[inline(always)]
-    pub fn to_rust(self) -> OperandKind {
-        match self.0 & Self::TAG_MASK {
-            Self::NULL_TAG => OperandKind::Null,
-            Self::BOOL_TAG => OperandKind::Bool((self.0 & Self::VALUE_MASK) != 0),
-            Self::REG_TAG => OperandKind::Register(Register::from_raw(self.0 & Self::VALUE_MASK)),
-            Self::DESC_TAG => OperandKind::Descriptor(Descriptor::from_raw(self.0 & Self::VALUE_MASK)),
-            Self::INT32_TAG => OperandKind::Int32((self.0 & Self::VALUE_MASK) as i32),
-            _ => unreachable!()
-        }
-    }
-}
-
 impl std::fmt::Debug for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtResult {
-        match self.to_rust() {
-            OperandKind::Null => f.write_str("Null"),
-            OperandKind::Bool(bool) => write!(f, "Bool({bool})"),
-            OperandKind::Register(reg) => write!(f, "{:?}", reg),
-            OperandKind::Descriptor(desc) => write!(f, "{desc:?}"),
-            OperandKind::Int32(int) => write!(f, "Int32({int})"),
+        match self {
+            Operand::Null => f.write_str("Null"),
+            Operand::Bool(bool) => write!(f, "Bool({bool})"),
+            Operand::Register(reg) => write!(f, "{:?}", reg),
+            Operand::Descriptor(desc) => write!(f, "{desc:?}"),
+            Operand::Int32(int) => write!(f, "Int32({int})"),
         }
     }
 }
@@ -463,18 +403,18 @@ impl CGFunction {
             .expect("register local before declare");
         debug_assert!(local.register.is_none());
         local.register = Some(reg);
-        Operand::register(reg)
+        Operand::Register(reg)
     }
 
     pub fn get_local_reg(&self, symbol: Symbol) -> Operand {
         let reg = self.find_local(symbol).expect("symbol corresponds to actual local");
-        Operand::register(reg.register.expect("find_local finds declared locals"))
+        Operand::Register(reg.register.expect("find_local finds declared locals"))
     }
 
     fn descriptor<T: Into<TValue>>(&mut self, tvalue: T) -> Operand {
         let idx = self.descriptor_table.len_idx();
         self.descriptor_table.push(tvalue.into());
-        Operand::descriptor(idx)
+        Operand::Descriptor(idx)
     }
 }
 
@@ -575,7 +515,7 @@ impl BytecodeGenerator {
         let reg = self.current_fn_mut()
             .register_allocator
             .next();
-        Operand::register(reg)
+        Operand::Register(reg)
     }
 
     pub fn allocate_list(&mut self, operands: Vec<Operand>) -> OperandList {
@@ -600,7 +540,7 @@ impl BytecodeGenerator {
 
     pub fn make_int(&mut self, int: u64) -> Operand {
         if let Ok(int) = i32::try_from(int) {
-            return Operand::int32(int);
+            return Operand::Int32(int);
         }
         self.current_fn_mut().descriptor(TInteger::from_usize(int as usize))
     }
