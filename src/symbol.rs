@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use ahash::RandomState;
 use hashbrown::raw::RawTable;
 
-use crate::{memory::{GCRef, Atom}, tvalue::TString, bytecode::{Serialize, Deserialize}};
+use crate::{memory::{GCRef, Atom}, tvalue::TString};
 
 pub use tlang_macros::Symbol;
 
@@ -127,17 +127,3 @@ impl Symbol {
     }
 }
 
-impl Serialize for Symbol {
-    fn serialize(&self, serializer: &mut crate::bytecode::Serializer) {
-        serializer.feed_u64(self.id);
-        serializer.feed_u64(self.hash);
-    }
-}
-
-impl<'de> Deserialize<'de> for Symbol {
-    fn deserialize(deserializer: &mut crate::bytecode::Deserializer<'de>) -> Option<Self> {
-        let id = deserializer.next_u64()?;
-        let hash = deserializer.next_u64()?;
-        Some(Symbol { id, hash })
-    }
-}

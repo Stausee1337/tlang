@@ -44,7 +44,6 @@ pub fn generate_node(token_stream: TokenStream) -> Result<TokenStream, syn::Erro
 pub struct Instruction {
     terminator: bool,
     ident: Ident,
-    lifetime: Option<GenericLifetime>,
     fields: Option<FieldsNamed>,
     discriminant: Option<(Token![=], Expr)>,
 }
@@ -53,9 +52,6 @@ impl Parse for Instruction {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let attrs = Attribute::parse_outer(input)?;
         let ident: Ident = input.parse()?;
-        let lifetime: Option<GenericLifetime> = if input.peek(Token![<]) {
-            Some(input.parse()?)
-        } else { None };
         let fields: Option<FieldsNamed> = if input.peek(Brace) {
             Some(input.parse()?)
         } else { None };
@@ -93,7 +89,6 @@ impl Parse for Instruction {
         Ok(Self {
             terminator,
             ident,
-            lifetime,
             fields,
             discriminant
         })
@@ -127,21 +122,11 @@ impl ToTokens for GenericLifetime {
 fn make_struct(
     vis: Visibility,
     ident: &Ident,
-    generics: Option<&GenericLifetime>,
     fields: Option<&FieldsNamed>,
     is_terminator: bool,
     structures: &mut TokenStream) {
 
-    let impl_generics = if let Some(lifetime) = &generics {
-        let lifetime = &lifetime.param;
-        quote! { <'de: #lifetime, #lifetime> }
-    } else {
-        quote! { <'de> }
-    };
-
     let mut fields_tokens = TokenStream::new();
-    let mut serialize_code = TokenStream::new();
-    let mut deserialize_code = TokenStream::new();
 
     if let Some(fields) = fields {
         fields.to_tokens(&mut fields_tokens);
@@ -150,48 +135,18 @@ fn make_struct(
             let fident = &field.ident;
             ident_fields.extend(quote!(#fident,));
         }
-        serialize_code.extend(quote! {
-            let #ident { #ident_fields } = *self;
-        });
-
-        for field in &fields.named {
-            let fident = &field.ident;
-            serialize_code.extend(quote!(serializer.feed(&#fident);));
-            deserialize_code.extend(quote!(let #fident = deserializer.next()?;));
-        }
-        deserialize_code.extend(quote! {
-            Some(Self { #ident_fields })
-        });
     } else {
         fields_tokens.extend(quote!(;));
-        serialize_code.extend(quote!(drop(serializer);));
-        deserialize_code.extend(quote! {
-            drop(deserializer);
-            Some(Self)
-        });
     }
 
     structures.extend(quote!(
             #[derive(Clone, Copy, Debug)]
-            #[repr(packed)] 
             #[allow(non_camel_case_types)]
-            #vis struct #ident #generics #fields_tokens));
+            #vis struct #ident #fields_tokens));
     structures.extend(quote! {
-        impl #impl_generics Instruction<'de> for #ident #generics {
+        impl Instruction for #ident {
             const CODE: OpCode = OpCode::#ident;
             const IS_TERMINATOR: bool = #is_terminator;
-        }
-
-        impl #generics Serialize for #ident #generics {
-            fn serialize(&self, serializer: &mut Serializer) {
-                #serialize_code 
-            }
-        }
-
-        impl #impl_generics Deserialize<'de> for #ident #generics {
-            fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self> {
-                #deserialize_code
-            }
         }
     });
 }
@@ -207,7 +162,6 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
     let mut debug_deserialize = TokenStream::new();
     for inst in &mut instructions {
         let ident = &inst.ident;
-        let generics = &inst.lifetime;
 
         opcodes.extend(quote!(#ident));
         if let Some((_, disc)) = &inst.discriminant {
@@ -235,19 +189,24 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
         } else { None };
 
         block_impls.extend(quote! {
-            pub fn #snake_case_ident #generics (&mut self, #params) {
+            pub fn #snake_case_ident (&mut self, #params) {
                 debug_assert!(!self.terminated);
                 #terminator_code
+                const SIZE: usize = std::mem::size_of::<crate::bytecode::instructions::#ident>();
+
                 let instruction = crate::bytecode::instructions::#ident {
                     #fargs
                 };
-                self.serializer().feed(&crate::bytecode::OpCode::#ident);
-                self.serializer().feed(&instruction);
+                let instruction = unsafe {
+                    std::mem::transmute::<_, [u8; SIZE]>(instruction)
+                };
+                self.data.write(&[crate::bytecode::OpCode::#ident as u8]);
+                self.data.write(&instruction);
             }
         });
 
         codegen_impls.extend(quote! {
-            pub fn #snake_case_ident #generics (&mut self, #params) {
+            pub fn #snake_case_ident (&mut self, #params) {
                 let func = self.current_fn_mut();
                 let block = func.current_block_mut();
                 block.#snake_case_ident(#fargs);
@@ -255,8 +214,11 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
         });
 
         debug_deserialize.extend(quote! {
-            OpCode::#ident =>
-                Box::new(crate::bytecode::instructions::#ident::deserialize(deserializer).unwrap()),
+            OpCode::#ident => {
+                let instruction: crate::bytecode::instructions::#ident = *stream.read();
+                stream.bump(std::mem::size_of::<crate::bytecode::instructions::#ident>());
+                Box::new(instruction)
+            },
         });
 
         if let Some(fields) = &mut inst.fields {
@@ -268,7 +230,6 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
         make_struct(
             Visibility::Public(syn::token::Pub::default()),
             ident, 
-            generics.as_ref(),
             inst.fields.as_ref(),
             inst.terminator,
             &mut structures);
@@ -282,24 +243,11 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
         }
 
         impl OpCode {
-            pub fn deserialize_for_debug<'de>(self, deserializer: &mut Deserializer<'de>
-                ) -> Box<dyn std::fmt::Debug + 'de> {
+            pub fn deserialize_for_debug<'l>(self, stream: &mut CodeStream<'l>
+                ) -> Box<dyn std::fmt::Debug> {
                 match self {
                     #debug_deserialize
                 }
-            }
-        }
-
-        impl Serialize for OpCode {
-            fn serialize(&self, serializer: &mut Serializer) {
-                serializer.feed_u8(*self as u8);
-            }
-        }
-
-        impl<'de> Deserialize<'de> for OpCode {
-            fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self> {
-                let op = deserializer.next_u8()?;
-                Some(unsafe { std::mem::transmute(op) })
             }
         }
 
@@ -326,10 +274,10 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
 }
 
 struct DecodeStmt {
-    deserializer: Expr,
-    comma_token1: Token![,],
+    stream: Expr,
+    _comma_token1: Token![,],
     environment: Expr,
-    comma_token2: Token![,],
+    _comma_token2: Token![,],
     decodable: Decodable,
 }
 
@@ -340,7 +288,7 @@ impl Parse for DecodeStmt {
         let environment = input.parse()?;
         let comma_token2 = input.parse()?;
         let decodable = input.parse()?;
-        Ok(Self { deserializer, comma_token1, environment, comma_token2, decodable })
+        Ok(Self { stream: deserializer, _comma_token1: comma_token1, environment, _comma_token2: comma_token2, decodable })
     }
 }
 
@@ -411,7 +359,7 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
 
     let ident = &stmt.decodable.ident;
     let environment = &stmt.environment;
-    let deserializer = &stmt.deserializer;
+    let stream = &stmt.stream;
 
     let mut decode_logic = TokenStream::new(); 
     for field in &stmt.decodable.fields.named {
@@ -446,7 +394,8 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
             use std::ops::Deref;
             use crate::bytecode::Instruction;
 
-            let instruction: crate::bytecode::instructions::#ident = (#deserializer).next().unwrap();
+            let instruction: crate::bytecode::instructions::#ident = *(#stream).read();
+            (#stream).bump(std::mem::size_of::<crate::bytecode::instructions::#ident>());
             let crate::bytecode::instructions::#ident { #fields, .. } = instruction;
 
             #decode_logic

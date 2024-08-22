@@ -494,7 +494,8 @@ impl<'ast> GeneratorNode for CallExpr<'ast> {
                 let arguments = self.generate_arguments(generator)?;
 
                 let dst = generator.allocate_reg();
-                generator.emit_method_call(dst, this, attr.symbol, &arguments);
+                let list = generator.allocate_list(arguments);
+                generator.emit_method_call(dst, this, attr.symbol, list);
                 return Ok(Some(dst));
             },
             _ => ()
@@ -503,7 +504,8 @@ impl<'ast> GeneratorNode for CallExpr<'ast> {
         let arguments = self.generate_arguments(generator)?;
 
         let dst = generator.allocate_reg();
-        generator.emit_call(dst, callee, &arguments);
+        let list = generator.allocate_list(arguments);
+        generator.emit_call(dst, callee, list);
         Ok(Some(dst))
     }
 }

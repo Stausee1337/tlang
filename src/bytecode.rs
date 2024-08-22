@@ -1,5 +1,5 @@
 
-use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCell, rc::Rc, marker::PhantomData};
+use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCell, rc::Rc, io::Write as IOWrite};
 
 use ahash::HashMap;
 use tlang_macros::define_instructions;
@@ -31,33 +31,39 @@ impl Operand {
     const VALUE_MASK: u32 = 0x1fffffff;
     const TAG_MASK:   u32 = 0xe0000000;
 
+    #[inline(always)]
     pub const fn null() -> Self {
         Operand(Self::NULL_TAG)
     }
 
+    #[inline(always)]
     pub const fn bool(bool: bool) -> Self {
         let bool = bool as u32;
         Operand((bool & Self::VALUE_MASK) | Self::BOOL_TAG)
     }
 
+    #[inline(always)]
     pub const fn register(reg: Register) -> Self {
         let reg = reg._raw;
         debug_assert!(reg < Self::CG_MAX_U32);
         Operand((reg & Self::VALUE_MASK) | Self::REG_TAG)
     }
 
+    #[inline(always)]
     pub const fn descriptor(desc: Descriptor) -> Self {
         let desc = desc._raw;
         debug_assert!(desc < Self::CG_MAX_U32);
         Operand((desc & Self::VALUE_MASK) | Self::DESC_TAG)
     }
 
+    #[inline(always)]
     pub const fn int32(int: i32) -> Self {
         let int = int as u32;
         debug_assert!(int < Self::CG_MAX_U32);
         Operand((int & Self::VALUE_MASK) | Self::INT32_TAG)
     }
 
+    #[inline(always)]
     pub fn to_rust(self) -> OperandKind {
         match self.0 & Self::TAG_MASK {
             Self::NULL_TAG => OperandKind::Null,
@@ -67,18 +73,6 @@ impl Operand {
             Self::INT32_TAG => OperandKind::Int32((self.0 & Self::VALUE_MASK) as i32),
             _ => unreachable!()
         }
-    }
-}
-
-impl Serialize for Operand {
-    fn serialize(&self, serializer: &mut Serializer) {
-        serializer.feed_u32(self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for Operand {
-    fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self> {
-        Some(Operand(deserializer.next_u32()?))
     }
 }
 
@@ -104,57 +98,75 @@ define_index_type! {
     DEBUG_FORMAT = "${}";
 }
 
+#[derive(Clone, Copy)]
+pub struct OperandList(pub *const [Operand]);
+
+impl std::fmt::Debug for OperandList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtResult {
+        let slice = unsafe { &*self.0 };
+        std::fmt::Debug::fmt(slice, f)
+    }
+}
+
 pub struct CodeStream<'l> {
-    position: usize,
-    code: &'l [u8],
+    begin: *const u8,
+    current: *const u8,
+    end: *const u8,
     blocks: &'l [u32],
 }
 
 impl<'l> CodeStream<'l> {
     pub fn from_raw(raw: &'l TRawCode) -> Self {
+        let code = raw.code();
+        let begin = code.as_ptr();
         Self {
-            position: 0,
-            code: raw.code(),
+            begin,
+            current: begin,
+            end: unsafe { code.as_ptr().add(code.len()) },
             blocks: raw.blocks()
         }
     }
 
     fn debug_from_data(code: &'l [u8])  -> Self {
+        let begin = code.as_ptr();
         Self {
-            code,
-            position: 0,
+            begin,
+            current: begin,
+            end: unsafe { code.as_ptr().add(code.len()) },
             blocks: &[]
         }
     }
 
     #[inline(always)]
     pub fn eos(&self) -> bool {
-        self.code().len() == 0
-    }
-
-    #[inline(always)]
-    pub fn data(&self) -> &[u8] {
-        self.code
-    }
-
-    #[inline(always)]
-    pub fn code(&self) -> &[u8] {
-        &self.data()[self.position..]
+        std::ptr::eq(self.current, self.end)
     }
 
     #[inline(always)]
     pub fn current(&self) -> u8 {
-        self.data()[self.position]
+        unsafe { *self.current }
     }
 
     #[inline(always)]
     pub fn jump(&mut self, to: CodeLabel) {
-        self.position = self.blocks[to.index()] as usize;
+        unsafe {
+            let offset = self.blocks[to.index()] as usize;
+            self.current = self.begin.add(offset);
+        }
     }
 
     #[inline(always)]
     pub fn bump(&mut self, amount: usize) {
-        self.position += amount;
+        unsafe {
+            self.current = self.current.add(amount);
+        }
+    }
+
+    #[inline(always)]
+    pub fn read<T: Sized>(&self) -> &T {
+        unsafe {
+            &*(self.current as *const T)
+        }
     }
 }
 
@@ -211,11 +223,11 @@ impl<'f> FunctionDisassembler<'f> {
         writeln!(self, "bb{} {{", block.label._raw)?;
         self.indent();
 
-        let mut stream = CodeStream::debug_from_data(&block.data.0);
-        let mut deserializer = Deserializer::new(&mut stream);
-        while !deserializer.stream().eos() {
-            let op: OpCode = deserializer.next().unwrap();
-            let instruction = op.deserialize_for_debug(&mut deserializer);
+        let mut stream = CodeStream::debug_from_data(&block.data);
+        while !stream.eos() {
+            let op: OpCode = unsafe { std::mem::transmute(stream.current()) };
+            stream.bump(1);
+            let instruction = op.deserialize_for_debug(&mut stream);
             writeln!(self, "{instruction:?}")?;
         }
 
@@ -229,7 +241,7 @@ impl<'f> FunctionDisassembler<'f> {
         
         let mut code_size = 0;
         for block in &self.function.blocks {
-            code_size += block.data.0.len();
+            code_size += block.data.len();
         }
 
         writeln!(self, ".locals {}", self.function.num_locals)?;
@@ -265,18 +277,6 @@ define_index_type! {
     DEBUG_FORMAT = "bb{}";
 }
 
-impl Serialize for CodeLabel {
-    fn serialize(&self, serializer: &mut Serializer) {
-        serializer.feed_u32(self._raw)
-    }
-}
-
-impl<'de> Deserialize<'de> for CodeLabel {
-    fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self> {
-        Some(Self::from_raw(deserializer.next_u32()?))
-    }
-}
-
 #[derive(Clone, Copy)]
 pub struct Local {
     pub constant: bool,
@@ -285,7 +285,7 @@ pub struct Local {
 
 struct BasicBlock {
     label: CodeLabel,
-    data: Serializer,
+    data: Vec<u8>,
     terminated: bool
 } 
 
@@ -293,13 +293,9 @@ impl BasicBlock {
     fn new() -> Self {
         Self {
             label: CodeLabel::from_raw(0),
-            data: Serializer(vec![]),
+            data: vec![],
             terminated: false
         }
-    }
-
-    fn serializer(&mut self) -> &mut Serializer {
-        &mut self.data
     }
 }
 
@@ -525,16 +521,6 @@ impl BytecodeGenerator {
         do_work(self)?;
         let func = self.function_stack.pop().unwrap();
 
-        // struct N;
-        // let mut n = N;
-        // impl std::fmt::Write for N {
-        //     fn write_str(&mut self, s: &str) -> FmtResult {
-        //         print!("{s}");
-        //         Ok(())
-        //     }
-        // }
-        // FunctionDisassembler::dissassemble(&func, &mut n).unwrap();
-
         let func = TFunction::from_codegen(&self.vm(), func, self.module);
         if let Err(crate::vm::GlobalErr::Redeclared(..)) = self.module.set_global(name.symbol, func.into(), true) {
             todo!("codegen errors that are more like runtime errors? Keep going?");
@@ -592,6 +578,12 @@ impl BytecodeGenerator {
         Operand::register(reg)
     }
 
+    pub fn allocate_list(&mut self, operands: Vec<Operand>) -> OperandList {
+        let operands = operands.into_boxed_slice();
+        let operands = Box::leak(operands);
+        OperandList(unsafe { &*operands })
+    }
+
     pub fn declare_local(&mut self, symbol: Symbol) -> Operand {
         self.current_fn_mut()
             .declare_local(symbol)
@@ -618,21 +610,24 @@ impl BytecodeGenerator {
     }
 
     pub fn root_function(self) -> GCRef<TFunction> {
+        // struct N;
+        // let mut n = N;
+        // impl std::fmt::Write for N {
+        //     fn write_str(&mut self, s: &str) -> FmtResult {
+        //         print!("{s}");
+        //         Ok(())
+        //     }
+        // }
+        // FunctionDisassembler::dissassemble(&self.root_fn, &mut n).unwrap();
         TFunction::from_codegen(&self.vm(), self.root_fn, self.module)
     }
 }
 
 impl TFunction {
     pub fn from_codegen(vm: &VM, func: CGFunction, module: GCRef<TModule>) -> GCRef<Self> {
-        const ALIGN: usize = 8;
-
         let mut codesize = 0;
         for block in &func.blocks {
-            codesize += block.data.0.len();
-            if codesize % ALIGN != 0 {
-                let padding = ALIGN - (codesize % ALIGN);
-                codesize += padding;
-            }
+            codesize += block.data.len();
         }
 
         let name = func.name.map(|name| vm.symbols.get(name));
@@ -652,16 +647,10 @@ impl TFunction {
             assert!(block.terminated);
 
             tcode.blocks_mut()[block.label.index()] = offset as u32;
-            let length = block.data.0.len();
+            let length = block.data.len();
             let codebuf = &mut tcode.code_mut()[offset..offset + length];
-            codebuf.copy_from_slice(&block.data.0);
-            offset += block.data.0.len();
-
-
-            if offset % ALIGN != 0 {
-                let padding = ALIGN - (offset % ALIGN);
-                offset += padding;
-            }
+            codebuf.copy_from_slice(&block.data);
+            offset += block.data.len();
         }
 
         for (descriptor, value) in func.descriptor_table.iter_enumerated() {
@@ -815,139 +804,9 @@ impl TRawCode {
     }
 }
 
-pub struct Deserializer<'de> {
-    stream: &'de mut CodeStream<'de>
-}
-
-impl<'de> Deserializer<'de> {
-    pub fn new(stream: &'de mut CodeStream<'de>) -> Self {
-        Self { stream }
-    }
-
-    pub fn stream(&mut self) -> &mut CodeStream<'de> {
-        self.stream
-    }
-
-    pub fn next<T: Deserialize<'de>>(&mut self) -> Option<T> {
-        T::deserialize(self)
-    }
-
-    #[must_use]
-    pub fn skip_align<T: Sized>(&mut self) -> Option<()> {
-        let align = std::mem::align_of::<T>();
-        if self.stream.position % align != 0 {
-            let padding = align - (self.stream.position % align);
-            if self.stream.code().len() < padding {
-                return None;
-            }
-            self.stream.position += padding;
-        }
-        Some(())
-    }
-
-    #[must_use]
-    pub fn skip_bytes(&mut self, amount: usize) -> Option<()> {
-        if self.stream.code().len() < amount {
-            return None;
-        }
-        self.stream.position += amount;
-        Some(())
-    }
-
-    pub fn raw_data(&self) -> *const u8 {
-        self.stream.code().as_ptr()
-    }
-}
-
-pub struct Serializer(Vec<u8>);
-
-impl Serializer {
-    pub fn feed<S: Serialize>(&mut self, serialize: &S) {
-        serialize.serialize(self);
-    }
-
-    pub fn feed_align<T: Sized>(&mut self) {
-        let align = std::mem::align_of::<T>();
-        if self.0.len() % align != 0 {
-            let padding = align - (self.0.len() % align);
-            self.0.extend(std::iter::repeat(0u8).take(padding));
-        }
-    }
-}
-
-macro_rules! impl_primitive {
-    ($ty:ty, $ser:ident, $deser:ident) => {    
-        impl<'de> Deserializer<'de> {
-            pub fn $deser(&mut self) -> Option<$ty> {
-                const SIZE: usize = std::mem::size_of::<$ty>();
-                if self.stream.code().len() >= SIZE {
-                    let data: [u8; SIZE] = self.stream.code()[0..SIZE].try_into().unwrap();
-                    let data = <$ty>::from_le_bytes(data);
-                    self.stream.bump(SIZE);
-                    return Some(data);
-                }
-                None
-            }
-        }
-
-        impl Serializer {
-            pub fn $ser(&mut self, x: $ty) {
-                use std::io::Write;
-                self.0.write(&x.to_le_bytes());
-            }
-        }
-    };
-}
-
-impl_primitive!(u8, feed_u8, next_u8);
-impl_primitive!(u32, feed_u32, next_u32);
-impl_primitive!(u64, feed_u64, next_u64);
-
-pub trait Serialize: Sized {
-    fn serialize(&self, serializer: &mut Serializer);
-}
-
-pub trait Deserialize<'de>: Sized {
-    fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self>;
-}
-
-pub trait Instruction<'de>: Sized + Copy + Serialize + Deserialize<'de> {
+pub trait Instruction: Sized + Copy {
     const CODE: OpCode;
     const IS_TERMINATOR: bool;
-}
-
-impl Serialize for bool {
-    fn serialize(&self, serializer: &mut Serializer) {
-        serializer.feed_u8(*self as u8);
-    }
-}
-
-impl<'de> Deserialize<'de> for bool {
-    fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self> {
-        Some(deserializer.next_u8()? == 1)
-    }
-}
-
-impl<'a> Serialize for &'a [Operand] {
-    fn serialize(&self, serializer: &mut Serializer) {
-        serializer.feed_u64(self.len() as u64);
-        serializer.feed_align::<Operand>();
-        for op in self.iter() {
-            serializer.feed(op);
-        }
-    }
-}
-
-impl<'a, 'de: 'a> Deserialize<'de> for &'a [Operand] {
-    fn deserialize(deserializer: &mut Deserializer<'de>) -> Option<Self> {
-        let length = deserializer.next_u64()? as usize;
-        deserializer.skip_align::<Operand>();
-
-        let slice = unsafe { std::slice::from_raw_parts(deserializer.raw_data() as *const Operand, length) };
-        deserializer.skip_bytes(slice.len() * std::mem::size_of::<Operand>());
-
-        return Some(slice);
-    }
 }
 
 define_instructions! {
@@ -1043,17 +902,17 @@ define_instructions! {
     #[terminator(true)]
     Return { value: Operand },
 
-    Call<'s> {
+    Call {
         dst: Operand,
         callee: Operand,
-        arguments: &'s [Operand],
+        arguments: OperandList,
     },
 
-    MethodCall<'s> {
+    MethodCall {
         dst: Operand,
         this: Operand,
         callee: Symbol,
-        arguments: &'s [Operand],
+        arguments: OperandList,
     },
 
     GetIterator { dst: Operand, iterable: Operand },
