@@ -305,7 +305,7 @@ impl Parse for Decodable {
     } }
 
 struct DecodeFields {
-    brace_token: Brace,
+    _brace_token: Brace,
     named: Punctuated<DecodeField, Token![,]>,
 }
 
@@ -315,7 +315,7 @@ impl Parse for DecodeFields {
         let brace_token = braced!(content in input);
 
         let named = content.parse_terminated(DecodeField::parse, Token![,])?;
-        Ok(Self { brace_token, named })
+        Ok(Self { _brace_token: brace_token, named })
     }
 }
 
@@ -334,17 +334,20 @@ impl Parse for DecodeField {
 
 enum DecodeKind {
     Copy,
-    Deref(Token![&]),
-    Mutable(Token![mut]),
+    Decode(Token![&], Option<Token![mut]>),
 }
 
 impl Parse for DecodeKind {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         if input.peek(Token![&]) {
-            Ok(DecodeKind::Deref(input.parse()?))
-        } else if input.peek(Token![mut]) {
-            Ok(DecodeKind::Mutable(input.parse()?))
-        } else {
+            let anpersand = input.parse()?;
+            let mutability = if input.peek(Token![mut]) {
+                Some(input.parse()?)
+            } else {
+                None
+            };
+            Ok(DecodeKind::Decode(anpersand, mutability))
+        } else{
             Ok(DecodeKind::Copy)
         }
     }
@@ -368,16 +371,19 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
             attrs: vec![],
             ident: ident.clone(),
             by_ref: None,
-            mutability: if let DecodeKind::Deref(..) = field.kind {
-                Some(Token![mut](Span::call_site()))
-            } else { None },
+            mutability: None,
             subpat: None
         };
         
         let decoding = match field.kind {
-            DecodeKind::Copy => quote!(Decode::decode(&#ident, #environment)),
-            DecodeKind::Deref(_) => unreachable!(),
-            DecodeKind::Mutable(_) => quote!(DecodeMut::decode_mut(&#ident, #environment)),
+            DecodeKind::Copy => quote!(#ident),
+            DecodeKind::Decode(_, mutability) => {
+                if mutability.is_some() {
+                    quote!(#environment.decode_mut(#ident))
+                } else {
+                    quote!(#environment.decode(#ident))
+                }
+            },
         };
 
         decode_logic.extend(quote!(let #local = #decoding; ));

@@ -27,3 +27,5 @@ tlang_macros = { path = "./tlang_macros" }
 
 [profile.release]
 debug = true
+
+# -C force-frame-pointers=yes

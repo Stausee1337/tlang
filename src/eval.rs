@@ -1,15 +1,13 @@
-use std::time::Instant;
 
 use tlang_macros::{decode, tcall, tget};
 
 use crate::{
     bytecode::{
-        CodeLabel, CodeStream, Descriptor, OpCode, Operand, OperandKind, Register, TRawCode, OperandList
+        CodeStream, OpCode, Operand, OperandKind, TRawCode, OperandList
     },
     memory::GCRef,
-    symbol::Symbol,
     tvalue::{TBool, TFunction, TInteger, TValue, resolve_by_symbol},
-    interop::{VMDowncast, TPropertyAccess},
+    interop::TPropertyAccess,
     vm::{TModule, VM},
     debug
 };
@@ -17,6 +15,26 @@ use crate::{
 struct ExecutionEnvironment<'l> {
     descriptors: &'l [TValue],
     registers: &'l mut [TValue],
+}
+
+impl<'l> ExecutionEnvironment<'l> {
+    #[inline(always)]
+    pub fn decode(&self, op: Operand) -> TValue {
+        match op.to_rust() {
+            OperandKind::Null => TValue::null(),
+            OperandKind::Bool(bool) => TBool::from_bool(bool).into(),
+            OperandKind::Register(reg) => self.registers[reg.index()],
+            OperandKind::Descriptor(desc) => self.descriptors[desc.index()],
+            OperandKind::Int32(int) => TInteger::from_int32(int).into(),
+        }
+    }
+
+    pub fn decode_mut(&mut self, op: Operand) -> &mut TValue {
+        let OperandKind::Register(reg) = op.to_rust() else {
+            panic!("cannot be decoded as mutable");
+        };
+        &mut self.registers[reg.index()]
+    }
 }
 
 pub struct TArgsBuffer(Vec<TValue>);
@@ -70,29 +88,6 @@ impl TArgsIterator {
     }
 }
 
-trait Decode {
-    type Output;
-
-    fn decode(&self, env: &ExecutionEnvironment) -> Self::Output;
-}
-
-trait DecodeMut {
-    #[inline(always)]
-    fn decode_mut<'l>(&self, _env: &'l mut ExecutionEnvironment) -> &'l mut TValue {
-        panic!(
-            "{} cannot be decoded as mutable",
-            std::any::type_name_of_val(self)
-        )
-    }
-}
-
-trait DecodeDeref {
-    fn decode_deref<'l>(
-        &self,
-        env: &'l ExecutionEnvironment,
-    ) -> &'l impl Iterator<Item = &'l TValue>;
-}
-
 impl TRawCode {
     pub fn evaluate<'a>(&self, mut module: GCRef<TModule>, args: TArgsBuffer) -> TValue {
         self.with_environment(module, args, |vm, env, mut stream| {
@@ -103,7 +98,7 @@ impl TRawCode {
                 // let now = Instant::now();
                 match op {
                     OpCode::Mov => {
-                        decode!(&mut stream, env, Mov { src, mut dst });
+                        decode!(&mut stream, env, Mov { &src, &mut dst });
                         *dst = src;
                     }
                     OpCode::Add => impls::add(vm, env, &mut stream),
@@ -124,22 +119,22 @@ impl TRawCode {
                     OpCode::Invert => impls::invert(vm, env, &mut stream),
 
                     OpCode::DeclareGlobal => {
-                        decode!(&mut stream, env, DeclareGlobal { symbol, init, constant });
+                        decode!(&mut stream, env, DeclareGlobal { symbol, &init, constant });
                         module.set_global(symbol, init, constant);
                     }
 
                     OpCode::GetGlobal => {
-                        decode!(&mut stream, env, GetGlobal { symbol, mut dst });
+                        decode!(&mut stream, env, GetGlobal { symbol, &mut dst });
                         *dst = module.get_global(symbol).unwrap();
                     }
 
                     OpCode::SetGlobal => {
-                        decode!(&mut stream, env, SetGlobal { symbol, src });
+                        decode!(&mut stream, env, SetGlobal { symbol, &src });
                         *module.get_global_mut(symbol).unwrap() = src;
                     }
 
                     OpCode::GetAttribute => {
-                        decode!(&mut stream, env, GetAttribute { base, attribute, mut dst });
+                        decode!(&mut stream, env, GetAttribute { &base, attribute, &mut dst });
                         let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base, true);
                         if let Some(tfunction) = access.as_method() {
                             *dst = tfunction.bind(base).into();
@@ -149,7 +144,7 @@ impl TRawCode {
                     }
 
                     OpCode::SetAttribute => {
-                        decode!(&mut stream, env, SetAttribute { base, attribute, src });
+                        decode!(&mut stream, env, SetAttribute { &base, attribute, &src });
                         let mut access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base, true);
                         *access = src;
                     }
@@ -167,7 +162,7 @@ impl TRawCode {
                         stream.jump(target);
                     }
                     OpCode::BranchIf => {
-                        decode!(&mut stream, env, BranchIf { condition, true_target, false_target });
+                        decode!(&mut stream, env, BranchIf { &condition, true_target, false_target });
                         if impls::truthy(condition, env) {
                             stream.jump(true_target);
                         } else {
@@ -183,12 +178,15 @@ impl TRawCode {
                     OpCode::BranchLe => impls::le(vm, env, &mut stream),
 
                     OpCode::Return => {
-                        decode!(&mut stream, env, Return { value });
+                        decode!(&mut stream, env, Return { &value });
                         return value;
                     }
 
                     OpCode::Call => {
-                        decode!(&mut stream, env, Call { arguments, callee, mut dst });
+                        let envcopy: *const _ = &*env;
+                        decode!(&mut stream, env, Call { arguments, &callee, &mut dst });
+                        let arguments = arguments.decode(unsafe { &*envcopy });
+
                         if let Some(callee) = callee.query_object::<TFunction>(vm) {
                             *dst = callee.call(arguments);
                         } else {
@@ -197,7 +195,9 @@ impl TRawCode {
                     }
 
                     OpCode::MethodCall => {
-                        decode!(&mut stream, env, MethodCall { arguments, this, callee, mut dst });
+                        let envcopy: *const _ = &*env;
+                        decode!(&mut stream, env, MethodCall { arguments, &this, callee, &mut dst });
+                        let arguments = arguments.decode(unsafe { &*envcopy });
 
                         let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, callee, this, true);
                         if let Some(tfunction) = access.as_method() {
@@ -211,12 +211,12 @@ impl TRawCode {
                     }
 
                     OpCode::GetIterator => {
-                        decode!(&mut stream, env, GetIterator { iterable, mut dst });
+                        decode!(&mut stream, env, GetIterator { &iterable, &mut dst });
                         *dst = tcall!(vm, TValue::get_iterator(iterable));
                     }
 
                     OpCode::NextIterator => {
-                        decode!(&mut stream, env, NextIterator { iterator, loop_target, end_target, mut dst });
+                        decode!(&mut stream, env, NextIterator { &iterator, loop_target, end_target, &mut dst });
                         if TBool::as_bool(tcall!(vm, TValue::next(iterator))) {
                             *dst = *tget!(vm, TValue::current(iterator));
                             stream.jump(loop_target);
@@ -255,118 +255,13 @@ impl TRawCode {
     }
 }
 
-impl Decode for Operand {
-    type Output = TValue;
-
+impl OperandList {
     #[inline(always)]
-    fn decode(&self, env: &ExecutionEnvironment) -> TValue {
-        match self.to_rust() {
-            OperandKind::Null => TValue::null(),
-            OperandKind::Bool(bool) => TBool::from_bool(bool).into(),
-            OperandKind::Register(reg) => reg.decode(env),
-            OperandKind::Descriptor(desc) => desc.decode(env),
-            OperandKind::Int32(int) => int.decode(env),
-        }
-    }
-}
-
-impl<'a> Decode for &'a [Operand] {
-    type Output = TArgsBuffer;
-
-    fn decode(&self, env: &ExecutionEnvironment) -> Self::Output {
-        let mut arguments = Vec::new();
-        for op in self.iter() {
-            arguments.push(Decode::decode(op, env));
-        }
-        TArgsBuffer(arguments)
-    }
-}
-
-impl DecodeMut for Operand {
-    fn decode_mut<'l>(&self, env: &'l mut ExecutionEnvironment) -> &'l mut TValue {
-        match self.to_rust() {
-            OperandKind::Null => panic!("TValue::null() cannot be decoded as mutable"),
-            OperandKind::Bool(bool) => bool.decode_mut(env),
-            OperandKind::Register(reg) => reg.decode_mut(env),
-            OperandKind::Descriptor(desc) => desc.decode_mut(env),
-            OperandKind::Int32(int) => int.decode_mut(env),
-        }
-    }
-}
-
-impl Decode for bool {
-    type Output = bool;
-
-    #[inline(always)]
-    fn decode(&self, _env: &ExecutionEnvironment) -> bool {
-        *self
-    }
-}
-
-impl DecodeMut for bool {}
-
-impl Decode for Descriptor {
-    type Output = TValue;
-
-    #[inline(always)]
-    fn decode(&self, env: &ExecutionEnvironment) -> TValue {
-        env.descriptors[self.index()]
-    }
-}
-
-impl DecodeMut for Descriptor {}
-
-impl Decode for Register {
-    type Output = TValue;
-
-    #[inline(always)]
-    fn decode(&self, env: &ExecutionEnvironment) -> TValue {
-        env.registers[self.index()]
-    }
-}
-
-impl DecodeMut for Register {
-    #[inline(always)]
-    fn decode_mut<'l>(&self, env: &'l mut ExecutionEnvironment) -> &'l mut TValue {
-        &mut env.registers[self.index()]
-    }
-}
-
-impl Decode for i32 {
-    type Output = TValue;
-
-    #[inline(always)]
-    fn decode(&self, _env: &ExecutionEnvironment) -> TValue {
-        TInteger::from_int32(*self).into()
-    }
-}
-
-impl DecodeMut for i32 {}
-
-impl Decode for CodeLabel {
-    type Output = CodeLabel;
-
-    fn decode(&self, _env: &ExecutionEnvironment) -> Self::Output {
-        *self
-    }
-}
-
-impl Decode for Symbol {
-    type Output = Symbol;
-
-    fn decode(&self, _env: &ExecutionEnvironment) -> Self::Output {
-        *self
-    }
-}
-
-impl Decode for OperandList {
-    type Output = TArgsBuffer;
-
-    fn decode(&self, env: &ExecutionEnvironment) -> Self::Output {
+    fn decode(&self, env: &ExecutionEnvironment) -> TArgsBuffer {
         let operands = unsafe { &*self.0 };
         let mut arguments = Vec::new();
         for op in operands {
-            arguments.push(Decode::decode(op, env));
+            arguments.push(env.decode(*op));
         }
         TArgsBuffer(arguments)
     }
@@ -398,7 +293,7 @@ mod impls {
         ($fnname: ident, $inname: ident) => {
             #[inline(always)]
             pub fn $fnname<'l>(vm: &VM, env: &mut ExecutionEnvironment, stream: &mut CodeStream<'l>) {
-                decode!(stream, env, $inname { lhs, rhs, mut dst });
+                decode!(stream, env, $inname { &lhs, &rhs, &mut dst });
                 let lhs_int: Option<TInteger> = lhs.query_integer();
                 let rhs_int: Option<TInteger> = rhs.query_integer();
                 if let Some((lhs, rhs)) = lhs_int.zip(rhs_int) {
@@ -442,7 +337,7 @@ mod impls {
         ($fnname:ident, $inname:ident) => {    
             #[inline(always)]
             pub fn $fnname<'l>(vm: &VM, env: &ExecutionEnvironment, stream: &mut CodeStream<'l>) {
-                decode!(stream, env, $inname { lhs, rhs, true_target, false_target });
+                decode!(stream, env, $inname { &lhs, &rhs, true_target, false_target });
                 if_integer_comp! { $fnname =>
                     use $crate::interop::vmops::*;
 
@@ -480,7 +375,7 @@ mod impls {
 
     #[inline(always)]
     pub fn neg<'l>(vm: &VM, env: &mut ExecutionEnvironment, stream: &mut CodeStream<'l>) {
-        decode!(stream, env, Neg { src, mut dst });
+        decode!(stream, env, Neg { &src, &mut dst });
         if let Some(int) = src.query_integer() {
             *dst = int.neg().into();
             return;
@@ -495,7 +390,7 @@ mod impls {
     pub fn invert<'l>(vm: &VM, env: &mut ExecutionEnvironment, stream: &mut CodeStream<'l>) {
         use crate::interop::vmops::Invert;
 
-        decode!(stream, env, Invert { src, mut dst });
+        decode!(stream, env, Invert { &src, &mut dst });
         if let Some(int) = src.query_integer() {
             *dst = int.invert().into();
             return;
@@ -505,7 +400,7 @@ mod impls {
 
     #[inline(always)]
     pub fn not<'l>(vm: &VM, env: &mut ExecutionEnvironment, stream: &mut CodeStream<'l>) {
-        decode!(stream, env, Not { src, mut dst });
+        decode!(stream, env, Not { &src, &mut dst });
         if let Some(int) = src.query_bool() {
             *dst = int.not().into();
             return;

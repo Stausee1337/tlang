@@ -541,15 +541,12 @@ impl TString {
                 slice.len()
             );
 
-            let mut string = if size < std::mem::size_of::<&()>() {
-                GCRef::from_raw(
-                    std::ptr::addr_of!(string.data.small[1]) as *const TString
-                )
+            if size < std::mem::size_of::<&()>() {
+                string.data.small[0] = 1;
             } else {
                 let align = std::mem::align_of::<u8>();
                 string.data.ptr = std::alloc::alloc(Layout::from_size_align_unchecked(size, align)) as *const u8;
-                string
-            };
+            }
 
             std::ptr::copy_nonoverlapping(slice.as_ptr(), string.data_ptr_mut(), size);
 
@@ -577,32 +574,23 @@ impl TString {
 
     #[inline]
     pub fn size(&self) -> usize {
-        self.normalize().size
+        self.size
     }
 
     #[inline]
     pub fn length(&self) -> TInteger {
-        self.normalize().length
+        self.length
     }
 
     #[inline]
     fn is_small(&self) -> bool {
-        let ptr: *const _ = self;
-        (ptr as usize & 0b1) == 1
-    }
-
-    #[inline]
-    fn normalize(&self) -> &Self {
-        let ptr: *const _ = self;
-        unsafe {
-            &*((ptr as usize & !0b1) as *const TString)
-        }
+        unsafe { (self.data.ptr as usize & 0b1) == 1 }
     }
 
     #[inline]
     unsafe fn data_ptr(&self) -> *const u8 {
         if self.is_small() {
-            return std::ptr::addr_of!(self.data.small[0]);
+            return std::ptr::addr_of!(self.data.small[1]);
         }
         self.data.ptr
     }
@@ -610,7 +598,7 @@ impl TString {
     #[inline]
     unsafe fn data_ptr_mut(&mut self) -> *mut u8 {
         if self.is_small() {
-            return std::ptr::addr_of_mut!(self.data.small[0]);
+            return std::ptr::addr_of_mut!(self.data.small[1]);
         }
         self.data.ptr as *mut u8
     }
