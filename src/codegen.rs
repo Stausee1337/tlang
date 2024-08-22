@@ -172,6 +172,7 @@ impl<'ast> GeneratorNode for ForLoop<'ast> {
         generate_small_branch(start_block, forward_block, generator);
         generator.with_rib(RibKind::Loop, |generator| {
             generator.set_current_block(forward_block);
+            generator.register_local(self.var, false);
             let dst = generator.declare_local(self.var.symbol);
             generator.emit_next_iterator(dst, iterator, loop_body, end_block);
 

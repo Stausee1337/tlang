@@ -12,6 +12,15 @@ def fib(n) {
     return a;
 }
 
+def iter(msg) {
+    var count = 0;
+    for (char in msg) {
+        count = count + 1;
+    }
+    return count;
+}
 
-fib(10000000);
+// fib(10000000);
+
+print(iter("Guys > Girls"));
 

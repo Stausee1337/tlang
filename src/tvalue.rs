@@ -1,4 +1,4 @@
-use std::{mem::{transmute, MaybeUninit, offset_of}, fmt::Display, alloc::Layout, any::TypeId, hash::BuildHasherDefault, io::Write};
+use std::{mem::{transmute, offset_of}, fmt::Display, alloc::Layout, any::TypeId, hash::BuildHasherDefault};
 
 
 use ahash::AHasher;
@@ -7,7 +7,7 @@ use bitflags::bitflags;
 use hashbrown::{hash_map::RawVacantEntryMut, HashTable, hash_table::Entry};
 use tlang_macros::tcall;
 
-use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast, TPolymorphicCallable, TPropertyAccess}, debug};
+use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast}, debug};
 
 
 macro_rules! __tobject_struct {
@@ -416,7 +416,7 @@ impl Typed for TObject {
         ttype.define_method(Symbol![fmt], TFunction::rustfunc(
                 prelude, Some("object::fmt"), move |this: TValue| {
                     let vm = ttype.vm();
-                    TString::from_slice(&vm, &format!("{} {{}}", this.ttype(&vm).unwrap().name))
+                    TString::from_format(&vm, format_args!("{} {{}}", this.ttype(&vm).unwrap().name))
                 }));
 
 
@@ -507,7 +507,7 @@ pub fn bool_init_unarys(mut ttype: GCRef<TType>) {
 #[repr(align(8))]
 pub struct TString {
     data: StringData,
-    length: TInteger,
+    pub(crate) length: TInteger,
 
     prev: Option<GCRef<TString>>,
     next: Option<GCRef<TString>>,
@@ -531,20 +531,19 @@ impl TString {
         let length = TInteger::from_usize(slice.chars().count());
 
         unsafe {
-            let mut string = vm.heap().allocate_var_atom(
+            let mut string = vm.heap().allocate_atom(
                 Self {
                     data: StringData { ptr: std::ptr::null() },
                     length,
                     prev: None, next: None,
                     size
                 },
-                slice.len()
             );
 
             if size < std::mem::size_of::<&()>() {
                 string.data.small[0] = 1;
             } else {
-                let align = std::mem::align_of::<u8>();
+                let align = 2;
                 string.data.ptr = std::alloc::alloc(Layout::from_size_align_unchecked(size, align)) as *const u8;
             }
 
@@ -552,6 +551,103 @@ impl TString {
 
             string
         }
+    }
+
+
+    pub fn from_format(vm: &VM, arguments: std::fmt::Arguments) -> GCRef<Self> {
+        const STACK_CAP: usize = std::mem::size_of::<&()>() - 1;
+        let mut stack_storage = [0u8; STACK_CAP];
+        struct FormatWriter {
+            begin: *mut u8,
+            current: *mut u8,
+            end: *mut u8,
+            capacity: usize
+        }
+        impl FormatWriter {
+            unsafe fn realloc(&mut self, amount: usize) {
+                let new_capacity = (self.capacity + amount).next_power_of_two();
+                let offset = self.current.sub_ptr(self.begin);
+
+                self.begin = if self.capacity != STACK_CAP {
+                    let layout = Layout::from_size_align_unchecked(self.capacity, 2);
+                    std::alloc::realloc(self.begin, layout, new_capacity)
+                } else {
+                    let layout = Layout::from_size_align_unchecked(new_capacity, 2);
+                    let dst = std::alloc::alloc(layout);
+                    std::ptr::copy_nonoverlapping(self.begin, dst, STACK_CAP);
+                    dst
+                };
+                self.capacity = new_capacity;
+                self.end = self.begin.add(new_capacity);
+                self.current = self.begin.add(offset);
+            }
+
+            fn shrink_to_fit(self) -> (&'static str, bool) {
+                unsafe {
+                    let len = self.current.sub_ptr(self.begin);
+                    let mut begin = self.begin;
+                    if self.capacity != STACK_CAP {
+                        let layout = Layout::from_size_align_unchecked(self.capacity, 2);
+                        begin = std::alloc::realloc(begin, layout, len);
+                    }
+
+                    (
+                        std::str::from_utf8_unchecked(
+                            std::slice::from_raw_parts(begin, len)),
+                        self.capacity == STACK_CAP
+                    )
+                }
+            }
+        }
+        impl std::fmt::Write for FormatWriter {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                unsafe {
+                    let s = s.as_bytes();
+                    if self.current.add(s.len()) > self.end {
+                        self.realloc(s.len());
+                    }
+                    std::ptr::copy_nonoverlapping(s.as_ptr(), self.current, s.len());
+                    self.current = self.current.add(s.len());
+                }
+                Ok(())
+            }
+        }
+
+        let mut fwriter = FormatWriter {
+            begin: stack_storage.as_mut_ptr(),
+            current: stack_storage.as_mut_ptr(),
+            end: unsafe { stack_storage.as_mut_ptr().add(STACK_CAP) },
+            capacity: STACK_CAP,
+        };
+
+        let mut formatter = std::fmt::Formatter::new(&mut fwriter);
+        formatter.write_fmt(arguments).unwrap();
+
+        let (slice, stack_allocated) = fwriter.shrink_to_fit();
+
+        let mut string = vm.heap().allocate_atom(
+            Self {
+                data: StringData { ptr: std::ptr::null() },
+                length: TInteger::from_usize(slice.chars().count()),
+                prev: None, next: None,
+                size: slice.len()
+            },
+        );
+
+        unsafe {
+            if stack_allocated {
+                string.data.small[0] = 1;
+                std::ptr::copy_nonoverlapping(
+                    stack_storage.as_ptr(),
+                    std::ptr::addr_of_mut!(string.data.small[1]),
+                    slice.len()
+                );
+            } else {
+                string.data.ptr = slice.as_bytes().as_ptr();
+            }
+        }
+
+        string
     }
 }
 
@@ -566,10 +662,6 @@ impl TString {
             let str = std::str::from_utf8_unchecked(bytes);
             str
         }
-    }
-
-    pub fn get_iterator(&self) -> GCRef<TStringIterator> {
-        todo!()
     }
 
     #[inline]
@@ -601,6 +693,12 @@ impl TString {
             return std::ptr::addr_of_mut!(self.data.small[1]);
         }
         self.data.ptr as *mut u8
+    }
+}
+
+impl GCRef<TString> {
+    pub fn get_iterator(self) -> GCRef<TStringIterator> {
+        TStringIterator::new(self)
     }
 }
 
@@ -668,39 +766,86 @@ pub struct TStringIterator {
 }
 }
 
+impl TStringIterator {
+    pub fn new(string: GCRef<TString>) -> GCRef<TStringIterator> {
+        let vm = string.vm();
+        vm.heap().allocate_atom(Self {
+            base: TObject::base(&vm, vm.types().query::<Self>()),
+            backing_string: string,
+            byte_offset: 0,
+            current_codepoint: None
+        })
+    }
+}
+
 impl GCRef<TStringIterator> {
-    /*pub fn next(&mut self) -> bool {
+    pub fn next(mut self) -> bool {
         struct InnerIterator<'a> {
             bytes: &'a [u8],
             offset: &'a mut usize
         }
 
         impl<'a> Iterator for InnerIterator<'a> {
-            type Item = u8;
+            type Item = &'a u8;
+            #[inline(always)]
             fn next(&mut self) -> Option<Self::Item> {
-                *self.offset += 1;
+                if *self.offset < self.bytes.len() {
+                    let old = &self.bytes[*self.offset];
+                    *self.offset += 1;
+                    return Some(old);
+                }
+                None
             }
         }
-        std::slice::Iter
 
+        let mut bytes_iter = InnerIterator {
+            bytes: self.backing_string.as_slice().as_bytes(),
+            offset: &mut self.byte_offset
+        };
 
         let codepoint = unsafe {
-            core::str::next_code_point(&mut bytes_iter);
+            core::str::next_code_point(&mut bytes_iter)
         };
-        todo!()
+        let Some(codepoint) = codepoint else {
+            return false;
+        };
+        self.current_codepoint = Some(unsafe { char::from_u32_unchecked(codepoint) });
+        true
     }
 
-    pub fn current(&self) -> TValue {
+    pub fn current(self) -> GCRef<TString> {
         let Some(codepoint) = self.current_codepoint else {
             panic!("Iterator is not even initialized. Call next() first");
         };
-        todo!()
-    }*/
+        TString::from_format(&self.vm(), format_args!("{codepoint}"))
+    }
 }
 
 impl Typed for TStringIterator {
     fn initialize(vm: &VM) -> GCRef<TType> {
-        todo!()
+        let mut ttype = vm.heap().allocate_atom(TType {
+            base: TObject::base(vm, vm.types().query::<TType>()),
+            basety: Some(vm.types().query::<TObject>()),
+            basesize: std::mem::size_of::<Self>(),
+            name: TString::from_slice(&vm, "StringIterator"),
+            modname: TString::from_slice(&vm, "prelude"),
+            variable: false
+        });
+
+        let prelude = vm.modules().prelude();
+
+        ttype.define_method(
+            Symbol![next],
+            TFunction::rustfunc(prelude, Some("StringIterator.next"), GCRef::<TStringIterator>::next));
+
+        ttype.define_property(
+            Symbol![current],
+            TProperty::get(
+                prelude,
+                TFunction::rustfunc(prelude, Some("StringIterator.current"),
+                GCRef::<TStringIterator>::current)));
+
+        ttype
     }
 }
 
@@ -1196,7 +1341,7 @@ impl Typed for TType {
         ttype.define_method(
             Symbol![fmt],
             TFunction::rustfunc(prelude, Some("type::fmt"), |this: GCRef<TType>| {
-                TString::from_slice(&this.vm(), &format!("[type {}] {{}}", this.name))
+                TString::from_format(&this.vm(), format_args!("[type {}] {{}}", this.name))
             }));
         ttype.define_static_method(
             Symbol![of],
@@ -1252,6 +1397,15 @@ impl TProperty {
         vm.heap().allocate_atom(Self {
             base: TObject::base(&vm, vm.types().query::<Self>()),
             get, set
+        })
+    }
+
+    pub fn get(module: GCRef<TModule>, get: GCRef<TFunction>) -> GCRef<Self> {
+        let vm = module.vm();
+        vm.heap().allocate_atom(Self {
+            base: TObject::base(&vm, vm.types().query::<Self>()),
+            get: Some(get),
+            set: None
         })
     }
 }
@@ -1344,6 +1498,7 @@ impl Typed for TFunction {
                 } else {
                     "(anonymous)"
                 };
+
                 let mut string = format!("def {name} ");
                 if let TFnKind::Nativefunc(..) = this.kind {
                     string.push_str("[Native Code]");

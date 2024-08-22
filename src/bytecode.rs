@@ -856,6 +856,7 @@ define_instructions! {
     },
 
     GetIterator { dst: Operand, iterable: Operand },
+    #[terminator(true)]
     NextIterator {
         dst: Operand,
         iterator: Operand,

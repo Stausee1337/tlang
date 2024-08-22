@@ -21,7 +21,7 @@ print(Function.name.set);
 
 print(string.name);
 
-var message = "Guys > Girls";
+var message = "Guys > Girls ü";
 var lazy_fmt = message.fmt;
 
 print(lazy_fmt);
@@ -29,6 +29,12 @@ print(lazy_fmt());
 
 print(message.eq);
 print(message.eq("Guys > Girls"));
+
+print(message.length);
+
+for (char in message) {
+    print(char);
+}
 
 print(Type.of(12));
 

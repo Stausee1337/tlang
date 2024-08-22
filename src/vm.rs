@@ -1,9 +1,8 @@
-use std::{rc::Rc, any::TypeId, sync::OnceLock};
+use std::{rc::Rc, any::TypeId, sync::OnceLock, mem::offset_of};
 
 use hashbrown::hash_map::RawEntryMut;
 
-use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, TString, TValue, Typed, TObject, TFunction, TInteger, TBool, TFloat, self}, interop::VMCast};
-use tlang_macros::tcall;
+use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, TString, TValue, Typed, TObject, TFunction, TInteger, TBool, TFloat, self, TProperty, Accessor}};
 
 #[macro_export]
 #[cfg(debug_assertions)]
@@ -133,7 +132,7 @@ impl GCRef<Primitives> {
                     prelude, Some("float::fmt"),
                     move |this: TFloat| {
                         let vm = self.vm();
-                        TString::from_slice(&vm, &format!("{this}"))
+                        TString::from_format(&vm, format_args!("{this}"))
                     }));
 
             tvalue::float_init_arithmetics(ttype);
@@ -162,7 +161,7 @@ impl GCRef<Primitives> {
                     prelude, Some("int::fmt"),
                     move |this: TInteger| {
                         let vm = self.vm();
-                        TString::from_slice(&vm, &format!("{this}"))
+                        TString::from_format(&vm, format_args!("{this}"))
                     }));
 
             tvalue::int_init_arithmetics(ttype);
@@ -191,7 +190,7 @@ impl GCRef<Primitives> {
                     prelude, Some("bool::fmt"),
                     move |this: TBool| {
                         let vm = self.vm();
-                        TString::from_slice(&vm, &format!("{this}"))
+                        TString::from_format(&vm, format_args!("{this}"))
                     }));
 
             ttype
@@ -217,6 +216,19 @@ impl GCRef<Primitives> {
                     prelude, Some("string::fmt"), |this: GCRef<TString>| this));
             ttype.define_method(Symbol![eq], TFunction::rustfunc(
                     prelude, Some("string::eq"), |this: GCRef<TString>, other: GCRef<TString>| this.eq(&other)));
+
+            ttype.define_method(
+                Symbol![get_iterator],
+                TFunction::rustfunc(prelude, Some("string::get_iterator"), GCRef::<TString>::get_iterator));
+
+            ttype.define_property(
+                Symbol![length],
+                TProperty::get(
+                    prelude,
+                    TFunction::rustfunc(prelude, None, |string: GCRef<TString>| unsafe {
+                        let ptr = string.as_ptr() as *mut u8;
+                        *(ptr.add(offset_of!(TString, length)) as *mut TInteger)
+                    })));
 
             ttype
         })
