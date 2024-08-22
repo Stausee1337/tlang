@@ -154,6 +154,14 @@ impl TRawCode {
                         *access = src;
                     }
 
+                    OpCode::GetSubscript => {
+                        todo!("GetSubscript");
+                    }
+
+                    OpCode::SetSubscript => {
+                        todo!("SetSubscript");
+                    }
+
                     OpCode::Branch => {
                         decode!(&mut stream, env, Branch { target });
                         stream.jump(target);
@@ -217,9 +225,10 @@ impl TRawCode {
                         }
                     }
 
+                    OpCode::Error => {
+                        panic!("Error");
+                    }
                     OpCode::Noop => (),
-
-                    _ => todo!(),
                 }
                 // debug!("perf {:?}", now.elapsed());
             }
@@ -249,6 +258,7 @@ impl TRawCode {
 impl Decode for Operand {
     type Output = TValue;
 
+    #[inline(always)]
     fn decode(&self, env: &ExecutionEnvironment) -> TValue {
         match self.to_rust() {
             OperandKind::Null => TValue::null(),
