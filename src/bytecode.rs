@@ -864,6 +864,12 @@ define_instructions! {
         end_target: CodeLabel
     },
 
+    MakeList {
+        dst: Operand,
+        items: OperandList
+    },
+    MakeEmptyList { dst: Operand },
+
     Error,
     Noop
 }

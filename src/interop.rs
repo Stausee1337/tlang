@@ -177,6 +177,33 @@ where
     }
 }
 
+impl<T1, T2, T3> VMArgs for (T1, T2, T3)
+where
+    T1: VMDowncast + VMCast,
+    T2: VMDowncast + VMCast,
+    T3: VMDowncast + VMCast
+{
+    fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self> {  
+        let mut iter = args.into_iter(3, false);
+        let arg1 = iter.next()?;
+        let arg2 = iter.next()?;
+        let arg3 = iter.next()?;
+        Some((
+            T1::vmdowncast(arg1, vm)?,
+            T2::vmdowncast(arg2, vm)?,
+            T3::vmdowncast(arg3, vm)?,
+        ))
+    }
+
+    fn encode(self, vm: &VM) -> TArgsBuffer { 
+        TArgsBuffer::new(vec![
+            self.0.vmcast(vm),
+            self.1.vmcast(vm),
+            self.2.vmcast(vm),
+        ])
+    }
+}
+
 #[derive(Clone, Copy)]
 enum CallableInner {
     Polymorph(GCRef<TObject>),

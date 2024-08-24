@@ -6,7 +6,7 @@ use crate::{
         CodeStream, OpCode, Operand, TRawCode, OperandList
     },
     memory::GCRef,
-    tvalue::{TBool, TFunction, TInteger, TValue, resolve_by_symbol},
+    tvalue::{TBool, TFunction, TInteger, TValue, resolve_by_symbol, TList},
     interop::TPropertyAccess,
     vm::{TModule, VM},
     debug
@@ -163,11 +163,13 @@ impl TRawCode {
                 }
 
                 OpCode::GetSubscript => {
-                    todo!("GetSubscript");
+                    decode!(&mut stream, env, GetSubscript { &base, &index, &mut dst });
+                    *dst = tcall!(vm, TValue::get_index(base, index));
                 }
 
                 OpCode::SetSubscript => {
-                    todo!("SetSubscript");
+                    decode!(&mut stream, env, SetSubscript { &base, &index, &src });
+                    let _: () = tcall!(vm, TValue::set_index(base, index, value));
                 }
 
                 OpCode::Branch => {
@@ -198,7 +200,7 @@ impl TRawCode {
                 OpCode::Call => {
                     let envcopy: *const _ = &*env;
                     decode!(&mut stream, env, Call { arguments, &callee, &mut dst });
-                    let arguments = arguments.decode(unsafe { &*envcopy });
+                    let arguments = arguments.as_arguments(unsafe { &*envcopy });
 
                     if let Some(callee) = callee.query_object::<TFunction>(vm) {
                         *dst = callee.call(arguments);
@@ -210,7 +212,7 @@ impl TRawCode {
                 OpCode::MethodCall => {
                     let envcopy: *const _ = &*env;
                     decode!(&mut stream, env, MethodCall { arguments, &this, callee, &mut dst });
-                    let arguments = arguments.decode(unsafe { &*envcopy });
+                    let arguments = arguments.as_arguments(unsafe { &*envcopy });
 
                     let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, callee, this, true);
                     if let Some(tfunction) = access.as_method() {
@@ -238,6 +240,22 @@ impl TRawCode {
                     }
                 }
 
+                OpCode::MakeList => {
+                    let envcopy: *const _ = &*env;
+                    decode!(&mut stream, env, MakeList { items, &mut dst });
+                    let list = TList::new_with_capacity(vm, items.len());
+                    for item in items.iter() {
+                        let env = unsafe { &*envcopy };
+                        list.push(env.decode(*item));
+                    }
+                    *dst = list.into();
+                }
+
+                OpCode::MakeEmptyList => {
+                    decode!(&mut stream, env, MakeEmptyList { &mut dst });
+                    *dst = TList::new_empty(vm).into();
+                }
+
                 OpCode::Error => {
                     panic!("Error");
                 }
@@ -250,13 +268,21 @@ impl TRawCode {
 
 impl OperandList {
     #[inline(always)]
-    fn decode(&self, env: &ExecutionEnvironment) -> TArgsBuffer {
+    fn as_arguments(&self, env: &ExecutionEnvironment) -> TArgsBuffer {
         let operands = unsafe { &*self.0 };
         let mut arguments = Vec::new();
         for op in operands {
             arguments.push(env.decode(*op));
         }
         TArgsBuffer(arguments)
+    }
+
+    fn len(&self) -> usize {
+        unsafe { &*self.0 }.len()
+    }
+
+    fn iter(&self) -> impl std::iter::Iterator<Item = &Operand> {
+        unsafe { &*self.0 }.iter()
     }
 }
 

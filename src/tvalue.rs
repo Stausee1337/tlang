@@ -1,4 +1,4 @@
-use std::{mem::{transmute, offset_of}, fmt::Display, alloc::Layout, any::TypeId, hash::BuildHasherDefault};
+use std::{mem::{transmute, offset_of}, fmt::{Display, Write}, alloc::Layout, any::TypeId, hash::BuildHasherDefault};
 
 
 use ahash::AHasher;
@@ -104,6 +104,7 @@ enum TValueKind {
     Float    = 0b100 << 49,
     String   = 0b000 << 49,
     BigInt   = 0b110 << 49,
+    List     = 0b011 << 49,
 }
 
 /// 64bit Float:
@@ -205,6 +206,14 @@ impl TValue {
     }
 
     #[inline(always)]
+    pub fn query_list(&self) -> Option<GCRef<TList>> {
+        if let TValueKind::List = self.kind() {
+            return Some(self.as_gcref());
+        }
+        None
+    }
+
+    #[inline(always)]
     pub fn query_integer(&self) -> Option<TInteger> {
         match self.kind() {
             TValueKind::Int32 =>
@@ -240,6 +249,7 @@ impl TValue {
             TValueKind::Int32 | TValueKind::BigInt => vm.primitives().int_type(),
             TValueKind::Float => vm.primitives().float_type(),
             TValueKind::String => vm.primitives().string_type(),
+            TValueKind::List => vm.primitives().list_type(),
             TValueKind::Object => {
                 let Some(object) = self.as_object::<TObject>() else {
                     return None; // TValue::null() doesn't have a type
@@ -895,6 +905,19 @@ impl TInteger {
         Self::from_signed_bytes(&size.to_le_bytes()) 
     }
 
+    pub fn inc(&mut self) {
+        match self.0 {
+            IntegerKind::Int32(int) => {
+                *self = int.checked_add(1).map(Self::from_int32).unwrap_or_else(|| {
+                    Self::from_bigint(bigint::add(&to_bigint(int), &to_bigint(1)))
+                });
+            }
+            IntegerKind::Bigint(bigint) => {
+                *self = Self::from_bigint(bigint::add(bigint, &to_bigint(1)));
+            }
+        }
+    }
+
     pub fn from_signed_bytes(bytes: &[u8]) -> Self {
         todo!("real bigint support")
     }
@@ -1259,6 +1282,187 @@ macro_rules! iter_float_cmps {
 iter_float_cmps! {
     impl Lt for TFloat in lt; impl Le for TFloat in le;
     impl Gt for TFloat in gt; impl Ge for TFloat in ge;
+}
+
+pub struct TList {
+    pub length: TInteger,
+    capacity: isize,
+    data: ListData
+
+}
+
+union ListData {
+    immediate: [TValue; 0],
+    ptr: *mut TValue
+}
+
+unsafe impl std::marker::Sync for ListData {}
+unsafe impl std::marker::Send for ListData {}
+
+static_assertions::const_assert!(std::mem::size_of::<TList>() == 4 * std::mem::size_of::<&()>());
+
+impl TList {
+    pub fn new_empty(vm: &VM) -> GCRef<Self> {
+        vm.heap().allocate_atom(Self {
+            length: TInteger::from_int32(0),
+            capacity: 0,
+            data: ListData { ptr: std::ptr::null_mut() }
+        })
+    }
+
+    pub fn new_with_capacity(vm: &VM, capacity: usize) -> GCRef<Self> {
+        vm.heap().allocate_var_atom(Self {
+            length: TInteger::from_int32(0),
+            capacity: -(capacity as isize),
+            data: ListData { ptr: std::ptr::null_mut() }
+        }, capacity * std::mem::size_of::<TValue>())
+    }
+}
+
+const AMORTIZED_LIST_INITIAL_CAP: usize = std::mem::size_of::<&()>();
+
+impl GCRef<TList> {
+    #[inline]
+    pub unsafe fn data_ptr(&mut self) -> *mut TValue {
+        if self.capacity < 0 {
+            return self.data.immediate.as_mut_ptr();
+        }
+        self.data.ptr
+    }
+
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.capacity.abs() as usize
+    }
+
+    #[inline]
+    fn index_access_helper<'a>(mut self, index: usize) -> &'a mut TValue {
+        if index >= self.length.as_usize().unwrap() {
+            panic!("list out of bounds access");
+        }
+        unsafe {
+            let ptr = self.data_ptr();
+            &mut *ptr.add(index)
+        }
+    }
+
+    #[inline]
+    fn wrapping_index_translation(&self, index: TInteger) -> usize {
+        let index = index.as_isize().unwrap();
+        if index >= 0 {
+            index as usize 
+        } else {
+            let index = self.length.as_isize().unwrap() + index;
+            usize::try_from(index).unwrap() 
+        }
+    }
+
+    pub fn grow(mut self, new_capacity: usize) {
+        let mut new_capacity = (new_capacity).next_power_of_two();
+        if new_capacity < AMORTIZED_LIST_INITIAL_CAP {
+            new_capacity = AMORTIZED_LIST_INITIAL_CAP;
+        }
+
+        const ITEM_SIZE: usize  = std::mem::size_of::<TValue>();
+        unsafe {
+            let new_ptr = if self.capacity >= 0 {
+                let layout = Layout::from_size_align_unchecked(
+                    self.capacity() * ITEM_SIZE, std::mem::align_of::<TValue>());
+                std::alloc::realloc(self.data_ptr() as *mut u8, layout, new_capacity * ITEM_SIZE) as *mut TValue
+            } else {
+                // FIXME: here we leak some memory, from the previous, direct list allocation.
+                // Currently this will remain around, until this list gets fully garbage collected.
+                // In the future this should probably call into the GC, shrinking its size to
+                // just std::mem::size_of::<TList>()
+
+                let layout = Layout::from_size_align_unchecked(
+                    new_capacity * ITEM_SIZE, std::mem::align_of::<TValue>());
+                let dst = std::alloc::alloc(layout) as *mut TValue;
+                std::ptr::copy_nonoverlapping(self.data_ptr(), dst, self.capacity());
+                dst
+            };
+            self.data.ptr = new_ptr;
+            self.capacity = new_capacity as isize;
+        }
+    }
+
+    pub fn push(mut self, value: TValue) {
+        unsafe {
+            let length = self.length.as_usize().unwrap();
+            if length == self.capacity() {
+                self.grow(self.capacity() + 1);
+            }
+
+            *self.data_ptr().add(length) = value;
+            self.length.inc();
+        }
+    }
+}
+
+impl std::ops::Index<usize> for GCRef<TList> {
+    type Output = TValue;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        GCRef::index_access_helper::<'_>(*self, index)
+    }
+}
+
+impl std::ops::IndexMut<usize> for GCRef<TList> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        GCRef::index_access_helper::<'_>(*self, index) 
+    }
+}
+
+impl std::ops::Index<TInteger> for GCRef<TList> {
+    type Output = TValue;
+
+    fn index(&self, index: TInteger) -> &Self::Output {
+        GCRef::index_access_helper::<'_>(*self, self.wrapping_index_translation(index))
+    }
+}
+
+impl std::ops::IndexMut<TInteger> for GCRef<TList> {
+    fn index_mut(&mut self, index: TInteger) -> &mut Self::Output { 
+        GCRef::index_access_helper::<'_>(*self, self.wrapping_index_translation(index))
+    }
+}
+
+impl std::fmt::Display for GCRef<TList> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let vm = self.vm();
+        let length = self.length.as_usize().unwrap();
+        f.write_char('[')?;
+        for i in 0..length {
+            if i != 0 {
+                f.write_str(", ")?;
+            }
+            let item = self[i];
+            let fmt: GCRef<TString> = tcall!(&vm, TValue::fmt(item));
+            f.write_str(fmt.as_slice())?;
+        }
+        f.write_char(']')?;
+        Ok(())
+    }
+}
+
+impl Into<TValue> for GCRef<TList> {
+    #[inline]
+    fn into(self) -> TValue {
+        TValue::object_impl(self, TValueKind::List)
+    }
+}
+
+impl VMDowncast for GCRef<TList> {
+    #[inline]
+    fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
+        value.query_list()
+    }
+}
+
+impl Atom for TList {
+    fn visit(&self, _visitor: &mut Visitor) {
+        todo!()
+    }
 }
 
 tobject! {

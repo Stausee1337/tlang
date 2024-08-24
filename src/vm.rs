@@ -2,7 +2,7 @@ use std::{rc::Rc, any::TypeId, sync::OnceLock, mem::offset_of};
 
 use hashbrown::hash_map::RawEntryMut;
 
-use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, TString, TValue, Typed, TObject, TFunction, TInteger, TBool, TFloat, self, TProperty, Accessor}};
+use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, TString, TValue, Typed, TObject, TFunction, TInteger, TBool, TFloat, self, TProperty, Accessor, TList}};
 
 #[macro_export]
 #[cfg(debug_assertions)]
@@ -39,6 +39,7 @@ impl VM {
         vm.primitives().int_type();
         vm.primitives().bool_type();
         vm.primitives().string_type();
+        vm.primitives().list_type();
 
         init_prelude_functions(&vm);
 
@@ -98,7 +99,8 @@ pub struct Primitives {
     float: OnceLock<GCRef<TType>>,
     int: OnceLock<GCRef<TType>>,
     bool: OnceLock<GCRef<TType>>,
-    string: OnceLock<GCRef<TType>>
+    string: OnceLock<GCRef<TType>>,
+    list: OnceLock<GCRef<TType>>
 }
 
 impl Primitives {
@@ -107,7 +109,8 @@ impl Primitives {
             float: OnceLock::new(),
             int: OnceLock::new(),
             string: OnceLock::new(),
-            bool: OnceLock::new()
+            bool: OnceLock::new(),
+            list: OnceLock::new()
         }
     }
 }
@@ -129,7 +132,7 @@ impl GCRef<Primitives> {
             prelude.set_global(Symbol![float], ttype.into(), true);
 
             ttype.define_method(Symbol![fmt], TFunction::rustfunc(
-                    prelude, Some("float::fmt"),
+                    prelude, Some("float.fmt"),
                     move |this: TFloat| {
                         let vm = self.vm();
                         TString::from_format(&vm, format_args!("{this}"))
@@ -158,7 +161,7 @@ impl GCRef<Primitives> {
             prelude.set_global(Symbol![int], ttype.into(), true);
 
             ttype.define_method(Symbol![fmt], TFunction::rustfunc(
-                    prelude, Some("int::fmt"),
+                    prelude, Some("int.fmt"),
                     move |this: TInteger| {
                         let vm = self.vm();
                         TString::from_format(&vm, format_args!("{this}"))
@@ -187,7 +190,7 @@ impl GCRef<Primitives> {
             prelude.set_global(Symbol![bool], ttype.into(), true);
 
             ttype.define_method(Symbol![fmt], TFunction::rustfunc(
-                    prelude, Some("bool::fmt"),
+                    prelude, Some("bool.fmt"),
                     move |this: TBool| {
                         let vm = self.vm();
                         TString::from_format(&vm, format_args!("{this}"))
@@ -213,13 +216,13 @@ impl GCRef<Primitives> {
             prelude.set_global(Symbol![string], ttype.into(), true);
 
             ttype.define_method(Symbol![fmt], TFunction::rustfunc(
-                    prelude, Some("string::fmt"), |this: GCRef<TString>| this));
+                    prelude, Some("string.fmt"), |this: GCRef<TString>| this));
             ttype.define_method(Symbol![eq], TFunction::rustfunc(
-                    prelude, Some("string::eq"), |this: GCRef<TString>, other: GCRef<TString>| this.eq(&other)));
+                    prelude, Some("string.eq"), |this: GCRef<TString>, other: GCRef<TString>| this.eq(&other)));
 
             ttype.define_method(
                 Symbol![get_iterator],
-                TFunction::rustfunc(prelude, Some("string::get_iterator"), GCRef::<TString>::get_iterator));
+                TFunction::rustfunc(prelude, Some("string.get_iterator"), GCRef::<TString>::get_iterator));
 
             ttype.define_property(
                 Symbol![length],
@@ -228,6 +231,54 @@ impl GCRef<Primitives> {
                     TFunction::rustfunc(prelude, None, |string: GCRef<TString>| unsafe {
                         let ptr = string.as_ptr() as *mut u8;
                         *(ptr.add(offset_of!(TString, length)) as *mut TInteger)
+                    })));
+
+            ttype
+        })
+    }
+
+    pub fn list_type(self) -> GCRef<TType> {
+        *self.list.get_or_init(|| {
+            let vm = self.vm();
+            let mut ttype = vm.heap().allocate_atom(TType {
+                base: TObject::base(&vm, vm.types().query::<TType>()),
+                basety: Some(vm.types().query::<TObject>()),
+                basesize: 0, // primitive
+                name: TString::from_slice(&vm, "list"),
+                modname: TString::from_slice(&vm, "prelude"),
+                variable: false
+            });
+
+            let mut prelude = vm.modules().prelude();
+            prelude.set_global(Symbol![list], ttype.into(), true);
+
+            ttype.define_method(
+                Symbol![fmt],
+                TFunction::rustfunc(prelude, Some("list.fmt"), |this: GCRef<TList>| {
+                    TString::from_format(&this.vm(), format_args!("{this}"))
+                }));
+
+            ttype.define_method(
+                Symbol![push],
+                TFunction::rustfunc(prelude, Some("list.push"), GCRef::<TList>::push));
+
+            ttype.define_method(
+                Symbol![get_index],
+                TFunction::rustfunc(prelude, Some("list.get_index"),
+                |this: GCRef<TList>, index: TInteger| this[index]));
+
+            ttype.define_method(
+                Symbol![set_index],
+                TFunction::rustfunc(prelude, Some("list.set_index"),
+                |mut this: GCRef<TList>, index: TInteger, value: TValue| { this[index] = value; }));
+
+            ttype.define_property(
+                Symbol![length],
+                TProperty::get(
+                    prelude,
+                    TFunction::rustfunc(prelude, None, |list: GCRef<TList>| unsafe {
+                        let ptr = list.as_ptr() as *mut u8;
+                        *(ptr.add(offset_of!(TList, length)) as *mut TInteger)
                     })));
 
             ttype

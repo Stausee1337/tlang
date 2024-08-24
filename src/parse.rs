@@ -101,7 +101,6 @@ pub enum Expression<'ast> {
     SubscriptExpr(SubscriptExpr<'ast>),
     ListExpr(ListExpr<'ast>),
     ObjectExpr(ObjectExpr<'ast>),
-    TupleExpr(TupleExpr<'ast>),
     Lambda(Lambda<'ast>),
 }
 
@@ -189,15 +188,20 @@ pub struct ListExpr<'ast> {
     pub span: Span
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct ObjectExpr<'ast> {
-    pub inits: &'ast [&'ast (Ident, Expression<'ast>)],
-    pub span: Span
+impl<'ast> ListExpr<'ast> {
+    pub fn valid_lhs(&self) -> bool {
+        for item in self.items {
+            let Expression::Ident(..) = item else {
+                return false;
+            };
+        }
+        return true;
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct TupleExpr<'ast> {
-    pub items: &'ast [&'ast Expression<'ast>],
+pub struct ObjectExpr<'ast> {
+    pub inits: &'ast [&'ast (Ident, Expression<'ast>)],
     pub span: Span
 }
 

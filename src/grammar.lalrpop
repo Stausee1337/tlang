@@ -309,10 +309,10 @@ Atom: parse::Expression<'ast> = {
             lambda.params = params;
             return Ok(parse::Expression::Lambda(lambda));
         }
-        Ok(parse::Expression::TupleExpr(parse::TupleExpr {
-            items,
-            span: Span { start, end }
-        }))
+        return Err(lalrpop_util::ParseError::UnrecognizedToken {
+            token: (start, lexer::TokenKind::Comma, end),
+            expected: vec![]
+        });
     },
     <start:@L> "{" <inits:SeperatedList<ObjectInit, ",">> "}" <end:@R> => parse::Expression::ObjectExpr(parse::ObjectExpr {
         inits,

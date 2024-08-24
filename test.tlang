@@ -32,9 +32,17 @@ print(message.eq("Guys > Girls"));
 
 print(message.length);
 
+var my_list = [];
 for (char in message) {
-    print(char);
+    my_list.push(char);
 }
 
-print(Type.of(12));
+print(my_list);
+print(my_list.length);
+
+var a;
+var b;
+
+[a, b] = [3, 7];
+print(a * b);
 

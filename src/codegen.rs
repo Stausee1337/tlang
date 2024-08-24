@@ -1,7 +1,7 @@
 
 use crate::lexer::Span;
 use crate::memory::GCRef;
-use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop, Variable, Function, AssignExpr, Literal, Ident, BinaryExpr, UnaryExpr, CallExpr, AttributeExpr, SubscriptExpr, ListExpr, ObjectExpr, TupleExpr, Lambda, Module, Statement, LiteralKind, Expression, BinaryOp, UnaryOp};
+use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop, Variable, Function, AssignExpr, Literal, Ident, BinaryExpr, UnaryExpr, CallExpr, AttributeExpr, SubscriptExpr, ListExpr, ObjectExpr, Lambda, Module, Statement, LiteralKind, Expression, BinaryOp, UnaryOp};
 
 use crate::bytecode::{Operand, BytecodeGenerator, CodeLabel, RibKind};
 use crate::symbol::Symbol;
@@ -293,6 +293,31 @@ impl<'ast> GeneratorNode for AssignExpr<'ast> {
 
                 Ok(Some(src))
             }
+            Expression::ListExpr(list) if list.valid_lhs() => {
+                let base = self.rhs.generate_bytecode(generator)?.unwrap();
+
+                for (idx, expr) in list.items.iter().enumerate() {
+                    let Expression::Ident(ident) = expr else {
+                        unreachable!()
+                    };
+
+                    let src = generator.allocate_reg();
+                    generator.emit_get_subscript(src, base, Operand::Int32(idx as i32));
+
+                    if let Some(local) = generator.find_local(ident.symbol) {
+                        if local.constant {
+                            generator.emit_error();
+                            return Ok(Some(Operand::Null));
+                        }
+
+                        generator.emit_mov(generator.get_local_reg(ident.symbol), src);
+                    } else {
+                        generator.emit_set_global(ident.symbol, src);
+                    }
+                }
+
+                Ok(Some(base))
+            }
             _ => return Err(CodegenErr::SyntaxError {
                 message: Some("invalid left hand side in assignment expression".to_string()),
                 span: self.span
@@ -535,18 +560,26 @@ impl<'ast> GeneratorNode for SubscriptExpr<'ast> {
 }
 
 impl<'ast> GeneratorNode for ListExpr<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        if self.items.is_empty() {
+            let dst = generator.allocate_reg();
+            generator.emit_make_empty_list(dst);
+            return Ok(Some(dst));
+        }
+        let mut ops = vec![];
+        for item in self.items {
+            ops.push(
+                item.generate_bytecode(generator)?.unwrap()
+            );
+        }
+        let dst = generator.allocate_reg();
+        let items = generator.allocate_list(ops);
+        generator.emit_make_list(dst, items);
+        Ok(Some(dst))
     }
 }
 
 impl<'ast> GeneratorNode for ObjectExpr<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
-    }
-}
-
-impl<'ast> GeneratorNode for TupleExpr<'ast> {
     fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
         todo!()
     }
