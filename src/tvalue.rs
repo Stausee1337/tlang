@@ -123,7 +123,7 @@ impl TValue {
     const FLOAT_NAN_TAG:  u64 = 0x7ff0000000000000;
     const NAN_VALUE_MASK: u64 = 0x0001ffffffffffff;
 
-    pub fn encoded(&self) -> u64 {
+    pub const fn encoded(&self) -> u64 {
         return self.0;
     }
 
@@ -260,6 +260,11 @@ impl TValue {
                 object.ty
             }
         })
+    }
+
+    #[inline(always)]
+    pub const fn is_null(&self) -> bool {
+        self.encoded() == TValue::null().encoded()
     }
 
     /// Private Helpers
@@ -920,6 +925,16 @@ impl TInteger {
 
     pub fn from_signed_bytes(bytes: &[u8]) -> Self {
         todo!("real bigint support")
+    }
+
+    pub fn pow(self, exp: TInteger) -> Self {
+        if let (IntegerKind::Int32(base), IntegerKind::Int32(exp)) = (self.0, exp.0) {
+            assert!(exp > 0);
+            if let Some(res) = base.checked_pow(exp as u32) {
+                return TInteger(IntegerKind::Int32(res));
+            }
+        }
+        todo!("bigint pow")
     }
 }
 

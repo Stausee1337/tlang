@@ -352,11 +352,29 @@ mod impls {
         };
     }
 
+    macro_rules! if_general_comp {
+        (eq => $($body:tt)*) => { { $($body)* } };
+        (ne => $($body:tt)*) => { { $($body)* } };
+        ($_:ident => $($body:tt)*) => {};
+    }
+
     macro_rules! branch_impl {
         ($fnname:ident, $inname:ident) => {    
             #[inline(always)]
             pub fn $fnname<'l>(vm: &VM, env: &ExecutionEnvironment, stream: &mut CodeStream<'l>) {
                 decode!(stream, env, $inname { &lhs, &rhs, true_target, false_target });
+                if_general_comp! { $fnname =>
+                    use std::cmp::*;
+
+                    if lhs.is_null() || rhs.is_null() {
+                        if lhs.encoded().$fnname(&rhs.encoded()) {
+                            stream.jump(true_target);
+                        } else {
+                            stream.jump(false_target);
+                        }
+                        return;
+                    }
+                }
                 if_integer_comp! { $fnname =>
                     use $crate::interop::vmops::*;
 

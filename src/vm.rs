@@ -167,6 +167,9 @@ impl GCRef<Primitives> {
                         TString::from_format(&vm, format_args!("{this}"))
                     }));
 
+            ttype.define_method(Symbol![pow], TFunction::rustfunc(
+                    prelude, Some("int.pow"), TInteger::pow));
+
             tvalue::int_init_arithmetics(ttype);
             tvalue::int_init_cmps(ttype);
 

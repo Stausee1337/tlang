@@ -20,7 +20,51 @@ def iter(msg) {
     return count;
 }
 
-// fib(10000000);
+def make_tree(d) {
+    if (d > 0) {
+        d = d - 1;
+        return [make_tree(d), make_tree(d)];
+    }
+    return [null, null];
+}
 
-print(iter("Guys > Girls"));
+def check_tree(node) {
+    var [l, r] = node;
+    if (l == null) {
+        return 1;
+    } else {
+        return 1 + check_tree(l) + check_tree(r);
+    }
+}
+
+def make_check(d) {
+    return check_tree(make_tree(d));
+}
+
+def main(n) {
+    var stretch_depth = n + 1;
+    print([stretch_depth, make_check(stretch_depth)]);
+
+    var long_lived_tree = make_tree(n);
+
+    var d = 4;
+    var mmd = n + 4; 
+    while (d < stretch_depth) {
+        var i = (2).pow(mmd - d);
+        var cs = 0;
+
+        var j = 0;
+        while (j < i) {
+            cs = cs + make_check(d);
+            j = j + 1;
+        }
+
+        print([i, d, cs]);
+        d = d + 2;
+    }
+
+    print([n, check_tree(long_lived_tree)]);
+}
+
+main(15);
 

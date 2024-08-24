@@ -43,3 +43,6 @@ print(my_list.length);
 var [a, b] = [3, 7];
 print(a * b);
 
+print(a != null);
+
+print((2).pow(3));
