@@ -40,9 +40,6 @@ for (char in message) {
 print(my_list);
 print(my_list.length);
 
-var a;
-var b;
-
-[a, b] = [3, 7];
+var [a, b] = [3, 7];
 print(a * b);
 

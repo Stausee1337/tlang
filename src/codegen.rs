@@ -36,13 +36,16 @@ pub fn generate_module<'ast>(module: Module<'ast>, mut generator: BytecodeGenera
 fn generate_body<'ast>(body: &'ast [&'ast Statement], generator: &mut BytecodeGenerator) -> CodegenResult {
     for stmt in body {
         match stmt {
-            Statement::Variable(ref var) if generator.find_rib(RibKind::Module, 1).is_none() =>
-                generator.register_local(var.name, var.constant)
-                .map_err(|()| CodegenErr::SyntaxError {
-                    span: var.span,
-                    message: Some(
-                        format!("identifier `{}` has already been declared", generator.debug(var.name.symbol)))
-                })?,
+            Statement::Variable(ref var) if generator.find_rib(RibKind::Module, 1).is_none() => {
+                for name in var.names {
+                    generator.register_local(**name, var.constant)
+                        .map_err(|()| CodegenErr::SyntaxError {
+                            span: var.span,
+                            message: Some(
+                                format!("identifier `{}` has already been declared", generator.debug(name.symbol)))
+                        })?;
+                }
+            }
             Statement::If(..) |
             Statement::ForLoop(..) | Statement::WhileLoop(..) =>
                 break,
@@ -216,26 +219,58 @@ impl<'ast> GeneratorNode for WhileLoop<'ast> {
     }
 }
 
+impl<'ast> Variable<'ast> {
+    fn initialize_names<F>(&self, init: Operand, mut declare: F, generator: &mut BytecodeGenerator)
+    where
+        F: FnMut(Symbol, Operand, &mut BytecodeGenerator)
+    {
+        debug_assert!(self.names.len() > 0);
+        if self.names.len() == 1 {
+            declare(
+                self.names[0].symbol,
+                init,
+                generator
+            );
+            return;
+        }
+
+        for (idx, name) in self.names.into_iter().enumerate() {
+            let src = generator.allocate_reg();
+            generator.emit_get_subscript(src, init, Operand::Int32(idx as i32));
+            declare(name.symbol, src, generator);
+        }
+    }
+}
+
 impl<'ast> GeneratorNode for Variable<'ast> {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
         let init = if let Some(init) = self.init {
             init.generate_bytecode(generator)?.unwrap()
         } else if self.constant {
+            let span = Span {
+                start: self.names.first().unwrap().span.start,
+                end: self.names.last().unwrap().span.end,
+            };
             return Err(CodegenErr::SyntaxError {
                 message: Some("missing const initializer".to_string()),
-                span: self.name.span
+                span
             });
         } else {
             Operand::Null
         };
 
         if generator.find_rib(RibKind::Module, 1).is_some() { // declare (and init) global
-            generator.emit_declare_global(self.name.symbol, init, self.constant);
+            self.initialize_names(
+                init, |symbol, init, generator| generator.emit_declare_global(symbol, init, self.constant), generator);
             return Ok(None);
         }
 
-        let dst = generator.declare_local(self.name.symbol);
-        generator.emit_mov(dst, init);
+        self.initialize_names(
+            init,
+            |symbol, init, generator| {
+                let dst = generator.declare_local(symbol);
+                generator.emit_mov(dst, init);
+            }, generator);
 
         Ok(None)
     }

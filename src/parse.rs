@@ -75,7 +75,7 @@ pub struct Import {
 
 #[derive(Debug, Copy, Clone)]
 pub struct Variable<'ast> {
-    pub name: Ident,
+    pub names: &'ast [&'ast Ident],
     pub constant: bool,
     pub init: Option<&'ast Expression<'ast>>,
     pub span: Span
@@ -195,7 +195,7 @@ impl<'ast> ListExpr<'ast> {
                 return false;
             };
         }
-        return true;
+        return !self.items.is_empty();
     }
 }
 

@@ -36,8 +36,8 @@ Statement: &'ast parse::Statement<'ast> = {
 
 LineStatement: parse::Statement<'ast> = {
     <expr:Expression> => parse::Statement::Expression(expr),
-    <start:@L> <cnst:VarKind> <name:Ident> <init:("=" <Expression>)?> <end:@R> => parse::Statement::Variable(parse::Variable {
-        name,
+    <start:@L> <cnst:VarKind> <names:PossibleDestructuring> <init:("=" <Expression>)?> <end:@R> => parse::Statement::Variable(parse::Variable {
+        names,
         constant: cnst, 
         init: init.map(|e| ctx.alloc(e)),
         span: Span { start, end }
@@ -53,6 +53,12 @@ LineStatement: parse::Statement<'ast> = {
     <start:@L> "break" <end:@R> => parse::Statement::Break(parse::Break(Span { start, end })),
     <start:@L> "continue" <end:@R> => parse::Statement::Continue(parse::Continue(Span { start, end })),
 }
+
+PossibleDestructuring: &'ast [&'ast parse::Ident] = {
+    "[" <names:SeperatedListTerminated<Ident, ",">> "]" => ctx.alloc(names),
+    <name:Ident> =>
+        ctx.alloc([ctx.alloc(name)])
+};
 
 DelimitedStatement: parse::Statement<'ast> = {
     IfStatement,
@@ -294,9 +300,8 @@ Atom: parse::Expression<'ast> = {
         items,
         span: Span { start, end }
     }),
-    <start:@L> "(" <tpl:SeperatedList2<Expression, ",">> ")" <lambda:("=>" <LambdaBody>)?> <end:@R> =>? {
-        let (items, has_delim) = tpl;
-        if items.len() == 1 && !has_delim && lambda.is_none() {
+    <start:@L> "(" <items:SeperatedList<Expression, ",">> ")" <lambda:("=>" <LambdaBody>)?> <end:@R> =>? {
+        if items.len() == 1 && lambda.is_none() {
             return Ok(items[0].clone());
         }
         if let Some(mut lambda) = lambda {
@@ -359,15 +364,11 @@ SeperatedList<T, Sep>: &'ast [&'ast T] = {
     }
 };
 
-#[inline]
-SeperatedList2<T, Sep>: (&'ast [&'ast T], bool) = {
-    <mut v:(<T> Sep)*> <last:T?> => {
-        let delim = last.is_none() && !v.is_empty();
-        if let Some(element) = last {
-            v.push(element);
-        }
-        let v = v.iter().map(|&i| ctx.alloc(i)).collect();
-        (ctx.slice(v), delim)
+SeperatedListTerminated<T, Sep>: Vec<&'ast T> = {
+    <e:T> => vec![ctx.alloc(e)],
+    <mut v: SeperatedListTerminated<T, Sep>> (Sep) <e:T> => {
+        v.push(ctx.alloc(e));
+        v
     }
 };
 
