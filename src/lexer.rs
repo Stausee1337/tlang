@@ -2,7 +2,7 @@ use std::{ops::Range, rc::Rc};
 
 use logos::{Logos, Lexer};
 
-use crate::{symbol::Symbol, vm::VM, tvalue::TString, memory::GCRef};
+use crate::{symbol::Symbol, vm::{VM, Eternal}, tvalue::TString, memory::GCRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
@@ -21,7 +21,7 @@ impl From<Range<usize>> for Span {
 
 #[derive(Logos, Clone, Copy, Debug)]
 #[logos(skip r"[ \n\t\f]+")]
-#[logos(extras = Rc<VM>)]
+#[logos(extras = Eternal<VM>)]
 pub enum TokenKind { 
     #[regex(r"//[^\n]*")]
     Comment,
@@ -152,7 +152,7 @@ pub struct Token(pub TokenKind, pub Span);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SyntaxError(pub Span);
 
-pub fn tokenize<'source>(vm: Rc<VM>, source: &'source str) -> Result<Box<[Token]>, SyntaxError> {
+pub fn tokenize<'source>(vm: Eternal<VM>, source: &'source str) -> Result<Box<[Token]>, SyntaxError> {
     let mut lexer = TokenKind::lexer_with_extras(source, vm);
     let mut tokens = Vec::new();
 

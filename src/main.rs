@@ -105,12 +105,12 @@ fn main() -> ExitCode {
         let elapsed = now.elapsed();
         println!("execution time {:?}", elapsed);
 
-        drop(vm);
+        vm::shutdown(vm);
 
         return ExitCode::SUCCESS;
     }
 
-    drop(vm);
+    vm::shutdown(vm);
 
     return ExitCode::SUCCESS;
 }

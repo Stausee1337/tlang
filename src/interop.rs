@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, cell::{Cell, OnceCell}, mem::MaybeUninit, rc::Rc};
 
-use crate::{memory::GCRef, tvalue::{TObject, TValue, TString, Typed, TInteger, TFunction, CallResult, TProperty, FunctionFlags, TBool}, vm::VM, eval::TArgsBuffer};
+use crate::{memory::GCRef, tvalue::{TObject, TValue, TString, Typed, TInteger, TFunction, CallResult, TProperty, FunctionFlags, TBool}, vm::{VM, Eternal}, eval::TArgsBuffer};
 
 
 pub struct TPolymorphicWrapper<T: TPolymorphicObject> {
@@ -306,7 +306,7 @@ enum AccessKind {
         this: TValue,
     },
     Attribute {
-        vm: Rc<VM>,
+        vm: Eternal<VM>,
         attribute_val: *mut TValue,
     }
 }
@@ -423,7 +423,6 @@ impl<T: VMDowncast + VMCast + Copy + 'static> std::ops::Drop for TPropertyAccess
             }
             AccessKind::Attribute { attribute_val, vm } => {
                 unsafe {
-                    std::ptr::drop_in_place(&mut *vm);
                     **attribute_val = T::vmcast(value, vm);
                 }
             }

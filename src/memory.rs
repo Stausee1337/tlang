@@ -7,7 +7,7 @@ use rustix::{
 use allocator_api2::alloc::{Allocator, AllocError};
 use static_assertions::const_assert_eq;
 
-use crate::{vm::VM, debug};
+use crate::{vm::{VM, Eternal}, debug};
 
 #[repr(u16)]
 enum State {
@@ -125,12 +125,12 @@ impl HeapBlock {
 }
 
 pub struct Heap {
-    vm: Weak<VM>,
+    vm: Eternal<VM>,
     current_block: Cell<NonNull<HeapBlock>>
 }
 
 impl Heap {
-    pub fn init(vm: Weak<VM>) -> Self {
+    pub fn init(vm: Eternal<VM>) -> Self {
         let block: *const HeapBlock = &*HeapBlock::EMPTY;
         let block = unsafe { NonNull::new_unchecked(block as *mut HeapBlock) };
         Self {
@@ -161,8 +161,8 @@ impl Heap {
         }
     }
 
-    pub fn vm(&self) -> Rc<VM> {
-        self.vm.upgrade().expect("we should have dropped to")
+    pub fn vm(&self) -> Eternal<VM> {
+        self.vm.clone()
     }
 
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
@@ -307,7 +307,7 @@ impl<T> GCRef<T> {
         }
     }
 
-    pub fn vm(&self) -> Rc<VM> {
+    pub fn vm(&self) -> Eternal<VM> {
         self.heap().vm().clone()
     }
 

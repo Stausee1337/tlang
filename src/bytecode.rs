@@ -4,7 +4,7 @@ use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCel
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed, TObject, FunctionFlags}, symbol::Symbol, parse::Ident, codegen::{self, CodegenErr}, memory::GCRef, vm::{VM, TModule}};
+use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed, TObject, FunctionFlags}, symbol::Symbol, parse::Ident, codegen::{self, CodegenErr}, memory::GCRef, vm::{VM, TModule, Eternal}};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -435,7 +435,7 @@ impl BytecodeGenerator {
         }
     }
 
-    pub fn vm(&self) -> Rc<VM> {
+    pub fn vm(&self) -> Eternal<VM> {
         self.module.vm()
     }
 

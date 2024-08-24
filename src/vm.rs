@@ -1,4 +1,4 @@
-use std::{rc::Rc, any::TypeId, sync::OnceLock, mem::offset_of};
+use std::{rc::Rc, any::TypeId, sync::OnceLock, mem::{offset_of, MaybeUninit, ManuallyDrop}, ptr::NonNull, ops::Deref};
 
 use hashbrown::hash_map::RawEntryMut;
 
@@ -16,6 +16,44 @@ macro_rules! debug {
     ($($arg:tt)*) => { }
 }
 
+pub struct Eternal<T> {
+    ptr: NonNull<T>
+}
+
+impl<T> Clone for Eternal<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Eternal { ptr: self.ptr }
+    }
+}
+
+impl<T> Deref for Eternal<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.ptr.as_ref() }
+    }
+}
+
+impl<T: 'static> Eternal<T> {
+    unsafe fn uninit() -> Self {
+        let ptr = std::alloc::alloc(std::alloc::Layout::new::<T>());
+        Eternal { ptr: NonNull::new_unchecked(ptr as *mut T) }
+    }
+
+    pub fn make<F>(init: F) -> Self
+    where
+        F: FnOnce(Eternal<T>) -> T
+    {
+        unsafe {
+            let blueprint = Self::uninit();
+            let instance = ManuallyDrop::new(init(blueprint.clone()));
+            std::ptr::copy_nonoverlapping(instance.deref(), blueprint.ptr.as_ptr(), 1);
+            blueprint
+        }
+    }
+}
+
 pub struct VM {
     heap: Box<Heap>,
 
@@ -28,9 +66,14 @@ pub struct VM {
 }
 
 impl VM {
-    pub fn init() -> Rc<VM> {
-        let vm = Rc::new_cyclic(|me| {
-            let heap = Box::new(Heap::init(me.clone()));
+    // FIXME: the vm shouldn't actually be created and deleted by
+    // init() and shutdown(vm) functions, but rather using a callback.
+    // e.g. vm::with_vm(...), which gets rid of the vm safely after use.
+    // It should only take a function pointer (NOT a closure), to make (accedentally) safely
+    // leaking it outside of its scope hard to do
+    pub fn init() -> Eternal<VM> {
+        let vm = Eternal::make(|place| {
+            let heap = Box::new(Heap::init(place));
             Self::create(heap)
         });
 
@@ -83,6 +126,12 @@ impl VM {
 
     pub fn modules(&self) -> GCRef<TModules> {
         self.modules
+    }
+}
+
+pub fn shutdown(vm: Eternal<VM>) {
+    unsafe {
+        std::ptr::drop_in_place(vm.ptr.as_ptr());
     }
 }
 

@@ -2,7 +2,7 @@ use std::{fmt::Debug, rc::Rc};
 
 use lalrpop_util::ParseError;
 
-use crate::{lexer::{Token, Span, SyntaxError, tokenize, self}, symbol::Symbol, memory::GCRef, tvalue::TString};
+use crate::{lexer::{Token, Span, SyntaxError, tokenize, self}, symbol::Symbol, memory::GCRef, tvalue::TString, vm::Eternal};
 use tlang_macros::GeneratorNode;
 
 #[derive(Debug, Copy, Clone)]
@@ -275,7 +275,7 @@ fn as_span<T: Debug, E: Debug>(error: ParseError<usize, T, E>) -> Span {
 }
 
 pub fn parse_from_tstring<'ast>(
-    vm: Rc<crate::vm::VM>,
+    vm: Eternal<crate::vm::VM>,
     source: GCRef<TString>,
     arena: &'ast bumpalo::Bump,
 ) -> Result<Module<'ast>, SyntaxError> {
