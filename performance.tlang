@@ -66,5 +66,6 @@ def main(n) {
     print([n, check_tree(long_lived_tree)]);
 }
 
+// fib(10000000);
 main(15);
 

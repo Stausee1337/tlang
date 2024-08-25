@@ -164,11 +164,23 @@ impl TRawCode {
 
                 OpCode::GetSubscript => {
                     decode!(&mut stream, env, GetSubscript { &base, &index, &mut dst });
+                    if let Some(index) = index.query_integer() {
+                        if let Some(list) = base.query_list() {
+                            *dst = list[index];
+                            continue;
+                        }
+                    }
                     *dst = tcall!(vm, TValue::get_index(base, index));
                 }
 
                 OpCode::SetSubscript => {
                     decode!(&mut stream, env, SetSubscript { &base, &index, &src });
+                    if let Some(index) = index.query_integer() {
+                        if let Some(mut list) = base.query_list() {
+                            list[index] = src;
+                            continue;
+                        }
+                    }
                     let _: () = tcall!(vm, TValue::set_index(base, index, value));
                 }
 
