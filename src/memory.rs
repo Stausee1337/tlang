@@ -107,7 +107,7 @@ impl HeapBlock {
         *(head as *mut AllocHead) = AllocHead {
             size: (self.allocated_bytes - prev_size) as u32,
             state: State::ALIVE,
-            tag: 0
+            tag: u16::MAX
         };
 
         debug!("{layout:?}, {alloc_size}, {} {:p}", self.allocated_bytes, body);
@@ -126,6 +126,7 @@ impl HeapBlock {
 }
 
 pub struct Heap {
+    tag: u16,
     vm: Eternal<VM>,
     current_block: Cell<NonNull<HeapBlock>>
 }
@@ -135,6 +136,7 @@ impl Heap {
         let block: *const HeapBlock = &*HeapBlock::EMPTY;
         let block = unsafe { NonNull::new_unchecked(block as *mut HeapBlock) };
         Self {
+            tag: 0,
             vm,
             current_block: Cell::new(block)
         }
@@ -169,13 +171,18 @@ impl Heap {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         unsafe {
             let block = self.current_block.get().as_mut();
+            assert!(layout.size() != 0, "ZST are unsupported");
 
             let raw: *mut u8;
-            if layout.size() == 0 {
-                raw = std::ptr::null_mut();
-            } else if let Some(ptr) = block.alloc_raw(layout) {
+            if let Some(ptr) = block.alloc_raw(layout) {
                 raw = ptr;
             } else {
+                if block.previous().is_some() {
+                    let vm = self.vm();
+                    let collector = GarbageCollector::with_last_tag(self.tag);
+                    collector.mark_phase(&vm);
+                }
+
                 self.current_block.set(block.fork(self).unwrap());
                 let block = self.current_block.get().as_mut();
                 raw = block.alloc_raw(layout).ok_or(AllocError)?;
@@ -203,7 +210,51 @@ impl Drop for Heap {
     }
 }
 
-pub struct Visitor;
+struct GarbageCollector {
+    current_tag: u16,
+}
+
+impl GarbageCollector {
+    fn with_last_tag(prev: u16) -> Self {
+        Self {
+            current_tag: prev ^ 1 
+        }
+    }
+
+    fn mark_phase(&self, vm: &VM) {
+        // recursivly visit every life object, starting at the static (eternal) objects
+        let mut visitor = Visitor {
+            count: 0,
+            current_tag: self.current_tag
+        };
+        visitor.feed(vm.symbols);
+        visitor.feed(vm.types);
+        visitor.feed(vm.modules);
+        visitor.feed(vm.primitives);
+    }
+}
+
+pub struct Visitor {
+    count: usize,
+    current_tag: u16,
+}
+
+impl Visitor {
+    pub fn feed<T>(&mut self, ptr: GCRef<T>) {
+        unsafe {
+            let head = GCRef::head(ptr);
+            if (*head).tag == self.current_tag {
+                return;
+            }
+
+            (*head).tag = self.current_tag;
+
+            let atom = GCRef::atom(ptr);
+            atom.visit(self);
+            self.count += 1;
+        }
+    }
+}
 
 pub trait Atom: Send + Sync + 'static {
     fn visit(&self, visitor: &mut Visitor);
@@ -310,6 +361,17 @@ impl<T> GCRef<T> {
 
     pub fn refrence_eq(&self, other: Self) -> bool {
         std::ptr::addr_eq(self.0.as_ptr(), other.0.as_ptr())
+    }
+
+    unsafe fn head(this: Self) -> *mut AllocHead {
+        this.as_ptr().byte_sub(
+            std::mem::size_of::<AtomTrait>()
+            + std::mem::size_of::<AllocHead>()
+        ) as *mut AllocHead
+    }
+
+    unsafe fn atom<'a>(this: Self) -> &'a AtomTrait {
+        &*(this.as_ptr().byte_sub(std::mem::size_of::<AtomTrait>()) as *const AtomTrait)
     }
 }
 

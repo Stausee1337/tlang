@@ -7,7 +7,7 @@ use bitflags::bitflags;
 use hashbrown::{hash_map::RawVacantEntryMut, HashTable, hash_table::Entry};
 use tlang_macros::tcall;
 
-use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast}, debug};
+use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast, TPolymorphicCallable}, debug};
 
 
 macro_rules! __tobject_struct {
@@ -303,15 +303,49 @@ impl TValue {
         unsafe { self.as_object_unsafe() }
     }
 
+    #[inline(always)]
     const unsafe fn as_object_unsafe<T>(&self) -> Option<GCRef<T>> {
         // This will still yield None, if the GCRef<..>,
         // which contains a NonNull, actually is null
         // So `TValue::null()` -> None
         transmute(self.as_gcref::<T>())
     }
+
+    pub fn visit(self, visitor: &mut Visitor) {
+        match self.kind() {
+            TValueKind::Object | TValueKind::List |
+            TValueKind::BigInt | TValueKind::String => unsafe {
+                if let Some(object) = self.as_object_unsafe::<()>() {
+                    visitor.feed(object);
+                }
+            }
+            _ => ()
+        }
+    }
 }
 
-pub trait Typed: Atom + 'static {
+pub fn visit_polymorphic<T>(poly: &T, visitor: &mut Visitor)
+where
+    T: Typed + TPolymorphicObject
+{
+    unsafe {
+        let ttype_ptr: *const *const TType =
+            poly as *const _  as *const *const TType;
+        let ttype = GCRef::from_raw(*ttype_ptr);
+        let this = GCRef::from_raw(poly as *const _);
+
+        ttype.properties(|prop| {
+            let Some(get) = prop.get else {
+                return;
+            };
+            let getter: TPolymorphicCallable<_, TValue> = get.into();
+            let ret = getter(TValue::object(this));
+            ret.visit(visitor);
+        });
+    }
+}
+
+pub trait Typed: Atom + Sized + 'static {
     fn initialize_entry(
         vm: &VM,
         entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
@@ -321,12 +355,15 @@ pub trait Typed: Atom + 'static {
 
     fn initialize(vm: &VM) -> GCRef<TType>;
 
-    fn visit_override(&self, visitor: &mut Visitor) {
-        todo!()
+    fn visit_override(&self, visitor: &mut Visitor)
+    where
+        Self: TPolymorphicObject 
+    {
+        visit_polymorphic(self, visitor);
     }
 }
 
-impl<T: Typed> Atom for T {
+impl<T: Typed + TPolymorphicObject> Atom for T {
     fn visit(&self, visitor: &mut Visitor) {
         T::visit_override(self, visitor);
     }
@@ -392,6 +429,12 @@ impl TObject {
             Entry::Vacant(entry) => {
                 entry.insert((name, value));
             }
+        }
+    }
+
+    pub fn attributes<F: FnMut(TValue)>(&self, mut f: F) {
+        if let Some(descriptor) = self.descriptor {
+            descriptor.iter().for_each(|val| f(val.1));
         }
     }
 }
@@ -710,7 +753,13 @@ impl GCRef<TString> {
 
 impl Atom for TString {
     fn visit(&self, visitor: &mut Visitor) {
-        todo!()
+        if let Some(prev) = self.prev {
+            visitor.feed(prev);
+        }
+        if let Some(next) = self.next {
+            visitor.feed(next);
+        }
+        self.length.visit(visitor);
     }
 }
 
@@ -920,6 +969,12 @@ impl TInteger {
             }
         }
         todo!("bigint pow")
+    }
+
+    pub fn visit(&self, visitor: &mut Visitor) {
+        if let IntegerKind::Bigint(bigint) = self.0 {
+            visitor.feed(bigint);
+        }
     }
 }
 
@@ -1501,6 +1556,15 @@ impl GCRef<TType> {
 
     pub fn define_static_method(&mut self, name: Symbol, method: GCRef<TFunction>) { 
         self.base.set_attribute(name, method.into());
+    }
+
+    pub fn properties<F: FnMut(GCRef<TProperty>)>(&self, mut f: F) {
+        let vm = self.vm();
+        self.base.attributes(|attr| {
+            if let Some(prop) = attr.query_object::<TProperty>(&vm) {
+                f(prop);
+            }
+        })
     }
 }
 

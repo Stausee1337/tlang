@@ -341,7 +341,11 @@ impl GCRef<Primitives> {
 
 impl Atom for Primitives {
     fn visit(&self, visitor: &mut Visitor) {
-        todo!()
+        self.float.get().map(|ty| visitor.feed(*ty));
+        self.int.get().map(|ty| visitor.feed(*ty));
+        self.bool.get().map(|ty| visitor.feed(*ty));
+        self.string.get().map(|ty| visitor.feed(*ty));
+        self.list.get().map(|ty| visitor.feed(*ty));
     }
 }
 
@@ -389,7 +393,9 @@ impl GCRef<TModules> {
 
 impl Atom for TModules {
     fn visit(&self, visitor: &mut Visitor) {
-        todo!()
+        for (_, import) in self.imported.iter() {
+            visitor.feed(*import);
+        }
     }
 }
 
@@ -420,7 +426,9 @@ impl GCRef<RustTypeInterner> {
 
 impl Atom for RustTypeInterner {
     fn visit(&self, visitor: &mut Visitor) {
-        todo!()
+        for (_, ty) in self.0.iter() {
+            visitor.feed(*ty);
+        }
     }
 }
 
@@ -439,7 +447,13 @@ pub struct TModule {
 
 impl Atom for TModule {
     fn visit(&self, visitor: &mut Visitor) {
-        todo!()
+        visitor.feed(self.name);
+        if let Some(source) = self.source {
+            visitor.feed(source);
+        }
+        for (_, val, _) in self.table.iter() {
+            val.visit(visitor);
+        }
     }
 }
 

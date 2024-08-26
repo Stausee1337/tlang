@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use ahash::RandomState;
 use hashbrown::raw::RawTable;
 
-use crate::{memory::{GCRef, Atom}, tvalue::TString};
+use crate::{memory::{GCRef, Atom, Visitor}, tvalue::TString};
 
 pub use tlang_macros::Symbol;
 
@@ -108,8 +108,12 @@ impl GCRef<SymbolCache> {
 }
 
 impl Atom for SymbolCache {
-    fn visit(&self, visitor: &mut crate::memory::Visitor) {
-        todo!()
+    fn visit(&self, visitor: &mut Visitor) {
+        unsafe {
+            for bucket in self.table.iter() {
+                visitor.feed(bucket.as_ref().1);
+            }
+        }
     }
 }
 
