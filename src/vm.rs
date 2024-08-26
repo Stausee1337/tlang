@@ -1,8 +1,8 @@
-use std::{rc::Rc, any::TypeId, sync::OnceLock, mem::{offset_of, MaybeUninit, ManuallyDrop}, ptr::NonNull, ops::Deref};
+use std::{any::TypeId, sync::OnceLock, mem::{offset_of, ManuallyDrop}, ptr::NonNull, ops::Deref};
 
 use hashbrown::hash_map::RawEntryMut;
 
-use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, TString, TValue, Typed, TObject, TFunction, TInteger, TBool, TFloat, self, TProperty, Accessor, TList}};
+use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, TString, TValue, Typed, TObject, TFunction, TInteger, TBool, TFloat, self, TProperty, TList}};
 
 #[macro_export]
 #[cfg(debug_assertions)]
@@ -141,7 +141,7 @@ fn init_prelude_functions(vm: &VM) {
     let printfn = TFunction::rustfunc(prelude, Some("print"), move |msg| {
         tvalue::print(prelude, msg);
     });
-    prelude.set_global(Symbol![print], printfn.into(), true);
+    prelude.set_global(Symbol![print], printfn.into(), true).unwrap();
 }
 
 pub struct Primitives {
@@ -178,7 +178,7 @@ impl GCRef<Primitives> {
             });
 
             let mut prelude = vm.modules().prelude();
-            prelude.set_global(Symbol![float], ttype.into(), true);
+            prelude.set_global(Symbol![float], ttype.into(), true).unwrap();
 
             ttype.define_method(Symbol![fmt], TFunction::rustfunc(
                     prelude, Some("float.fmt"),
@@ -188,6 +188,7 @@ impl GCRef<Primitives> {
                     }));
 
             tvalue::float_init_arithmetics(ttype);
+            tvalue::float_init_unarys(ttype);
             tvalue::float_init_cmps(ttype);
 
             ttype
@@ -207,7 +208,7 @@ impl GCRef<Primitives> {
             });
 
             let mut prelude = vm.modules().prelude();
-            prelude.set_global(Symbol![int], ttype.into(), true);
+            prelude.set_global(Symbol![int], ttype.into(), true).unwrap();
 
             ttype.define_method(Symbol![fmt], TFunction::rustfunc(
                     prelude, Some("int.fmt"),
@@ -239,7 +240,7 @@ impl GCRef<Primitives> {
             });
 
             let mut prelude = vm.modules().prelude();
-            prelude.set_global(Symbol![bool], ttype.into(), true);
+            prelude.set_global(Symbol![bool], ttype.into(), true).unwrap();
 
             ttype.define_method(Symbol![fmt], TFunction::rustfunc(
                     prelude, Some("bool.fmt"),
@@ -265,7 +266,7 @@ impl GCRef<Primitives> {
             });
 
             let mut prelude = vm.modules().prelude();
-            prelude.set_global(Symbol![string], ttype.into(), true);
+            prelude.set_global(Symbol![string], ttype.into(), true).unwrap();
 
             ttype.define_method(Symbol![fmt], TFunction::rustfunc(
                     prelude, Some("string.fmt"), |this: GCRef<TString>| this));
@@ -302,7 +303,7 @@ impl GCRef<Primitives> {
             });
 
             let mut prelude = vm.modules().prelude();
-            prelude.set_global(Symbol![list], ttype.into(), true);
+            prelude.set_global(Symbol![list], ttype.into(), true).unwrap();
 
             ttype.define_method(
                 Symbol![fmt],
@@ -459,10 +460,6 @@ impl TModule {
 }
 
 impl GCRef<TModule> {
-    pub fn set_name(&mut self, name: &str) {
-        self.name = TString::from_slice(&self.vm(), name).into();
-    }
-
     pub fn set_global(&mut self, name: Symbol, value: TValue, constant: bool) -> Result<(), GlobalErr> {
         let Err(..) = self.get_global(name) else {
             return Err(GlobalErr::Redeclared(name));
@@ -511,11 +508,11 @@ impl GCRef<TModule> {
         if let Some(filter) = what {
             for name in filter.into_iter() {
                 let value = module.get_global(name).unwrap();
-                self.set_global(name, value, true);
+                self.set_global(name, value, true).unwrap();
             }
         } else {
             for (name, value) in module.iter() {
-                self.set_global(name, value, true);
+                self.set_global(name, value, true).unwrap();
             }
         }
     }

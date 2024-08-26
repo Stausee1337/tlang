@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, cell::{Cell, OnceCell}, mem::MaybeUninit, rc::Rc};
+use std::{marker::PhantomData, cell::OnceCell, mem::MaybeUninit};
 
 use crate::{memory::GCRef, tvalue::{TObject, TValue, TString, Typed, TInteger, TFunction, CallResult, TProperty, FunctionFlags, TBool}, vm::{VM, Eternal}, eval::TArgsBuffer};
 
@@ -9,7 +9,7 @@ pub struct TPolymorphicWrapper<T: TPolymorphicObject> {
 }
 
 impl<T: TPolymorphicObject> VMCast for TPolymorphicWrapper<T> {
-    fn vmcast(self, vm: &VM) -> TValue {
+    fn vmcast(self, _vm: &VM) -> TValue {
         TValue::object(self.object)
     }
 }
@@ -64,7 +64,7 @@ impl VMCast for &str {
 }
 
 impl VMCast for bool {
-    fn vmcast(self, vm: &VM) -> TValue {
+    fn vmcast(self, _vm: &VM) -> TValue {
         TBool::from_bool(self).into()
     }
 }
@@ -129,7 +129,7 @@ impl VMArgs for () {
 }
 
 impl VMDowncast for () {
-    fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
+    fn vmdowncast(value: TValue, _vm: &VM) -> Option<Self> {
         if value.encoded() == TValue::null().encoded() {
             return Some(());
         }
@@ -141,6 +141,7 @@ impl<T1> VMArgs for (T1,)
 where
     T1: VMDowncast + VMCast
 {
+    #[inline]
     fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self> {
         let mut iter = args.into_iter(1, false);
         let arg1 = iter.next()?;
@@ -149,6 +150,7 @@ where
         ))
     }
 
+    #[inline]
     fn encode(self, vm: &VM) -> TArgsBuffer {
         TArgsBuffer::new(vec![self.0.vmcast(vm)])
     }
@@ -159,6 +161,7 @@ where
     T1: VMDowncast + VMCast,
     T2: VMDowncast + VMCast
 {
+    #[inline]
     fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self> {
         let mut iter = args.into_iter(2, false);
         let arg1 = iter.next()?;
@@ -169,6 +172,7 @@ where
         ))
     }
 
+    #[inline]
     fn encode(self, vm: &VM) -> TArgsBuffer {
         TArgsBuffer::new(vec![
             self.0.vmcast(vm),
@@ -183,6 +187,7 @@ where
     T2: VMDowncast + VMCast,
     T3: VMDowncast + VMCast
 {
+    #[inline]
     fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self> {  
         let mut iter = args.into_iter(3, false);
         let arg1 = iter.next()?;
@@ -195,6 +200,7 @@ where
         ))
     }
 
+    #[inline]
     fn encode(self, vm: &VM) -> TArgsBuffer { 
         TArgsBuffer::new(vec![
             self.0.vmcast(vm),
@@ -220,7 +226,7 @@ impl<In: VMArgs, R: VMDowncast> TPolymorphicCallable<In, R> {
     #[inline]
     pub fn is_method(&self) -> bool {
         match self.inner {
-            CallableInner::Polymorph(tobject) =>
+            CallableInner::Polymorph(..) =>
                 true, // callable object are always implemented via methods
             CallableInner::Function(tfunction) =>
                 tfunction.flags.contains(FunctionFlags::METHOD),
@@ -237,7 +243,7 @@ impl<In: VMArgs, R: VMDowncast> TPolymorphicCallable<In, R> {
 }
 
 impl<In: VMArgs, R: VMDowncast> VMCast for TPolymorphicCallable<In, R> {
-    fn vmcast(self, vm: &VM) -> TValue {
+    fn vmcast(self, _vm: &VM) -> TValue {
         match self.inner {
             CallableInner::Polymorph(tobject) =>
                 TValue::object(tobject),
@@ -255,7 +261,7 @@ impl<In: VMArgs, R: VMDowncast> VMDowncast for TPolymorphicCallable<In, R> {
                 _phantom: PhantomData::default()
             });
         }
-        let object = value.query_tobject()?;
+        let _object = value.query_tobject()?;
         todo!("querry object::call and decide based on this");
     }
 }
@@ -452,8 +458,8 @@ pub mod vmops {
     define_trait!(BitOr, bitor);
     define_trait!(BitXor, bitxor);*/
 
-    define_trait!(Eq, eq);
-    define_trait!(Ne, ne);
+    // define_trait!(Eq, eq);
+    // define_trait!(Ne, ne);
     define_trait!(Gt, gt);
     define_trait!(Ge, ge);
     define_trait!(Lt, lt);

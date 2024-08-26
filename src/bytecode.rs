@@ -1,10 +1,10 @@
 
-use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCell, rc::Rc, io::Write as IOWrite};
+use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCell, io::Write as IOWrite};
 
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TBool, Typed, TObject, FunctionFlags}, symbol::Symbol, parse::Ident, codegen::{self, CodegenErr}, memory::GCRef, vm::{VM, TModule, Eternal}};
+use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TObject, FunctionFlags}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, vm::{VM, TModule, Eternal}};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]

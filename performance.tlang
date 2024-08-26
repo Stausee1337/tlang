@@ -47,6 +47,10 @@ def main(n) {
 
     var long_lived_tree = make_tree(n);
 
+    if (true) {
+        return;
+    }
+
     var d = 4;
     var mmd = n + 4; 
     while (d < stretch_depth) {
@@ -65,6 +69,7 @@ def main(n) {
 
     print([n, check_tree(long_lived_tree)]);
 }
+
 
 // fib(10000000);
 main(15);

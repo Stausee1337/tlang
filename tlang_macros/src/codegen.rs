@@ -201,8 +201,8 @@ pub fn generate_instructions(token_stream: TokenStream) -> Result<TokenStream, s
                 let instruction = unsafe {
                     std::mem::transmute::<_, [u8; SIZE]>(instruction)
                 };
-                self.data.write(&[crate::bytecode::OpCode::#ident as u8]);
-                self.data.write(&instruction);
+                self.data.write(&[crate::bytecode::OpCode::#ident as u8]).unwrap();
+                self.data.write(&instruction).unwrap();
             }
         });
 

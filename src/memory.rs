@@ -1,10 +1,10 @@
-use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::{NonNull, copy_nonoverlapping}, alloc::Layout, cell::Cell, any::TypeId, mem::{transmute, ManuallyDrop}, rc::{Weak, Rc}};
+use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::{NonNull, copy_nonoverlapping}, alloc::Layout, cell::Cell, any::TypeId, mem::{transmute, ManuallyDrop}};
 use rustix::{
     io,
     mm::{mmap_anonymous, munmap, MapFlags, ProtFlags}
 };
 
-use allocator_api2::alloc::{Allocator, AllocError};
+use allocator_api2::alloc::AllocError;
 use static_assertions::const_assert_eq;
 
 use crate::{vm::{VM, Eternal}, debug};
@@ -67,6 +67,7 @@ impl HeapBlock {
     }
 
     unsafe fn unmap(&mut self) -> io::Result<()> {
+        debug!("Free Block @ {:p} ", self.data());
         munmap(self.data() as *mut c_void, HeapBlock::PAGE_SIZE)
     }
 
@@ -288,10 +289,6 @@ impl<T> GCRef<T> {
         GCRef(transmute(raw))
     }
 
-    pub(crate) unsafe fn cast<U>(&self) -> GCRef<U> {
-        GCRef::<U>::from_raw(self.as_ptr() as *const U)
-    }
-
     pub const unsafe fn null() -> Self {
         GCRef::from_raw(std::ptr::null_mut())
     }
@@ -309,17 +306,6 @@ impl<T> GCRef<T> {
 
     pub fn vm(&self) -> Eternal<VM> {
         self.heap().vm().clone()
-    }
-
-    unsafe fn head(&self) -> *mut AllocHead {
-        self.as_ptr().byte_sub(
-            std::mem::size_of::<AtomTrait>()
-            + std::mem::size_of::<AllocHead>()
-        ) as *mut AllocHead
-    }
-
-    unsafe fn atom(&self) -> &AtomTrait {
-        &*(self.0.as_ptr().byte_sub(std::mem::size_of::<AtomTrait>()) as *const AtomTrait)
     }
 
     pub fn refrence_eq(&self, other: Self) -> bool {

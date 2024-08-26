@@ -29,7 +29,9 @@ pub trait GeneratorNode {
 
 pub fn generate_module<'ast>(module: Module<'ast>, mut generator: BytecodeGenerator) -> Result<GCRef<TFunction>, CodegenErr> {
     generate_body(module.body, &mut generator)?;
-    generator.emit_return(Operand::Null);
+    if !generator.is_terminated() {
+        generator.emit_return(Operand::Null);
+    }
     Ok(generator.root_function())
 }
 
@@ -46,9 +48,6 @@ fn generate_body<'ast>(body: &'ast [&'ast Statement], generator: &mut BytecodeGe
                         })?;
                 }
             }
-            Statement::If(..) |
-            Statement::ForLoop(..) | Statement::WhileLoop(..) =>
-                break,
             _ => ()
         }
     }
@@ -175,7 +174,7 @@ impl<'ast> GeneratorNode for ForLoop<'ast> {
         generate_small_branch(start_block, forward_block, generator);
         generator.with_rib(RibKind::Loop, |generator| {
             generator.set_current_block(forward_block);
-            generator.register_local(self.var, false);
+            generator.register_local(self.var, false).unwrap();
             let dst = generator.declare_local(self.var.symbol);
             generator.emit_next_iterator(dst, iterator, loop_body, end_block);
 

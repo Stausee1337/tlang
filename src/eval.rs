@@ -8,8 +8,7 @@ use crate::{
     memory::GCRef,
     tvalue::{TBool, TFunction, TInteger, TValue, resolve_by_symbol, TList},
     interop::TPropertyAccess,
-    vm::{TModule, VM},
-    debug
+    vm::{TModule, VM}
 };
 
 struct ExecutionEnvironment<'l> {
@@ -48,6 +47,7 @@ impl TArgsBuffer {
         TArgsBuffer(v)
     }
 
+    #[inline]
     pub fn into_iter(self, min: usize, varags: bool) -> TArgsIterator {
         if !varags {
             assert!(min == self.0.len());
@@ -72,6 +72,7 @@ pub struct TArgsIterator {
 impl Iterator for TArgsIterator {
     type Item = TValue;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.current >= self.inner.len() {
             return None; 
@@ -99,7 +100,7 @@ impl TRawCode {
             registers: registers.as_mut_slice(),
         };
         let vm = module.vm();
-        let mut stream = CodeStream::from_raw(self);
+        let stream = CodeStream::from_raw(self);
         Self::inner_eval(module, &vm, &mut env, stream)
     }
 
@@ -107,7 +108,7 @@ impl TRawCode {
         loop {
             let op: OpCode = unsafe { std::mem::transmute(stream.current()) };
             stream.bump(1);
-            debug!("{op:?}");
+            // debug!("{op:?}");
             // let now = Instant::now();
             match op {
                 OpCode::Mov => {
@@ -133,7 +134,7 @@ impl TRawCode {
 
                 OpCode::DeclareGlobal => {
                     decode!(&mut stream, env, DeclareGlobal { symbol, &init, constant });
-                    module.set_global(symbol, init, constant);
+                    module.set_global(symbol, init, constant).unwrap();
                 }
 
                 OpCode::GetGlobal => {
@@ -282,7 +283,7 @@ impl OperandList {
     #[inline(always)]
     fn as_arguments(&self, env: &ExecutionEnvironment) -> TArgsBuffer {
         let operands = unsafe { &*self.0 };
-        let mut arguments = Vec::new();
+        let mut arguments = Vec::with_capacity(operands.len() + 1);
         for op in operands {
             arguments.push(env.decode(*op));
         }
@@ -304,7 +305,7 @@ mod impls {
     use super::*;
     use std::ops::*;
 
-    pub fn truthy(bool: TValue, env: &ExecutionEnvironment) -> bool {
+    pub fn truthy(bool: TValue, _env: &ExecutionEnvironment) -> bool {
         if let Some(tbool) = bool.query_bool() {
             return tbool.as_bool();
         }

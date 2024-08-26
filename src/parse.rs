@@ -1,8 +1,8 @@
-use std::{fmt::Debug, rc::Rc};
+use std::fmt::Debug;
 
 use lalrpop_util::ParseError;
 
-use crate::{lexer::{Token, Span, SyntaxError, tokenize, self}, symbol::Symbol, memory::GCRef, tvalue::TString, vm::Eternal};
+use crate::{lexer::{Token, Span, SyntaxError, self}, symbol::Symbol, memory::GCRef, tvalue::TString, vm::Eternal};
 use tlang_macros::GeneratorNode;
 
 #[derive(Debug, Copy, Clone)]

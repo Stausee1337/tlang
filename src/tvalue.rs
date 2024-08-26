@@ -414,7 +414,7 @@ impl Typed for TObject {
         ttype.base = TObject::base(vm, vm.types().query::<TType>());
 
         let mut prelude = vm.modules().prelude();
-        prelude.set_global(Symbol![Object], ttype.into(), true);
+        prelude.set_global(Symbol![Object], ttype.into(), true).unwrap();
 
         ttype.define_method(Symbol![eq], TFunction::rustfunc(
                 prelude, Some("object::eq"), |this: TValue, other: TValue| {
@@ -666,10 +666,6 @@ impl TString {
     }
 }
 
-pub trait GetHash {
-    fn get_hash_code(&self) -> u64;
-}
-
 impl TString {
     pub fn as_slice<'a>(&self) -> &'a str {
         unsafe {
@@ -682,11 +678,6 @@ impl TString {
     #[inline]
     pub fn size(&self) -> usize {
         self.size
-    }
-
-    #[inline]
-    pub fn length(&self) -> TInteger {
-        self.length
     }
 
     #[inline]
@@ -764,12 +755,6 @@ impl Display for GCRef<TString> {
 impl std::fmt::Debug for GCRef<TString> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_slice())
-    }
-}
-
-impl GetHash for GCRef<TString> {
-    fn get_hash_code(&self) -> u64 {
-        self.vm().hash_state.hash_one(self.as_slice())
     }
 }
 
@@ -1519,12 +1504,6 @@ impl GCRef<TType> {
     }
 }
 
-impl Atom for i32 {
-    fn visit(&self, visitor: &mut Visitor) {
-        todo!()
-    }
-}
-
 impl Typed for TType {
     fn initialize_entry(
             vm: &VM,
@@ -1539,14 +1518,13 @@ impl Typed for TType {
             variable: true
         });
 
-        let int = vm.heap().allocate_atom(12);
         entry.insert(TypeId::of::<Self>(), ttype);
 
         ttype.base = TObject::base(vm, ttype);
         ttype.basety = Some(vm.types().query::<TObject>());
 
         let mut prelude = vm.modules().prelude();
-        prelude.set_global(Symbol![Type], ttype.into(), true);
+        prelude.set_global(Symbol![Type], ttype.into(), true).unwrap();
 
         ttype.define_property(
             Symbol![base],
@@ -1703,7 +1681,7 @@ impl Typed for TFunction {
         entry.insert(TypeId::of::<Self>(), ttype);
 
         let mut prelude = vm.modules().prelude();
-        prelude.set_global(Symbol![Function], ttype.into(), true);
+        prelude.set_global(Symbol![Function], ttype.into(), true).unwrap();
 
         ttype.define_property(
             Symbol![name],
@@ -1825,7 +1803,7 @@ pub enum CallResult<In, R> {
 }
 
 #[repr(C)]
-struct Nativefunc {
+pub struct Nativefunc {
     id: TypeId,
     closure: *const (),
     fastcall: *const (),
