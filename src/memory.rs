@@ -1,5 +1,4 @@
 use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::{NonNull, copy_nonoverlapping}, alloc::Layout, cell::Cell, any::TypeId, mem::{transmute, ManuallyDrop}};
-use bytemuck::Zeroable;
 use rustix::{
     io,
     mm::{mmap_anonymous, munmap, MapFlags, ProtFlags}
@@ -11,6 +10,7 @@ use static_assertions::const_assert_eq;
 use crate::{vm::{VM, Eternal}, debug};
 
 #[repr(u16)]
+#[derive(Debug, PartialEq, Eq)]
 enum State {
     /// The region of memory does not contain any
     /// used object and is free for allocation
@@ -25,6 +25,20 @@ struct AllocHead {
     size: u32, state: State, tag: u16,
 }
 
+impl AllocHead {
+    unsafe fn free(&mut self, freelist_end: &mut *mut FreeListEntry) {
+        let atom = &mut *(self as *mut Self as *mut AtomTrait)
+            .byte_add(std::mem::size_of::<Self>());
+        debug!("Free Head @ {:p}", self);
+        atom.drop();
+        self.state = State::DEAD;
+
+        let current_entry = self as *mut _ as *mut FreeListEntry;
+        (*current_entry).previous = *freelist_end;
+        *freelist_end = current_entry;
+    }
+}
+
 const_assert_eq!(std::mem::size_of::<AllocHead>(), 8);
 
 #[inline(always)]
@@ -32,11 +46,18 @@ fn align_up(size: usize, align: usize) -> usize {
     (size + align - 1) & !(align - 1)
 }
 
+#[repr(C)]
+struct FreeListEntry {
+    head: AllocHead,
+    previous: *mut FreeListEntry
+}
+
 #[derive(Clone, Copy)]
 struct HeapBlock {
     heap: *const Heap,
     previous: *const HeapBlock,
-    allocated_bytes: usize
+    allocated_bytes: usize,
+    freelist: *mut FreeListEntry
 }
 
 impl HeapBlock {
@@ -46,7 +67,8 @@ impl HeapBlock {
     const EMPTY: &'static HeapBlock = &HeapBlock {
         heap: std::ptr::null(),
         previous: std::ptr::null(),
-        allocated_bytes: Self::PAGE_SIZE
+        allocated_bytes: Self::PAGE_SIZE,
+        freelist: std::ptr::null_mut()
     };
 
     unsafe fn map(heap: &Heap, previous: &Self) -> io::Result<NonNull<HeapBlock>> {
@@ -60,10 +82,11 @@ impl HeapBlock {
         *block = HeapBlock {
             heap: &*heap,
             previous: &*previous,
-            allocated_bytes: std::mem::size_of::<Self>()
+            allocated_bytes: std::mem::size_of::<Self>(),
+            freelist: std::ptr::null_mut()
         };
 
-        debug!("Create Block @ {:p} ", block);
+        // debug!("Create Block @ {:p} ", block);
 
         let block = NonNull::new_unchecked(block);
         Ok(block)
@@ -131,7 +154,8 @@ impl HeapBlock {
 pub struct Heap {
     tag: u16,
     vm: Eternal<VM>,
-    current_block: Cell<NonNull<HeapBlock>>
+    current_block: Cell<NonNull<HeapBlock>>,
+    defer_gc: Cell<bool>
 }
 
 impl Heap {
@@ -141,8 +165,17 @@ impl Heap {
         Self {
             tag: 0,
             vm,
-            current_block: Cell::new(block)
+            current_block: Cell::new(block),
+            defer_gc: Cell::new(false)
         }
+    }
+
+    pub fn defer_gc(&self) {
+        self.defer_gc.set(true);
+    }
+
+    pub fn undefer_gc(&self) {
+        self.defer_gc.set(false);
     }
 
     pub fn allocate_atom<A: Atom>(&self, atom: A) -> GCRef<A> {
@@ -180,10 +213,11 @@ impl Heap {
             if let Some(ptr) = block.alloc_raw(layout) {
                 raw = ptr;
             } else {
-                if block.previous().is_some() {
+                if block.previous().is_some() && !self.defer_gc.get() {
                     let vm = self.vm();
                     let collector = GarbageCollector::with_last_tag(self.tag);
                     collector.mark_phase(&vm);
+                    collector.sweep_phase(&vm);
                 }
 
                 self.current_block.set(block.fork(self).unwrap());
@@ -257,6 +291,7 @@ impl StackWalker {
     fn walk<F: FnMut(crate::tvalue::TValue)>(mut f: F) {
         unsafe {
             let mut frame = Self::get_frame();
+            let mut count = 0;
             while frame.size() > 0 {
                 let data: &[usize] = bytemuck::cast_slice(frame.data());
                 if data[0] != 0xdeadbeef {
@@ -282,7 +317,9 @@ impl StackWalker {
                 }
 
                 frame = frame.previous();
+                count += 1;
             }
+            // debug!("Visted {count} stack frames");
         }
     }
 }
@@ -309,9 +346,37 @@ impl GarbageCollector {
         visitor.feed(vm.modules);
         visitor.feed(vm.primitives);
 
+        // vist objects on custom stack
         StackWalker::walk(|value| {
             value.visit(&mut visitor);
         });
+    }
+
+    fn sweep_phase(&self, vm: &VM) {
+        let heap = vm.heap(); 
+        let mut current_block: NonNull<HeapBlock> = heap.current_block.get();
+        unsafe {
+            loop {
+                let block = current_block.as_mut();
+                let Some(previous) = block.previous() else {
+                    break;
+                };
+
+                let mut head = (block as *mut _ as *mut AllocHead)
+                    .byte_add(std::mem::size_of::<HeapBlock>());
+
+                while (*head).size != 0 {
+                    if (*head).tag != self.current_tag && (*head).state == State::ALIVE {
+                        (*head).free(&mut block.freelist);
+                    }
+                    // debug!("Head @ {:p} w/ {} bytes is {:?}", head, (*head).size, (*head).state);
+                    head = head.byte_add((*head).size as usize);
+                    // offset += (*head).size as usize;
+                }
+
+                current_block = previous;
+            }
+        }
     }
 }
 
@@ -388,6 +453,7 @@ struct AtomTraitVTable {
 }
 
 unsafe fn atom_drop<A: Atom>(mut a: NonNull<AtomTrait>) {
+    // debug!("{}::Drop::drop", std::any::type_name::<A>());
     let unerased_type: &mut AtomTrait<A> = mutcast(a.as_mut());
     std::ptr::drop_in_place(unerased_type);
 }

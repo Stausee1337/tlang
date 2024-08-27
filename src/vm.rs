@@ -77,6 +77,8 @@ impl VM {
             Self::create(heap)
         });
 
+        vm.heap().defer_gc();
+
         let _ttype = vm.types().query::<TType>();
         vm.primitives().float_type();
         vm.primitives().int_type();
@@ -85,6 +87,8 @@ impl VM {
         vm.primitives().list_type();
 
         init_prelude_functions(&vm);
+
+        vm.heap().undefer_gc();
 
         vm
     }

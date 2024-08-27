@@ -332,7 +332,11 @@ where
         let ttype_ptr: *const *const TType =
             poly as *const _  as *const *const TType;
         let ttype = GCRef::from_raw(*ttype_ptr);
-        let this = GCRef::from_raw(poly as *const _);
+        let this = GCRef::from_raw(poly as *const T as *const TObject);
+
+        if let Some(descriptor) = this.descriptor {
+            visitor.feed(descriptor);
+        }
 
         visitor.feed(ttype);
 
@@ -490,7 +494,12 @@ impl Typed for TObject {
 
 impl Atom for HashTable<(Symbol, TValue)> {
     fn visit(&self, visitor: &mut Visitor) {
-        todo!()
+        let this = unsafe { GCRef::from_raw(self as *const Self) };
+        let vm = this.vm();
+        for (_, val) in self.iter() {
+            // debug!("Visit {}", val.ttype(&vm).map(|ty| ty.name.as_slice()).unwrap_or("null"));
+            val.visit(visitor);
+        }
     }
 }
 
@@ -767,9 +776,10 @@ impl Atom for TString {
 
 impl Drop for TString {
     fn drop(&mut self) {
-        if self.is_small() {
+        // debug!("TString::drop {} {}", self.as_slice(), self.is_small());
+        if !self.is_small() {
             unsafe {
-                let align = std::mem::align_of::<u8>();
+                let align = 2;
                 std::alloc::dealloc(
                     self.data_ptr_mut(),
                     Layout::from_size_align_unchecked(self.size(), align)
@@ -1033,11 +1043,11 @@ pub fn int_init_unarys(mut ttype: GCRef<TType>) {
     let prelude = vm.modules().prelude();
 
     ttype.define_method(Symbol![neg], TFunction::rustfunc(
-            prelude, Some("int::neg"),
+            prelude, Some("int.neg"),
             <TInteger as std::ops::Neg>::neg));
 
     ttype.define_method(Symbol![invert], TFunction::rustfunc(
-            prelude, Some("int::invert"),
+            prelude, Some("int.invert"),
             <TInteger as crate::interop::vmops::Invert>::invert));
 }
 
@@ -1097,7 +1107,7 @@ macro_rules! iter_int_arithmetics {
             let prelude = vm.modules().prelude();
             $(
                 ttype.define_method(Symbol![$fn], TFunction::rustfunc(
-                        prelude, Some(concat!("int::", stringify!($op))),
+                        prelude, Some(concat!("int.", stringify!($fn))),
                         <TInteger as std::ops::$op<TValue>>::$fn));
             )*
         }
@@ -1160,7 +1170,7 @@ macro_rules! iter_int_cmps {
             let prelude = vm.modules().prelude();
             $(
                 ttype.define_method(Symbol![$fn], TFunction::rustfunc(
-                        prelude, Some(concat!("int::", stringify!($op))),
+                        prelude, Some(concat!("int.", stringify!($fn))),
                         <TInteger as $crate::interop::vmops::$op<TValue>>::$fn));
             )*
         }
@@ -1280,7 +1290,7 @@ macro_rules! iter_float_arithmetics {
             let prelude = vm.modules().prelude();
             $(
                 ttype.define_method(Symbol![$fn], TFunction::rustfunc(
-                        prelude, Some(concat!("float::", stringify!($op))),
+                        prelude, Some(concat!("float.", stringify!($fn))),
                         <TFloat as std::ops::$op<TValue>>::$fn));
             )*
         }
@@ -1329,7 +1339,7 @@ macro_rules! iter_float_cmps {
             let mut prelude = vm.modules().prelude();
             $(
                 ttype.define_method(Symbol![$fn], TFunction::rustfunc(
-                        prelude, Some(concat!("float::", stringify!($op))),
+                        prelude, Some(concat!("float::", stringify!($fn))),
                         <TFloat as $crate::interop::vmops::$op<TValue>>::$fn));
             )*
         }
@@ -1517,8 +1527,12 @@ impl VMDowncast for GCRef<TList> {
 }
 
 impl Atom for TList {
-    fn visit(&self, _visitor: &mut Visitor) {
-        todo!()
+    fn visit(&self, visitor: &mut Visitor) {
+        let this = unsafe { GCRef::from_raw(self as *const Self) };
+        let length = this.length.as_usize().unwrap();
+        for idx in 0..length {
+            this[idx].visit(visitor);
+        }
     }
 }
 
