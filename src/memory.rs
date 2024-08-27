@@ -26,15 +26,20 @@ struct AllocHead {
 }
 
 impl AllocHead {
-    unsafe fn free(&mut self, freelist_end: &mut *mut FreeListEntry) {
+    unsafe fn free(&mut self, freelist_end: &mut *mut FreeListEntry, last_empty: *mut AllocHead) {
         let atom = &mut *(self as *mut Self as *mut AtomTrait)
             .byte_add(std::mem::size_of::<Self>());
         atom.drop();
         self.state = State::DEAD;
 
-        let current_entry = self as *mut _ as *mut FreeListEntry;
-        (*current_entry).next = *freelist_end;
-        *freelist_end = current_entry;
+        if last_empty.is_null() {
+            let current_entry = self as *mut _ as *mut FreeListEntry;
+            (*current_entry).next = *freelist_end;
+            *freelist_end = current_entry;
+        } else {
+            (*last_empty).size += self.size;
+        }
+
     }
 }
 
@@ -127,6 +132,7 @@ impl HeapBlock {
                 previous = &mut entry;
                 continue;
             }
+            // print!("Found spot w/, {avialable_size} bytes, alloc {size}, ");
 
             // First fit
             head.size = (size + head_size) as u32;
@@ -134,14 +140,15 @@ impl HeapBlock {
             let body = (entry as *mut u8).byte_add(head_size);
 
             let rem = avialable_size - size;
-            if (rem / std::mem::size_of::<usize>()) >= 4 {
-                // spit the atom
-                let new_entry = (body as *mut FreeListEntry).byte_add(size + head_size);
+            if (rem / std::mem::size_of::<usize>()) >= 3 {
+                // split the atom
+                let new_entry = (body as *mut FreeListEntry).byte_add(size);
                 (*new_entry).head = AllocHead {
                     size: rem as u32,
                     state: State::DEAD,
                     tag: u16::MAX
                 };
+                // print!("Split the Atom {} @ {new_entry:p}", rem);
 
                 // replace self with new_entry in the linked list
                 (*new_entry).next = (*entry).next;
@@ -418,10 +425,16 @@ impl GarbageCollector {
                 let mut head = (block as *mut _ as *mut AllocHead)
                     .byte_add(std::mem::size_of::<HeapBlock>());
 
+                let mut last_empty: *mut AllocHead = std::ptr::null_mut();
                 while (*head).size != 0 {
                     if (*head).tag != self.current_tag && (*head).state == State::ALIVE {
                         freed_count += 1;
-                        (*head).free(&mut block.freelist);
+                        (*head).free(&mut block.freelist, last_empty);
+                        if last_empty.is_null() {
+                            last_empty = head;
+                        }
+                    } else {
+                        last_empty = std::ptr::null_mut();
                     }
                     // debug!("Head @ {:p} w/ {} bytes is {:?}", head, (*head).size, (*head).state);
                     head = head.byte_add((*head).size as usize);
