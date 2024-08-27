@@ -43,6 +43,7 @@ def make_check(d) {
 
 def main(n) {
     var stretch_depth = n + 1;
+
     print([stretch_depth, make_check(stretch_depth)]);
 
     var long_lived_tree = make_tree(n);

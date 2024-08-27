@@ -112,20 +112,23 @@ impl<T: VMDowncast> VMDowncast for Option<T> {
 }
 
 pub trait VMArgs: std::marker::Tuple + Sized {
+    const SIZE: usize;
+
     fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self>;
-    fn encode(self, vm: &VM) -> TArgsBuffer;
+    fn encode_into(self, vm: &VM, slice: &mut [TValue]);
 }
 
 
 impl VMArgs for () {
+    const SIZE: usize = 0;
+
     fn try_decode(_vm: &VM, args: TArgsBuffer) -> Option<Self> {
         let _iter = args.into_iter(0, false);
         Some(())
     }
 
-    fn encode(self, vm: &VM) -> TArgsBuffer {
-        TArgsBuffer::empty()
-    }
+    fn encode_into(self, _vm: &VM, _slice: &mut [TValue])
+    { }
 }
 
 impl VMDowncast for () {
@@ -141,7 +144,8 @@ impl<T1> VMArgs for (T1,)
 where
     T1: VMDowncast + VMCast
 {
-    #[inline]
+    const SIZE: usize = 1;
+
     fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self> {
         let mut iter = args.into_iter(1, false);
         let arg1 = iter.next()?;
@@ -150,9 +154,8 @@ where
         ))
     }
 
-    #[inline]
-    fn encode(self, vm: &VM) -> TArgsBuffer {
-        TArgsBuffer::new(vec![self.0.vmcast(vm)])
+    fn encode_into(self, vm: &VM, slice: &mut [TValue]) {
+        slice[0] = self.0.vmcast(vm);
     }
 }
 
@@ -161,7 +164,8 @@ where
     T1: VMDowncast + VMCast,
     T2: VMDowncast + VMCast
 {
-    #[inline]
+    const SIZE: usize = 2;
+
     fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self> {
         let mut iter = args.into_iter(2, false);
         let arg1 = iter.next()?;
@@ -172,12 +176,9 @@ where
         ))
     }
 
-    #[inline]
-    fn encode(self, vm: &VM) -> TArgsBuffer {
-        TArgsBuffer::new(vec![
-            self.0.vmcast(vm),
-            self.1.vmcast(vm)
-        ])
+    fn encode_into(self, vm: &VM, slice: &mut [TValue]) { 
+        slice[0] = self.0.vmcast(vm);
+        slice[1] = self.1.vmcast(vm);
     }
 }
 
@@ -187,7 +188,8 @@ where
     T2: VMDowncast + VMCast,
     T3: VMDowncast + VMCast
 {
-    #[inline]
+    const SIZE: usize = 3;
+
     fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self> {  
         let mut iter = args.into_iter(3, false);
         let arg1 = iter.next()?;
@@ -200,13 +202,9 @@ where
         ))
     }
 
-    #[inline]
-    fn encode(self, vm: &VM) -> TArgsBuffer { 
-        TArgsBuffer::new(vec![
-            self.0.vmcast(vm),
-            self.1.vmcast(vm),
-            self.2.vmcast(vm),
-        ])
+    fn encode_into(self, vm: &VM, slice: &mut [TValue]) { 
+        slice[0] = self.0.vmcast(vm);
+        slice[1] = self.1.vmcast(vm);
     }
 }
 
@@ -271,14 +269,17 @@ impl<In: VMArgs + 'static, R: VMDowncast + 'static> FnOnce<In> for TPolymorphicC
 
     #[inline(always)]
     extern "rust-call" fn call_once(self, args: In) -> Self::Output {
+        const MAX_ARGS: usize = 8;
+
         match self.inner {
             CallableInner::Function(tfunction) => {
                 let vm = tfunction.vm();
                 match tfunction.fastcall(args) {
                     CallResult::Result(result) => result,
                     CallResult::NotImplemented(args) => {
-                        let buffer = args.encode(&vm);
-                        R::vmdowncast(tfunction.call(buffer), &vm).unwrap()
+                        let mut buffer = [TValue::null(); MAX_ARGS];
+                        args.encode_into(&vm, &mut buffer[..In::SIZE]);
+                        R::vmdowncast(tfunction.call(TArgsBuffer::create(&mut buffer[..In::SIZE])), &vm).unwrap()
                     }
                 }
             }

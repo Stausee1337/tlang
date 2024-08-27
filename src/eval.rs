@@ -1,4 +1,5 @@
 
+use bytemuck::Zeroable;
 use tlang_macros::{decode, tcall, tget};
 
 use crate::{
@@ -8,12 +9,14 @@ use crate::{
     memory::GCRef,
     tvalue::{TBool, TFunction, TInteger, TValue, resolve_by_symbol, TList},
     interop::TPropertyAccess,
-    vm::{TModule, VM}
+    vm::{TModule, VM}, debug
 };
 
 struct ExecutionEnvironment<'l> {
     descriptors: &'l [TValue],
     registers: &'l mut [TValue],
+    aruments: &'l mut [TValue],
+    buffer: &'l mut [TValue],
 }
 
 impl<'l> ExecutionEnvironment<'l> {
@@ -22,7 +25,14 @@ impl<'l> ExecutionEnvironment<'l> {
         match op {
             Operand::Null => TValue::null(),
             Operand::Bool(bool) => TBool::from_bool(bool).into(),
-            Operand::Register(reg) => self.registers[reg.index()],
+            Operand::Register(reg) => {
+                let idx = reg.index();
+                let num_args = self.aruments.len();
+                if idx < num_args {
+                    return self.aruments[idx];
+                }
+                self.registers[idx - num_args]
+            }
             Operand::Descriptor(desc) => self.descriptors[desc.index()],
             Operand::Int32(int) => TInteger::from_int32(int).into(),
         }
@@ -32,40 +42,64 @@ impl<'l> ExecutionEnvironment<'l> {
         let Operand::Register(reg) = op else {
             panic!("cannot be decoded as mutable");
         };
-        &mut self.registers[reg.index()]
+        let idx = reg.index();
+        let num_args = self.aruments.len();
+        if idx < num_args {
+            return &mut self.aruments[idx];
+        }
+        &mut self.registers[idx - num_args]
     }
 }
 
-pub struct TArgsBuffer(Vec<TValue>);
+pub struct TArgsBuffer(*mut [TValue]);
 
 impl TArgsBuffer {
     pub fn empty() -> Self {
-        TArgsBuffer(vec![])
+        unsafe {
+            TArgsBuffer(&mut [])
+        }
     }
 
-    pub fn new(v: Vec<TValue>) -> Self {
-        TArgsBuffer(v)
+    pub fn create(x: &mut [TValue]) -> Self {
+        unsafe { Self(&mut *x) }
+    }
+
+    pub fn gc_alloc<const SIZE: usize>(vm: &VM, args: [TValue; SIZE]) -> Self {
+        let mut list = TList::new_with_capacity(vm, SIZE + 1);
+        for val in args {
+            list.push(val);
+        }
+        list.push(list.into());
+        
+        unsafe {
+            Self(
+                std::slice::from_raw_parts_mut(
+                    list.data_ptr(),
+                    SIZE
+                )
+            )
+        }
     }
 
     #[inline]
     pub fn into_iter(self, min: usize, varags: bool) -> TArgsIterator {
-        if !varags {
-            assert!(min == self.0.len());
-        } else {
-            assert!(min <= self.0.len());
+        unsafe {
+            if !varags {
+                assert_eq!(min, self.0.len());
+            } else {
+                assert!(min <= self.0.len());
+            }
         }
         TArgsIterator { inner: self.0, current: 0 }
     }
     
-    pub fn prepend(self, tvalue: TValue) -> Self {
-        let mut args = self.0;
-        args.insert(0, tvalue);
-        TArgsBuffer(args)
+    pub fn prepend(self) -> Self {
+        todo!()
     }
 }
 
 pub struct TArgsIterator {
-    inner: Vec<TValue>,
+    inner: *mut [TValue],
     current: usize
 }
 
@@ -77,38 +111,164 @@ impl Iterator for TArgsIterator {
         if self.current >= self.inner.len() {
             return None; 
         }
-        let argument = self.inner[self.current];
-        self.current += 1;
-        Some(argument)
+        unsafe {
+            let argument = (&*self.inner)[self.current];
+            self.current += 1;
+            Some(argument)
+        }
     }
 }
 
 impl TArgsIterator {
     fn remaining(&mut self) -> &mut [TValue] {
-        &mut self.inner[self.current..]
+        unsafe { &mut (&mut *self.inner)[self.current..] }
     }
 }
 
-impl TRawCode {
-    pub fn evaluate<'a>(&self, mut module: GCRef<TModule>, arguments: TArgsBuffer) -> TValue {
-        let mut registers = vec![TValue::null(); self.registers() + arguments.0.len()];
-        for (idx, arg) in arguments.0.iter().enumerate() {
-            registers[idx] = *arg;
+extern "C" fn get_stack_ptr() -> *const u8 {
+    unsafe {
+        std::arch::asm! {
+            "mov rax, QWORD PTR [rsp]",
+            "ret",
+            options(noreturn)
+        };
+    }
+}
+
+macro_rules! get_stack_ptr {
+    () => {
+        unsafe {
+            let x: usize;
+            std::arch::asm! {
+                "mov {}, rsp",
+                out(reg) x
+            };
+            x
         }
+    };
+}
+
+macro_rules! set_stack_ptr {
+    ($x:expr) => {
+        unsafe {
+            let x = $x;
+            std::arch::asm! {
+                "mov rsp, {}",
+                in(reg) x
+            };
+        }
+    };
+}
+
+macro_rules! stack_push {
+    ($x:expr) => {
+        unsafe {
+            let x = $x;
+            std::arch::asm! {
+                "push {}",
+                in(reg) x
+            };
+        }
+    };
+}
+
+macro_rules! stack_pop {
+    () => {
+        unsafe {
+            let x: usize;
+            std::arch::asm! {
+                "pop {}",
+                out(reg) x
+            };
+            x
+        }
+    };
+}
+
+impl TRawCode {
+    #[inline(never)]
+    pub fn evaluate(&self, mut module: GCRef<TModule>, mut arguments: TArgsBuffer) -> TValue {
+        assert!(arguments.0.len() >= self.params());
+
         let mut env = ExecutionEnvironment {
             descriptors: self.descriptors(),
-            registers: registers.as_mut_slice(),
+            aruments: &mut unsafe { &mut *arguments.0 }[..self.params()],
+            registers: &mut [],
+            buffer: &mut []
         };
         let vm = module.vm();
         let stream = CodeStream::from_raw(self);
-        Self::inner_eval(module, &vm, &mut env, stream)
+
+        // CUSTOM STACK LAYOUT
+        // +------------------+
+        // +    0xdeadbeef    +
+        // +------------------+
+        // +       reg0       +
+        // +------------------+
+        // +       reg1       +
+        // +------------------+
+        // +       ....       +
+        // +------------------+
+        // +       regN       +
+        // +------------------+
+        // +      argBuf0     +
+        // +------------------+
+        // +      argBuf1     +
+        // +------------------+
+        // +       ....       +
+        // +------------------+
+        // +      argBufN     +
+        // +------------------+
+        // +  0x0 (sentinel)  +
+        // +------------------+
+        // +                  +
+        // +     *padding*    +
+        // +                  +
+        // +------------------+
+
+        let mut aligned_num = self.registers() + self.max_args() + 2;
+        if aligned_num & 0b1 != 0 {
+            // padding
+            aligned_num = aligned_num + 1;
+        }
+
+        let alloc_size = aligned_num << 3;
+
+        let rsp = get_stack_ptr!();
+        set_stack_ptr!(rsp - alloc_size);
+
+        let (regs, buffer) = unsafe {
+            let begin = (rsp - alloc_size) as *mut TValue;
+            *(begin as *mut usize) = 0xdeadbeef;
+
+            let regs = std::slice::from_raw_parts_mut(
+                begin.add(1), self.registers());
+
+            let buffer = std::slice::from_raw_parts_mut(
+                regs.as_mut_ptr().add(self.registers()), self.max_args());
+            buffer[0] = TValue::zeroed();
+
+            *(rsp as *mut TValue) = TValue::zeroed(); // Sentinel
+            (regs, buffer)
+        };
+        regs.fill(TValue::null());
+
+        env.registers = regs;
+        env.buffer = buffer;
+
+        let rv = Self::inner_eval(module, &vm, &mut env, stream);
+
+        let rsp = get_stack_ptr!();
+        set_stack_ptr!(rsp + alloc_size);
+
+        rv
     }
 
+    #[inline(always)]
     fn inner_eval(mut module: GCRef<TModule>, vm: &VM, env: &mut ExecutionEnvironment, mut stream: CodeStream) -> TValue {
         loop {
             let op: OpCode = unsafe { std::mem::transmute(stream.current()) };
             stream.bump(1);
-            // debug!("{op:?}");
             // let now = Instant::now();
             match op {
                 OpCode::Mov => {
@@ -211,28 +371,32 @@ impl TRawCode {
                 }
 
                 OpCode::Call => {
-                    let envcopy: *const _ = &*env;
+                    let envcopy: *mut _ = &mut *env;
                     decode!(&mut stream, env, Call { arguments, &callee, &mut dst });
-                    let arguments = arguments.as_arguments(unsafe { &*envcopy });
 
                     if let Some(callee) = callee.query_object::<TFunction>(vm) {
-                        *dst = callee.call(arguments);
+                        let env = unsafe { &mut *envcopy };
+                        arguments.decode_into(env);
+                        *dst = callee.call(TArgsBuffer::create(&mut env.buffer[..arguments.len()]));
                     } else {
                         todo!("dispatch other callable");
                     }
                 }
 
                 OpCode::MethodCall => {
-                    let envcopy: *const _ = &*env;
+                    let envcopy: *mut _ = &mut *env;
                     decode!(&mut stream, env, MethodCall { arguments, &this, callee, &mut dst });
-                    let arguments = arguments.as_arguments(unsafe { &*envcopy });
 
                     let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, callee, this, true);
-                    if let Some(tfunction) = access.as_method() {
-                        let arguments = arguments.prepend(this);
-                        *dst = tfunction.call(arguments);
-                    } else if let Some(tfunction) = (*access).query_object::<TFunction>(vm) {
-                        *dst = tfunction.call(arguments);
+                    if let Some(callee) = access.as_method() {
+                        let env = unsafe { &mut *envcopy };
+                        env.buffer[0] = this;
+                        arguments.decode_into(env);
+                        *dst = callee.call(TArgsBuffer::create(&mut env.buffer[..arguments.len() + 1]));
+                    } else if let Some(callee) = (*access).query_object::<TFunction>(vm) {
+                        let env = unsafe { &mut *envcopy };
+                        arguments.decode_into(env);
+                        *dst = callee.call(TArgsBuffer::create(&mut env.buffer[..arguments.len()]));
                     } else {
                         todo!("dispatch other callable");
                     }
@@ -281,13 +445,14 @@ impl TRawCode {
 
 impl OperandList {
     #[inline(always)]
-    fn as_arguments(&self, env: &ExecutionEnvironment) -> TArgsBuffer {
+    fn decode_into(&self, env: &mut ExecutionEnvironment) {
         let operands = unsafe { &*self.0 };
-        let mut arguments = Vec::with_capacity(operands.len() + 1);
-        for op in operands {
-            arguments.push(env.decode(*op));
+        for (idx, op) in operands.iter().enumerate() {
+            env.buffer[idx] = env.decode(*op);
         }
-        TArgsBuffer(arguments)
+        if operands.len() < env.buffer.len() {
+            env.buffer[operands.len()] = TValue::zeroed();
+        }
     }
 
     fn len(&self) -> usize {

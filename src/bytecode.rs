@@ -272,6 +272,7 @@ pub struct CGFunction {
     name: Option<Symbol>,
     num_params: u32,
     num_locals: u32,
+    max_arguments: u32,
     descriptor_table: IndexVec<Descriptor, TValue>,
     blocks: IndexVec<CodeLabel, BasicBlock>,
     current_block: CodeLabel,
@@ -287,6 +288,7 @@ impl CGFunction {
             ribs: vec![Rib::new(RibKind::Module)],
             num_params: 0,
             num_locals: 0,
+            max_arguments: 0,
             descriptor_table: Default::default(),
             blocks: vec![BasicBlock::new()].into(),
             current_block: CodeLabel::from_raw(0),
@@ -416,6 +418,13 @@ impl CGFunction {
         self.descriptor_table.push(tvalue.into());
         Operand::Descriptor(idx)
     }
+
+    fn grow_args_buffer(&mut self, size: usize) {
+        const MAX_ARGS: usize = 16;
+        if size <= MAX_ARGS  {
+            self.max_arguments = (size as u32).max(self.max_arguments);
+        }
+    }
 }
 
 pub struct BytecodeGenerator {
@@ -534,6 +543,11 @@ impl BytecodeGenerator {
             .get_local_reg(symbol)
     }
 
+    pub fn grow_args_buffer(&mut self, size: usize) {
+        self.current_fn_mut()
+            .grow_args_buffer(size)
+    }
+
     pub fn make_string(&mut self, string: GCRef<TString>) -> Operand {
         self.current_fn_mut().descriptor(string)
     }
@@ -578,6 +592,7 @@ impl TFunction {
             codesize,
             func.num_params,
             func.register_allocator.0,
+            func.max_arguments,
             func.descriptor_table.len_idx()._raw,
             func.blocks.len_idx()._raw
         );
@@ -607,13 +622,14 @@ impl TFunction {
         codesize: usize,
         params: u32,
         registers: u32,
+        max_args: u32,
         descriptors: u32,
         blocks: u32
     ) -> (GCRef<TFunction>, &mut TRawCode) {
         let extra_size = codesize
             + descriptors as usize * std::mem::size_of::<TValue>()
             + blocks as usize * std::mem::size_of::<u32>();
-        let code = TRawCode::new(codesize, params, registers, descriptors, blocks);
+        let code = TRawCode::new(codesize, params, registers, max_args, descriptors, blocks);
 
         let mut function: GCRef<Self> = vm.heap().allocate_var_atom(
             Self {
@@ -639,6 +655,7 @@ impl TFunction {
 pub struct TRawCode {
     num_params: u32,
     num_registers: u32,
+    max_args: u32,
     num_descriptors: u32,
     num_blocks: u32,
     codesize: usize,
@@ -650,6 +667,7 @@ impl TRawCode {
         codesize: usize,
         num_params: u32,
         num_registers: u32,
+        max_args: u32,
         num_descriptors: u32,
         num_blocks: u32
     ) -> Self {
@@ -657,6 +675,7 @@ impl TRawCode {
             codesize,
             num_params,
             num_registers,
+            max_args,
             num_descriptors,
             num_blocks,
             data: [0u8; 0]
@@ -669,6 +688,10 @@ impl TRawCode {
 
     pub fn params(&self) -> usize {
         self.num_params as usize
+    }
+
+    pub fn max_args(&self) -> usize {
+        self.max_args as usize
     }
 
     pub fn blocks(&self) -> &[u32] {

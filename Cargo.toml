@@ -14,6 +14,7 @@ ahash = "0.8.11"
 allocator-api2 = "0.2.18"
 bitflags = "2.6.0"
 bumpalo = "3.16.0"
+bytemuck = "1.17.0"
 getopts = "0.2.21"
 hashbrown = { version = "0.14", features = ["ahash", "allocator-api2", "raw"], default-features = false }
 index_vec = "0.1.3"

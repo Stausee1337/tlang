@@ -552,6 +552,7 @@ impl<'ast> GeneratorNode for CallExpr<'ast> {
                 // generate method call
                 let this = base.generate_bytecode(generator)?.unwrap();
                 let arguments = self.generate_arguments(generator)?;
+                generator.grow_args_buffer(self.args.len() + 1);
 
                 let dst = generator.allocate_reg();
                 let list = generator.allocate_list(arguments);
@@ -562,6 +563,7 @@ impl<'ast> GeneratorNode for CallExpr<'ast> {
         }
         let callee = self.callable.generate_bytecode(generator)?.unwrap();
         let arguments = self.generate_arguments(generator)?;
+        generator.grow_args_buffer(self.args.len());
 
         let dst = generator.allocate_reg();
         let list = generator.allocate_list(arguments);

@@ -5,6 +5,8 @@
 #![feature(str_internals)]
 #![feature(fmt_internals)]
 #![feature(ptr_sub_ptr)]
+#![feature(slice_ptr_len)]
+#![feature(naked_functions)]
 
 use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode, time::Instant};
 

@@ -97,7 +97,7 @@ macro_rules! tobject {
 
 #[repr(u64)]
 #[derive(Debug, PartialEq, Eq)]
-enum TValueKind {
+pub(crate) enum TValueKind {
     Object   = 0b101 << 49,
     Int32    = 0b001 << 49,
     Bool     = 0b010 << 49,
@@ -270,7 +270,7 @@ impl TValue {
     /// Private Helpers
 
     #[inline(always)]
-    fn kind(&self) -> TValueKind {
+    pub(crate) fn kind(&self) -> TValueKind {
         let float: f64 = unsafe { transmute(self.0) };
         if !float.is_nan() {
             return TValueKind::Float;
@@ -333,6 +333,8 @@ where
             poly as *const _  as *const *const TType;
         let ttype = GCRef::from_raw(*ttype_ptr);
         let this = GCRef::from_raw(poly as *const _);
+
+        visitor.feed(ttype);
 
         ttype.properties(|prop| {
             let Some(get) = prop.get else {
@@ -1818,8 +1820,9 @@ impl GCRef<TFunction> {
             TFnKind::Nativefunc(n @ Nativefunc { traitfn, .. })=>
                 traitfn(n, self.module, arguments),
             TFnKind::BoundMethod(tfunction, base) => {
-                let arguments = arguments.prepend(*base);
-                tfunction.call(arguments)
+                /*let arguments = arguments.prepend(*base);
+                tfunction.call(arguments)*/
+                todo!();
             }
         }
     }

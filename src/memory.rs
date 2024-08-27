@@ -1,4 +1,5 @@
 use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::{NonNull, copy_nonoverlapping}, alloc::Layout, cell::Cell, any::TypeId, mem::{transmute, ManuallyDrop}};
+use bytemuck::Zeroable;
 use rustix::{
     io,
     mm::{mmap_anonymous, munmap, MapFlags, ProtFlags}
@@ -62,12 +63,14 @@ impl HeapBlock {
             allocated_bytes: std::mem::size_of::<Self>()
         };
 
+        debug!("Create Block @ {:p} ", block);
+
         let block = NonNull::new_unchecked(block);
         Ok(block)
     }
 
     unsafe fn unmap(&mut self) -> io::Result<()> {
-        debug!("Free Block @ {:p} ", self.data());
+        // debug!("Free Block @ {:p} ", self.data());
         munmap(self.data() as *mut c_void, HeapBlock::PAGE_SIZE)
     }
 
@@ -110,7 +113,7 @@ impl HeapBlock {
             tag: u16::MAX
         };
 
-        debug!("{layout:?}, {alloc_size}, {} {:p}", self.allocated_bytes, body);
+        // debug!("{layout:?}, {alloc_size}, {} {:p}", self.allocated_bytes, body);
 
         Some(body)
     }
@@ -210,6 +213,80 @@ impl Drop for Heap {
     }
 }
 
+#[repr(C)]
+struct StackFrame {
+    previous: *const StackFrame,
+    return_adress: *const (),
+    data: [u8; 0]
+}
+
+impl StackFrame {
+    #[inline]
+    unsafe fn size(&self) -> usize {
+        (self.previous() as *const Self as *const u8).sub_ptr(self.data.as_ptr()) 
+    }
+
+    unsafe fn data(&self) -> &[u8] {
+        std::slice::from_raw_parts(
+            self.data.as_ptr(),
+            self.size()
+        )
+    }
+
+    #[inline]
+    const unsafe fn previous(&self) -> &StackFrame {
+        &*self.previous
+    }
+}
+
+unsafe impl bytemuck::Zeroable for crate::tvalue::TValue {}
+unsafe impl bytemuck::Pod for crate::tvalue::TValue {}
+
+struct StackWalker;
+
+impl StackWalker {
+    unsafe fn get_frame<'a>() -> &'a StackFrame {
+        let ptr: *const StackFrame;
+        std::arch::asm! {
+            "mov {}, rbp",
+            out(reg) ptr
+        };
+        &*ptr
+    }
+
+    fn walk<F: FnMut(crate::tvalue::TValue)>(mut f: F) {
+        unsafe {
+            let mut frame = Self::get_frame();
+            while frame.size() > 0 {
+                let data: &[usize] = bytemuck::cast_slice(frame.data());
+                if data[0] != 0xdeadbeef {
+                    frame = frame.previous();
+                    continue;
+                }
+
+                // debug!("Stack walk frame {:p}", frame);
+
+                let values: &[crate::tvalue::TValue] = bytemuck::cast_slice(&data[1..]);
+
+                let mut idx = 0;
+                loop {
+                    let value = values[idx];
+                    if values[idx].encoded() == 0x0 {
+                        break;
+                    }
+                    f(value);
+
+                    // debug!("  - {:?} 0x{:x}", value.kind(), value.encoded());
+
+                    idx += 1;
+                }
+
+                frame = frame.previous();
+            }
+        }
+    }
+}
+
 struct GarbageCollector {
     current_tag: u16,
 }
@@ -231,6 +308,10 @@ impl GarbageCollector {
         visitor.feed(vm.types);
         visitor.feed(vm.modules);
         visitor.feed(vm.primitives);
+
+        StackWalker::walk(|value| {
+            value.visit(&mut visitor);
+        });
     }
 }
 

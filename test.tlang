@@ -11,7 +11,7 @@ print(print);
 print(Type);
 print(string.fmt);
 
-const Function = Type.of(print);
+// const Function = Type.of(print);
 
 print(Function);
 
