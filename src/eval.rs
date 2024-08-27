@@ -247,12 +247,12 @@ impl TRawCode {
             let buffer = std::slice::from_raw_parts_mut(
                 regs.as_mut_ptr().add(self.registers()), self.max_args());
             assert!(self.max_args() > 0);
-            buffer[0] = TValue::zeroed();
 
             *(rsp as *mut TValue) = TValue::zeroed(); // Sentinel
             (regs, buffer)
         };
         regs.fill(TValue::null());
+        buffer.fill(TValue::zeroed());
 
         env.registers = regs;
         env.buffer = buffer;

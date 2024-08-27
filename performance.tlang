@@ -53,6 +53,8 @@ def main(n) {
     sf(stretch_depth);
     var long_lived_tree = make_tree(n);
 
+    print([n, check_tree(long_lived_tree)]);
+
     if (true) {
         return;
     }
@@ -87,6 +89,6 @@ def gc_test() {
 
 
 // fib(10000000);
-// main(15);
-gc_test();
+main(15);
+// gc_test();
 

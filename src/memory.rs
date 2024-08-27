@@ -26,6 +26,8 @@ struct AllocHead {
 }
 
 impl AllocHead {
+    const MAX_SIZE: u32 = (HeapBlock::PAGE_SIZE - std::mem::size_of::<HeapBlock>()) as u32;
+
     unsafe fn free(&mut self, freelist_end: &mut *mut FreeListEntry, last_empty: *mut AllocHead) {
         let atom = &mut *(self as *mut Self as *mut AtomTrait)
             .byte_add(std::mem::size_of::<Self>());
@@ -59,7 +61,7 @@ struct FreeListEntry {
 #[derive(Clone, Copy)]
 struct HeapBlock {
     heap: *const Heap,
-    previous: *const HeapBlock,
+    previous: *mut HeapBlock,
     allocated_bytes: usize,
     freelist: *mut FreeListEntry
 }
@@ -70,12 +72,12 @@ impl HeapBlock {
 
     const EMPTY: &'static HeapBlock = &HeapBlock {
         heap: std::ptr::null(),
-        previous: std::ptr::null(),
+        previous: std::ptr::null_mut(),
         allocated_bytes: Self::PAGE_SIZE,
         freelist: std::ptr::null_mut()
     };
 
-    unsafe fn map(heap: &Heap, previous: &Self) -> io::Result<NonNull<HeapBlock>> {
+    unsafe fn map(heap: &Heap, previous: &mut Self) -> io::Result<NonNull<HeapBlock>> {
         let block = mmap_anonymous(
             std::ptr::null_mut(),
             Self::PAGE_SIZE,
@@ -85,7 +87,7 @@ impl HeapBlock {
 
         *block = HeapBlock {
             heap: &*heap,
-            previous: &*previous,
+            previous: &mut *previous,
             allocated_bytes: std::mem::size_of::<Self>(),
             freelist: std::ptr::null_mut()
         };
@@ -416,14 +418,18 @@ impl GarbageCollector {
             let mut block_count = 0usize;
             let mut atom_count = 0usize;
             let mut freed_count = 0usize;
+
+            let mut place: *mut HeapBlock = heap.current_block.get().as_ptr();
+            let mut last: *mut *mut HeapBlock = &mut place;
             loop {
                 let block = current_block.as_mut();
-                let Some(previous) = block.previous() else {
+                let Some(mut previous) = block.previous() else {
                     break;
                 };
 
                 let mut head = (block as *mut _ as *mut AllocHead)
                     .byte_add(std::mem::size_of::<HeapBlock>());
+                let mut first_head = head;
 
                 let mut last_empty: *mut AllocHead = std::ptr::null_mut();
                 while (*head).size != 0 {
@@ -442,10 +448,19 @@ impl GarbageCollector {
                     atom_count += 1;
                 }
 
+                let block_space = (HeapBlock::PAGE_SIZE - block.allocated_bytes) as u32;
+                if (*first_head).size == (AllocHead::MAX_SIZE - block_space) {
+                    block.unmap().unwrap();
+                    *last = previous.as_ptr();
+                } else {
+                    last = std::ptr::addr_of_mut!(block.previous);
+                }
+
                 block_count += 1;
 
                 current_block = previous;
             }
+            heap.current_block.set(NonNull::new_unchecked(place));
             println!("Swept across {block_count} blocks w/ {atom_count} atoms; Collected {freed_count}");
         }
     }
