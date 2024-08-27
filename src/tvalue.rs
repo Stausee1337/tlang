@@ -776,7 +776,6 @@ impl Atom for TString {
 
 impl Drop for TString {
     fn drop(&mut self) {
-        // debug!("TString::drop {} {}", self.as_slice(), self.is_small());
         if !self.is_small() {
             unsafe {
                 let align = 2;

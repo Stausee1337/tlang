@@ -29,12 +29,11 @@ impl AllocHead {
     unsafe fn free(&mut self, freelist_end: &mut *mut FreeListEntry) {
         let atom = &mut *(self as *mut Self as *mut AtomTrait)
             .byte_add(std::mem::size_of::<Self>());
-        debug!("Free Head @ {:p}", self);
         atom.drop();
         self.state = State::DEAD;
 
         let current_entry = self as *mut _ as *mut FreeListEntry;
-        (*current_entry).previous = *freelist_end;
+        (*current_entry).next = *freelist_end;
         *freelist_end = current_entry;
     }
 }
@@ -49,7 +48,7 @@ fn align_up(size: usize, align: usize) -> usize {
 #[repr(C)]
 struct FreeListEntry {
     head: AllocHead,
-    previous: *mut FreeListEntry
+    next: *mut FreeListEntry
 }
 
 #[derive(Clone, Copy)]
@@ -113,6 +112,45 @@ impl HeapBlock {
 
         let size = layout.size();
         let align = layout.align();
+
+        let mut previous: *mut *mut FreeListEntry = &mut self.freelist;
+        let mut entry = self.freelist;
+        while !entry.is_null() {
+            let head_size = std::mem::size_of::<AllocHead>();
+
+            let head = &mut (*entry).head;
+            debug_assert!(head.state == State::DEAD);
+            let avialable_size = (head.size as usize) - head_size;
+
+            if avialable_size < size {
+                entry = (*entry).next;
+                previous = &mut entry;
+                continue;
+            }
+            // First fit
+            head.size = (size + head_size) as u32;
+            let body = (entry as *mut u8).byte_add(head_size);
+
+            let rem = avialable_size - size;
+            if (rem / std::mem::size_of::<usize>()) >= 4 {
+                // spit the atom
+                let new_entry = (body as *mut FreeListEntry).byte_add(size + head_size);
+                (*new_entry).head = AllocHead {
+                    size: rem as u32,
+                    state: State::DEAD,
+                    tag: u16::MAX
+                };
+
+                // replace self with new_entry in the linked list
+                (*new_entry).next = (*entry).next;
+                *previous = new_entry;
+            } else {
+                // just remove self from the linked list
+                *previous = (*entry).next;
+            }
+
+            return Some(body);
+        }
 
         let start = self.data();
         let end = start.add(Self::PAGE_SIZE);
@@ -218,11 +256,19 @@ impl Heap {
                     let collector = GarbageCollector::with_last_tag(self.tag);
                     collector.mark_phase(&vm);
                     collector.sweep_phase(&vm);
-                }
 
-                self.current_block.set(block.fork(self).unwrap());
-                let block = self.current_block.get().as_mut();
-                raw = block.alloc_raw(layout).ok_or(AllocError)?;
+                    if let Some(ptr) = block.alloc_raw(layout) {
+                        raw = ptr;
+                    } else {
+                        self.current_block.set(block.fork(self).unwrap());
+                        let block = self.current_block.get().as_mut();
+                        raw = block.alloc_raw(layout).ok_or(AllocError)?;
+                    }
+                } else {
+                    self.current_block.set(block.fork(self).unwrap());
+                    let block = self.current_block.get().as_mut();
+                    raw = block.alloc_raw(layout).ok_or(AllocError)?;
+                }
             }
 
             let raw = NonNull::new(raw).unwrap();
@@ -356,6 +402,9 @@ impl GarbageCollector {
         let heap = vm.heap(); 
         let mut current_block: NonNull<HeapBlock> = heap.current_block.get();
         unsafe {
+            let mut block_count = 0usize;
+            let mut atom_count = 0usize;
+            let mut freed_count = 0usize;
             loop {
                 let block = current_block.as_mut();
                 let Some(previous) = block.previous() else {
@@ -367,15 +416,20 @@ impl GarbageCollector {
 
                 while (*head).size != 0 {
                     if (*head).tag != self.current_tag && (*head).state == State::ALIVE {
+                        freed_count += 1;
                         (*head).free(&mut block.freelist);
                     }
                     // debug!("Head @ {:p} w/ {} bytes is {:?}", head, (*head).size, (*head).state);
                     head = head.byte_add((*head).size as usize);
                     // offset += (*head).size as usize;
+                    atom_count += 1;
                 }
+
+                block_count += 1;
 
                 current_block = previous;
             }
+            println!("Swept across {block_count} blocks w/ {atom_count} atoms; Collected {freed_count}");
         }
     }
 }

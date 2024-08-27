@@ -397,6 +397,7 @@ impl GCRef<TModules> {
 
 impl Atom for TModules {
     fn visit(&self, visitor: &mut Visitor) {
+        self.prelude.get().map(|ty| visitor.feed(*ty));
         for (_, import) in self.imported.iter() {
             visitor.feed(*import);
         }

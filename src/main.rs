@@ -14,6 +14,7 @@ extern crate self as tlang;
 
 use bumpalo::Bump;
 use getopts::{Options, ParsingStyle};
+use tlang_macros::Symbol;
 
 use crate::{bytecode::BytecodeGenerator, interop::TPolymorphicCallable,  tvalue::TString, vm::TModule};
 
@@ -82,6 +83,8 @@ fn main() -> ExitCode {
             }
         };
 
+        vm.heap().defer_gc();
+
         let source = TString::from_slice(&vm, &contents);
 
         let arena = Bump::new();
@@ -94,11 +97,16 @@ fn main() -> ExitCode {
         };
 
         let mut module = TModule::new(&vm, TString::from_slice(&vm, modname));
+        vm.modules().insert(modname, module);
         module.import("tlang:prelude", None);
         module.set_source(Some(source));
 
         let generator = BytecodeGenerator::new(module);
-        let module_func: TPolymorphicCallable<_, ()> = codegen::generate_module(ast, generator).unwrap().into();
+        let initfunc = codegen::generate_module(ast, generator).unwrap();
+        module.set_global(Symbol![_initfunc], initfunc.into(), true);
+        let module_func: TPolymorphicCallable<_, ()> = initfunc.into();
+
+        vm.heap().undefer_gc();
 
         let now = Instant::now();
         {
