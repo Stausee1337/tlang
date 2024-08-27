@@ -127,8 +127,10 @@ impl HeapBlock {
                 previous = &mut entry;
                 continue;
             }
+
             // First fit
             head.size = (size + head_size) as u32;
+            head.state = State::ALIVE;
             let body = (entry as *mut u8).byte_add(head_size);
 
             let rem = avialable_size - size;
@@ -190,7 +192,7 @@ impl HeapBlock {
 }
 
 pub struct Heap {
-    tag: u16,
+    tag: Cell<u16>,
     vm: Eternal<VM>,
     current_block: Cell<NonNull<HeapBlock>>,
     defer_gc: Cell<bool>
@@ -201,7 +203,7 @@ impl Heap {
         let block: *const HeapBlock = &*HeapBlock::EMPTY;
         let block = unsafe { NonNull::new_unchecked(block as *mut HeapBlock) };
         Self {
-            tag: 0,
+            tag: Cell::new(0),
             vm,
             current_block: Cell::new(block),
             defer_gc: Cell::new(false)
@@ -253,9 +255,11 @@ impl Heap {
             } else {
                 if block.previous().is_some() && !self.defer_gc.get() {
                     let vm = self.vm();
-                    let collector = GarbageCollector::with_last_tag(self.tag);
+                    let collector = GarbageCollector::with_last_tag(self.tag.get());
                     collector.mark_phase(&vm);
                     collector.sweep_phase(&vm);
+
+                    self.tag.set(collector.current_tag);
 
                     if let Some(ptr) = block.alloc_raw(layout) {
                         raw = ptr;
@@ -377,7 +381,7 @@ struct GarbageCollector {
 impl GarbageCollector {
     fn with_last_tag(prev: u16) -> Self {
         Self {
-            current_tag: prev ^ 1 
+            current_tag: prev + 1
         }
     }
 

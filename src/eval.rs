@@ -246,6 +246,7 @@ impl TRawCode {
 
             let buffer = std::slice::from_raw_parts_mut(
                 regs.as_mut_ptr().add(self.registers()), self.max_args());
+            assert!(self.max_args() > 0);
             buffer[0] = TValue::zeroed();
 
             *(rsp as *mut TValue) = TValue::zeroed(); // Sentinel
@@ -260,6 +261,11 @@ impl TRawCode {
 
         let rsp = get_stack_ptr!();
         set_stack_ptr!(rsp + alloc_size);
+
+        unsafe {
+            let begin = rsp as *mut usize;
+            *begin = 0x0;
+        }
 
         rv
     }
@@ -378,6 +384,7 @@ impl TRawCode {
                         let env = unsafe { &mut *envcopy };
                         arguments.decode_into(env);
                         *dst = callee.call(TArgsBuffer::create(&mut env.buffer[..arguments.len()]));
+                        env.buffer[0] = TValue::zeroed(); // Sentinel
                     } else {
                         todo!("dispatch other callable");
                     }
@@ -393,10 +400,12 @@ impl TRawCode {
                         env.buffer[0] = this;
                         arguments.decode_into(env);
                         *dst = callee.call(TArgsBuffer::create(&mut env.buffer[..arguments.len() + 1]));
+                        env.buffer[0] = TValue::zeroed(); // Sentinel
                     } else if let Some(callee) = (*access).query_object::<TFunction>(vm) {
                         let env = unsafe { &mut *envcopy };
                         arguments.decode_into(env);
                         *dst = callee.call(TArgsBuffer::create(&mut env.buffer[..arguments.len()]));
+                        env.buffer[0] = TValue::zeroed(); // Sentinel
                     } else {
                         todo!("dispatch other callable");
                     }

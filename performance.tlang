@@ -38,14 +38,19 @@ def check_tree(node) {
 }
 
 def make_check(d) {
-    return check_tree(make_tree(d));
+    var x = make_tree(d);
+    const result = check_tree(x);
+    return result;
+}
+
+def sf(stretch_depth) {
+    print([stretch_depth, make_check(stretch_depth)]);
 }
 
 def main(n) {
     var stretch_depth = n + 1;
 
-    print([stretch_depth, make_check(stretch_depth)]);
-
+    sf(stretch_depth);
     var long_lived_tree = make_tree(n);
 
     if (true) {
@@ -71,7 +76,17 @@ def main(n) {
     print([n, check_tree(long_lived_tree)]);
 }
 
+def gc_test() {
+    var i = 0;
+    while (i < 100000) {
+        print(i);
+
+        i = i + 1;
+    }
+}
+
 
 // fib(10000000);
-main(15);
+// main(15);
+gc_test();
 

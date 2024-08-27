@@ -288,7 +288,7 @@ impl CGFunction {
             ribs: vec![Rib::new(RibKind::Module)],
             num_params: 0,
             num_locals: 0,
-            max_arguments: 0,
+            max_arguments: 1,
             descriptor_table: Default::default(),
             blocks: vec![BasicBlock::new()].into(),
             current_block: CodeLabel::from_raw(0),
