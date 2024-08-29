@@ -1833,7 +1833,7 @@ impl GCRef<TFunction> {
     pub fn call(&self, arguments: TArgsBuffer) -> TValue {
         match &self.kind {
             TFnKind::Function(code) =>
-                code.evaluate(self.module, arguments),
+                code.evaluate(self.module, arguments, *self),
             TFnKind::Nativefunc(n @ Nativefunc { traitfn, .. })=>
                 traitfn(n, self.module, arguments),
             TFnKind::BoundMethod(tfunction, base) => {

@@ -461,7 +461,7 @@ impl GarbageCollector {
                 current_block = previous;
             }
             heap.current_block.set(NonNull::new_unchecked(place));
-            println!("Swept across {block_count} blocks w/ {atom_count} atoms; Collected {freed_count}");
+            // println!("Swept across {block_count} blocks w/ {atom_count} atoms; Collected {freed_count}");
         }
     }
 }

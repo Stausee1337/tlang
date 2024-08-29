@@ -187,7 +187,8 @@ macro_rules! stack_pop {
 
 impl TRawCode {
     #[inline(never)]
-    pub fn evaluate(&self, mut module: GCRef<TModule>, mut arguments: TArgsBuffer) -> TValue {
+    pub fn evaluate(
+        &self, mut module: GCRef<TModule>, mut arguments: TArgsBuffer, function: GCRef<TFunction>) -> TValue {
         assert!(arguments.0.len() >= self.params());
 
         let mut env = ExecutionEnvironment {
@@ -226,7 +227,7 @@ impl TRawCode {
         // +                  +
         // +------------------+
 
-        let mut aligned_num = self.registers() + self.max_args() + 2;
+        let mut aligned_num = self.registers() + self.max_args() + 3;
         if aligned_num & 0b1 != 0 {
             // padding
             aligned_num = aligned_num + 1;
@@ -240,9 +241,11 @@ impl TRawCode {
         let (regs, buffer) = unsafe {
             let begin = (rsp - alloc_size) as *mut TValue;
             *(begin as *mut usize) = 0xdeadbeef;
+            *(begin.add(1) as *mut usize) = 4;
+            // *(begin.add(2) as *mut usize) = 5;
 
             let regs = std::slice::from_raw_parts_mut(
-                begin.add(1), self.registers());
+                begin.add(2), self.registers());
 
             let buffer = std::slice::from_raw_parts_mut(
                 regs.as_mut_ptr().add(self.registers()), self.max_args());
@@ -264,6 +267,7 @@ impl TRawCode {
 
         unsafe {
             let begin = rsp as *mut usize;
+            assert!(*begin == 0xdeadbeef);
             *begin = 0x0;
         }
 
@@ -382,7 +386,7 @@ impl TRawCode {
 
                     if let Some(callee) = callee.query_object::<TFunction>(vm) {
                         let env = unsafe { &mut *envcopy };
-                        arguments.decode_into(env);
+                        arguments.decode_into(0, env);
                         *dst = callee.call(TArgsBuffer::create(&mut env.buffer[..arguments.len()]));
                         env.buffer[0] = TValue::zeroed(); // Sentinel
                     } else {
@@ -398,12 +402,12 @@ impl TRawCode {
                     if let Some(callee) = access.as_method() {
                         let env = unsafe { &mut *envcopy };
                         env.buffer[0] = this;
-                        arguments.decode_into(env);
+                        arguments.decode_into(1, env);
                         *dst = callee.call(TArgsBuffer::create(&mut env.buffer[..arguments.len() + 1]));
                         env.buffer[0] = TValue::zeroed(); // Sentinel
                     } else if let Some(callee) = (*access).query_object::<TFunction>(vm) {
                         let env = unsafe { &mut *envcopy };
-                        arguments.decode_into(env);
+                        arguments.decode_into(0, env);
                         *dst = callee.call(TArgsBuffer::create(&mut env.buffer[..arguments.len()]));
                         env.buffer[0] = TValue::zeroed(); // Sentinel
                     } else {
@@ -454,13 +458,13 @@ impl TRawCode {
 
 impl OperandList {
     #[inline(always)]
-    fn decode_into(&self, env: &mut ExecutionEnvironment) {
+    fn decode_into(&self, offset: usize, env: &mut ExecutionEnvironment) {
         let operands = unsafe { &*self.0 };
         for (idx, op) in operands.iter().enumerate() {
-            env.buffer[idx] = env.decode(*op);
+            env.buffer[offset + idx] = env.decode(*op);
         }
-        if operands.len() < env.buffer.len() {
-            env.buffer[operands.len()] = TValue::zeroed();
+        if (operands.len() + offset) < env.buffer.len() {
+            env.buffer[offset + operands.len()] = TValue::zeroed();
         }
     }
 
