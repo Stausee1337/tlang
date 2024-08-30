@@ -771,10 +771,6 @@ impl Atom for TString {
             visitor.feed(next);
         }
         self.length.visit(visitor);
-        let parse: Result<u16, _> = self.as_slice().parse();
-        if parse.is_ok() {
-            panic!("{}", self.as_slice());
-        }
     }
 }
 

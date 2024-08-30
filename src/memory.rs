@@ -77,6 +77,8 @@ impl HeapBlock {
         freelist: std::ptr::null_mut()
     };
 
+    const CAPACITY: usize = Self::PAGE_SIZE - std::mem::size_of::<Self>();
+
     unsafe fn map(heap: &Heap, previous: &mut Self) -> io::Result<NonNull<HeapBlock>> {
         let block = mmap_anonymous(
             std::ptr::null_mut(),
@@ -91,6 +93,16 @@ impl HeapBlock {
             allocated_bytes: std::mem::size_of::<Self>(),
             freelist: std::ptr::null_mut()
         };
+        let freelist = (block as *mut FreeListEntry).byte_add(std::mem::size_of::<Self>());
+
+        (*freelist).head = AllocHead {
+            state: State::DEAD,
+            size: Self::CAPACITY as u32,
+            tag: u16::MAX
+        };
+        (*freelist).next = std::ptr::null_mut();
+
+        (*block).freelist = freelist;
 
         // debug!("Create Block @ {:p} ", block);
 
@@ -128,18 +140,22 @@ impl HeapBlock {
             let head = &mut (*entry).head;
             debug_assert!(head.state == State::DEAD);
             let avialable_size = (head.size as usize) - head_size;
+            
+            let align_ptr = (head as *mut _ as usize) + std::mem::size_of::<AllocHead>();
+            let padding = align_up(align_ptr, align) - align_ptr;
+
+            let size = align_up(size + padding, Self::ALIGN);
 
             if avialable_size < size {
                 entry = (*entry).next;
                 previous = &mut entry;
                 continue;
             }
-            // print!("Found spot w/, {avialable_size} bytes, alloc {size}, ");
 
             // First fit
             head.size = (size + head_size) as u32;
             head.state = State::ALIVE;
-            let body = (entry as *mut u8).byte_add(head_size);
+            let body = (entry as *mut u8).byte_add(head_size + padding);
 
             let rem = avialable_size - size;
             if (rem / std::mem::size_of::<usize>()) >= 3 {
@@ -150,7 +166,6 @@ impl HeapBlock {
                     state: State::DEAD,
                     tag: u16::MAX
                 };
-                // print!("Split the Atom {} @ {new_entry:p}", rem);
 
                 // replace self with new_entry in the linked list
                 (*new_entry).next = (*entry).next;
@@ -158,36 +173,13 @@ impl HeapBlock {
             } else {
                 // just remove self from the linked list
                 *previous = (*entry).next;
+                head.size += rem as u32;
             }
 
             return Some(body);
         }
 
-        let start = self.data();
-        let end = start.add(Self::PAGE_SIZE);
-
-        let head = start.add(self.allocated_bytes); 
-        let body = head.add(std::mem::size_of::<AllocHead>());
-
-        let body = align_up(body as usize, align) as *mut u8; /*- (body as usize)*/
-
-        let alloc_size = align_up(size, Self::ALIGN);
-        if body.add(alloc_size) > end {
-            return None;
-        }
-
-        let prev_size = self.allocated_bytes;
-        self.allocated_bytes = (body.add(alloc_size) as usize) - (start as usize);
-
-        *(head as *mut AllocHead) = AllocHead {
-            size: (self.allocated_bytes - prev_size) as u32,
-            state: State::ALIVE,
-            tag: u16::MAX
-        };
-
-        // debug!("{layout:?}, {alloc_size}, {} {:p}", self.allocated_bytes, body);
-
-        Some(body)
+        None
     }
 
     unsafe fn from_allocation<T: Sized>(ptr: *const T) -> &'static HeapBlock {
@@ -432,7 +424,8 @@ impl GarbageCollector {
                 let mut first_head = head;
 
                 let mut last_empty: *mut AllocHead = std::ptr::null_mut();
-                while (*head).size != 0 {
+                let mut sweep_size = 0;
+                while sweep_size < HeapBlock::CAPACITY {
                     if (*head).tag != self.current_tag && (*head).state == State::ALIVE {
                         freed_count += 1;
                         (*head).free(&mut block.freelist, last_empty);
@@ -442,9 +435,10 @@ impl GarbageCollector {
                     } else {
                         last_empty = std::ptr::null_mut();
                     }
-                    // debug!("Head @ {:p} w/ {} bytes is {:?}", head, (*head).size, (*head).state);
+                    sweep_size += (*head).size as usize;
+                    // debug!("Head @ {:p} w/ {} bytes is {:?} {sweep_size}/{}",
+                    // head, (*head).size, (*head).state, HeapBlock::CAPACITY);
                     head = head.byte_add((*head).size as usize);
-                    // offset += (*head).size as usize;
                     atom_count += 1;
                 }
 
