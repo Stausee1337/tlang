@@ -1792,6 +1792,24 @@ impl Typed for TFunction {
     fn initialize(vm: &VM) -> GCRef<TType> {
         unreachable!()
     }
+
+    fn visit_override(&self, visitor: &mut Visitor)
+        where
+            Self: TPolymorphicObject { 
+        visit_polymorphic(self, visitor);
+        match &self.kind {
+            TFnKind::Function(code) => {
+                for desc in code.descriptors() {
+                    desc.visit(visitor);
+                }
+            }
+            TFnKind::BoundMethod(tfunction, this) => {
+                visitor.feed(*tfunction);
+                this.visit(visitor);
+            }
+            TFnKind::Nativefunc(..) => {}
+        }
+    }
 }
 
 impl TFunction {
@@ -1833,9 +1851,10 @@ impl GCRef<TFunction> {
             TFnKind::Nativefunc(n @ Nativefunc { traitfn, .. })=>
                 traitfn(n, self.module, arguments),
             TFnKind::BoundMethod(tfunction, base) => {
-                /*let arguments = arguments.prepend(*base);
-                tfunction.call(arguments)*/
-                todo!();
+                let mut arguments: Vec<_> = arguments.into_iter(0, true)
+                    .collect();
+                arguments.insert(0, *base);
+                tfunction.call(TArgsBuffer::create(&mut arguments))
             }
         }
     }

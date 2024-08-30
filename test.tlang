@@ -27,6 +27,8 @@ var lazy_fmt = message.fmt;
 print(lazy_fmt);
 print(lazy_fmt());
 
+print(message);
+
 print(message.eq);
 print(message.eq("Guys > Girls"));
 

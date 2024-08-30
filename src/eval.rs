@@ -91,11 +91,7 @@ impl TArgsBuffer {
             }
         }
         TArgsIterator { inner: self.0, current: 0 }
-    }
-    
-    pub fn prepend(self) -> Self {
-        todo!()
-    }
+    }    
 }
 
 pub struct TArgsIterator {
