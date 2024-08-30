@@ -12,6 +12,31 @@ use crate::{
     vm::{TModule, VM}, debug
 };
 
+macro_rules! get_stack_ptr {
+    () => {
+        unsafe {
+            let x: usize;
+            std::arch::asm! {
+                "mov {}, rsp",
+                out(reg) x
+            };
+            x
+        }
+    };
+}
+
+macro_rules! set_stack_ptr {
+    ($x:expr) => {
+        unsafe {
+            let x = $x;
+            std::arch::asm! {
+                "mov rsp, {}",
+                in(reg) x
+            };
+        }
+    };
+}
+
 #[derive(Clone, Copy)]
 struct FrameData {
     descriptors: *const [TValue],
@@ -63,6 +88,63 @@ impl<'l> StackFrame<'l> {
     }
 
     #[inline(always)]
+    fn module(self) -> GCRef<TModule> {
+        self.function.module
+    }
+
+    #[inline(always)]
+    fn alloc<F: FnOnce(Self) -> R, R>(mut self, code: &TRawCode, f: F) -> R {
+        assert!(self.arguments().len() >= code.params());
+
+        let mut aligned_num = code.registers() + code.max_args() + 3;
+        if aligned_num & 0b1 != 0 {
+            // padding
+            aligned_num = aligned_num + 1;
+        }
+
+        let alloc_size = aligned_num << 3;
+
+        let rsp = get_stack_ptr!();
+        set_stack_ptr!(rsp - alloc_size);
+
+        let (regs, buffer) = unsafe {
+            let begin = (rsp - alloc_size) as *mut TValue;
+            *(begin as *mut usize) = 0xdeadbeef;
+            *(begin.add(1) as *mut usize) = 4;
+            // *(begin.add(2) as *mut usize) = 5;
+
+            let regs = std::slice::from_raw_parts_mut(
+                begin.add(2), code.registers());
+
+            let buffer = std::slice::from_raw_parts_mut(
+                regs.as_mut_ptr().add(code.registers()), code.max_args());
+            assert!(code.max_args() > 0);
+
+            *(rsp as *mut TValue) = TValue::zeroed(); // Sentinel
+            (regs, buffer)
+        };
+
+        regs.fill(TValue::null());
+        buffer.fill(TValue::zeroed());
+
+        self.data.registers = regs;
+        self.data.buffer = buffer;
+        self.data.descriptors = code.descriptors();
+        let rv = f(self);
+
+        let rsp = get_stack_ptr!();
+        set_stack_ptr!(rsp + alloc_size);
+
+        unsafe {
+            let begin = rsp as *mut usize;
+            assert!(*begin == 0xdeadbeef);
+            *begin = 0x0;
+        }
+
+        rv
+    }
+
+    #[inline(always)]
     fn decode(self, op: Operand) -> TValue {
         match op {
             Operand::Null => TValue::null(),
@@ -80,12 +162,7 @@ impl<'l> StackFrame<'l> {
         }
     }
 
-    #[inline(always)]
-    fn module(self) -> GCRef<TModule> {
-        self.function.module
-    }
-
-    pub fn decode_mut(mut self, op: Operand) -> &'l mut TValue {
+    fn decode_mut(mut self, op: Operand) -> &'l mut TValue {
         let Operand::Register(reg) = op else {
             panic!("cannot be decoded as mutable");
         };
@@ -178,31 +255,6 @@ extern "C" fn get_stack_ptr() -> *const u8 {
     }
 }
 
-macro_rules! get_stack_ptr {
-    () => {
-        unsafe {
-            let x: usize;
-            std::arch::asm! {
-                "mov {}, rsp",
-                out(reg) x
-            };
-            x
-        }
-    };
-}
-
-macro_rules! set_stack_ptr {
-    ($x:expr) => {
-        unsafe {
-            let x = $x;
-            std::arch::asm! {
-                "mov rsp, {}",
-                in(reg) x
-            };
-        }
-    };
-}
-
 macro_rules! stack_push {
     ($x:expr) => {
         unsafe {
@@ -233,17 +285,6 @@ macro_rules! stack_pop {
 impl TRawCode {
     #[inline(never)]
     pub fn evaluate(&self, mut frame: StackFrame) -> TValue {
-        assert!(frame.arguments().len() >= self.params());
-
-        /*let mut env = ExecutionEnvironment {
-            descriptors: self.descriptors(),
-            aruments: &mut unsafe { &mut *arguments.0 }[..self.params()],
-            registers: &mut [],
-            buffer: &mut []
-        };*/
-        let vm = frame.vm;
-        let mut stream = CodeStream::from_raw(self);
-
         // CUSTOM STACK LAYOUT
         // +------------------+
         // +    0xdeadbeef    +
@@ -272,53 +313,11 @@ impl TRawCode {
         // +     *padding*    +
         // +                  +
         // +------------------+
-
-        let mut aligned_num = self.registers() + self.max_args() + 3;
-        if aligned_num & 0b1 != 0 {
-            // padding
-            aligned_num = aligned_num + 1;
-        }
-
-        let alloc_size = aligned_num << 3;
-
-        let rsp = get_stack_ptr!();
-        set_stack_ptr!(rsp - alloc_size);
-
-        let (regs, buffer) = unsafe {
-            let begin = (rsp - alloc_size) as *mut TValue;
-            *(begin as *mut usize) = 0xdeadbeef;
-            *(begin.add(1) as *mut usize) = 4;
-            // *(begin.add(2) as *mut usize) = 5;
-
-            let regs = std::slice::from_raw_parts_mut(
-                begin.add(2), self.registers());
-
-            let buffer = std::slice::from_raw_parts_mut(
-                regs.as_mut_ptr().add(self.registers()), self.max_args());
-            assert!(self.max_args() > 0);
-
-            *(rsp as *mut TValue) = TValue::zeroed(); // Sentinel
-            (regs, buffer)
-        };
-        regs.fill(TValue::null());
-        buffer.fill(TValue::zeroed());
-
-        frame.data.registers = regs;
-        frame.data.buffer = buffer;
-        frame.data.descriptors = self.descriptors();
-
-        let rv = Self::inner_eval(frame, &mut stream);
-
-        let rsp = get_stack_ptr!();
-        set_stack_ptr!(rsp + alloc_size);
-
-        unsafe {
-            let begin = rsp as *mut usize;
-            assert!(*begin == 0xdeadbeef);
-            *begin = 0x0;
-        }
-
-        rv
+        
+        let mut stream = CodeStream::from_raw(self);
+        frame.alloc(self, |frame| { 
+            Self::inner_eval(frame, &mut stream)
+        })
     }
 
     #[inline(always)]
