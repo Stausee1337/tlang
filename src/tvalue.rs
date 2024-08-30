@@ -7,7 +7,7 @@ use bitflags::bitflags;
 use hashbrown::{hash_map::RawVacantEntryMut, HashTable, hash_table::Entry};
 use tlang_macros::tcall;
 
-use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::TArgsBuffer, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast, TPolymorphicCallable}, debug};
+use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::{TArgsBuffer, StackFrame}, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast, TPolymorphicCallable}, debug};
 
 
 macro_rules! __tobject_struct {
@@ -1847,7 +1847,7 @@ impl GCRef<TFunction> {
     pub fn call(&self, arguments: TArgsBuffer) -> TValue {
         match &self.kind {
             TFnKind::Function(code) =>
-                code.evaluate(self.module, arguments, *self),
+                code.evaluate(StackFrame::new(*self, arguments)),
             TFnKind::Nativefunc(n @ Nativefunc { traitfn, .. })=>
                 traitfn(n, self.module, arguments),
             TFnKind::BoundMethod(tfunction, base) => {
