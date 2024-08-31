@@ -110,7 +110,7 @@ impl<'l> StackFrame<'l> {
         let (regs, buffer) = unsafe {
             let begin = (rsp - alloc_size) as *mut TValue;
             *(begin as *mut usize) = 0xdeadbeef;
-            *(begin.add(1) as *mut usize) = 4;
+            *begin.add(1) = TValue::object(self.function);
             // *(begin.add(2) as *mut usize) = 5;
 
             let regs = std::slice::from_raw_parts_mut(
@@ -162,6 +162,7 @@ impl<'l> StackFrame<'l> {
         }
     }
 
+    #[inline(always)]
     fn decode_mut(mut self, op: Operand) -> &'l mut TValue {
         let Operand::Register(reg) = op else {
             panic!("cannot be decoded as mutable");

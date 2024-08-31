@@ -28,20 +28,15 @@ struct AllocHead {
 impl AllocHead {
     const MAX_SIZE: u32 = (HeapBlock::PAGE_SIZE - std::mem::size_of::<HeapBlock>()) as u32;
 
-    unsafe fn free(&mut self, freelist_end: &mut *mut FreeListEntry, last_empty: *mut AllocHead) {
+    unsafe fn free(&mut self, freelist_end: &mut *mut FreeListEntry) {
         let atom = &mut *(self as *mut Self as *mut AtomTrait)
             .byte_add(std::mem::size_of::<Self>());
         atom.drop();
         self.state = State::DEAD;
 
-        if last_empty.is_null() {
-            let current_entry = self as *mut _ as *mut FreeListEntry;
-            (*current_entry).next = *freelist_end;
-            *freelist_end = current_entry;
-        } else {
-            (*last_empty).size += self.size;
-        }
-
+        let current_entry = self as *mut _ as *mut FreeListEntry;
+        (*current_entry).next = *freelist_end;
+        *freelist_end = current_entry;
     }
 }
 
@@ -193,8 +188,8 @@ impl HeapBlock {
 }
 
 pub struct Heap {
-    tag: Cell<u16>,
     vm: Eternal<VM>,
+    tag: Cell<u16>,
     current_block: Cell<NonNull<HeapBlock>>,
     defer_gc: Cell<bool>
 }
@@ -262,6 +257,7 @@ impl Heap {
 
                     self.tag.set(collector.current_tag);
 
+                    let block = self.current_block.get().as_mut();
                     if let Some(ptr) = block.alloc_raw(layout) {
                         raw = ptr;
                     } else {
@@ -327,10 +323,12 @@ impl StackFrame {
 unsafe impl bytemuck::Zeroable for crate::tvalue::TValue {}
 unsafe impl bytemuck::Pod for crate::tvalue::TValue {}
 
-struct StackWalker;
+struct StackWalker<'l> {
+    vm: &'l VM
+}
 
-impl StackWalker {
-    unsafe fn get_frame<'a>() -> &'a StackFrame {
+impl<'l> StackWalker<'l> {
+    unsafe fn get_frame<'a>(&self) -> &'a StackFrame {
         let ptr: *const StackFrame;
         std::arch::asm! {
             "mov {}, rbp",
@@ -339,12 +337,14 @@ impl StackWalker {
         &*ptr
     }
 
-    fn walk<F: FnMut(crate::tvalue::TValue)>(mut f: F) {
+    fn walk<F: FnMut(crate::tvalue::TValue)>(&self, mut f: F) {
         unsafe {
-            let mut frame = Self::get_frame();
+            let mut frame = self.get_frame();
             let mut count = 0;
+            let mut vmcount = 0;
             while frame.size() > 0 {
                 let data: &[usize] = bytemuck::cast_slice(frame.data());
+                count += 1;
                 if data[0] != 0xdeadbeef {
                     frame = frame.previous();
                     continue;
@@ -353,6 +353,12 @@ impl StackWalker {
                 // debug!("Stack walk frame {:p}", frame);
 
                 let values: &[crate::tvalue::TValue] = bytemuck::cast_slice(&data[1..]);
+                let mut is_entry_frame = false;
+                if let Some(tfn) = values[0].query_object::<crate::tvalue::TFunction>(self.vm) {
+                    is_entry_frame = tfn.name.is_none();
+                } else {
+                    debug!(" -> WARNING: Frame without conclusive fn object");
+                }
 
                 let mut idx = 0;
                 loop {
@@ -368,9 +374,13 @@ impl StackWalker {
                 }
 
                 frame = frame.previous();
-                count += 1;
+                vmcount += 1;
+
+                if is_entry_frame {
+                    break;
+                }
             }
-            // debug!("Visted {count} stack frames");
+            // debug!("Visted {vmcount} vm frames, {count} total");
         }
     }
 }
@@ -382,7 +392,7 @@ struct GarbageCollector {
 impl GarbageCollector {
     fn with_last_tag(prev: u16) -> Self {
         Self {
-            current_tag: prev + 1
+            current_tag: prev ^ 1
         }
     }
 
@@ -398,7 +408,8 @@ impl GarbageCollector {
         visitor.feed(vm.primitives);
 
         // vist objects on custom stack
-        StackWalker::walk(|value| {
+        let walker = StackWalker { vm };
+        walker.walk(|value| {
             value.visit(&mut visitor);
         });
     }
@@ -415,22 +426,32 @@ impl GarbageCollector {
             let mut last: *mut *mut HeapBlock = &mut place;
             loop {
                 let block = current_block.as_mut();
-                let Some(mut previous) = block.previous() else {
+                let Some(previous) = block.previous() else {
                     break;
                 };
 
                 let mut head = (block as *mut _ as *mut AllocHead)
                     .byte_add(std::mem::size_of::<HeapBlock>());
-                let mut first_head = head;
+                let first_head = head;
 
                 let mut last_empty: *mut AllocHead = std::ptr::null_mut();
                 let mut sweep_size = 0;
                 while sweep_size < HeapBlock::CAPACITY {
                     if (*head).tag != self.current_tag && (*head).state == State::ALIVE {
                         freed_count += 1;
-                        (*head).free(&mut block.freelist, last_empty);
+                        (*head).free(&mut block.freelist);
                         if last_empty.is_null() {
                             last_empty = head;
+                        }
+                    }
+
+                    if (*head).state == State::DEAD {
+                        if last_empty.is_null() {
+                            last_empty = head;
+                        } else {
+                            let entry = head as *mut FreeListEntry;
+                            block.freelist = (*entry).next;
+                            (*last_empty).size += (*head).size;
                         }
                     } else {
                         last_empty = std::ptr::null_mut();
@@ -442,8 +463,16 @@ impl GarbageCollector {
                     atom_count += 1;
                 }
 
-                let block_space = (HeapBlock::PAGE_SIZE - block.allocated_bytes) as u32;
-                if (*first_head).size == (AllocHead::MAX_SIZE - block_space) {
+                //let block_space = (HeapBlock::PAGE_SIZE - block.allocated_bytes) as u32;
+
+                /*if (*first_entry).head.size > 3000 {
+                    let next_entry = (*first_entry).next;
+                    panic!("{} {:p}, {} {:?}",
+                           (*first_entry).head.size, (*first_entry).next, (*next_entry).head.size, (*next_entry).head.state);
+                }*/
+
+                let first_entry = first_head as *mut FreeListEntry;
+                if (*first_entry).head.state == State::DEAD && (*first_entry).head.size == HeapBlock::CAPACITY as u32 {
                     block.unmap().unwrap();
                     *last = previous.as_ptr();
                 } else {
@@ -455,6 +484,7 @@ impl GarbageCollector {
                 current_block = previous;
             }
             heap.current_block.set(NonNull::new_unchecked(place));
+            // println!("New current HeapBlock {:p}", heap.current_block.get());
             // println!("Swept across {block_count} blocks w/ {atom_count} atoms; Collected {freed_count}");
         }
     }

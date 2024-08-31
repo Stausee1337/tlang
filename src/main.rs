@@ -103,7 +103,6 @@ fn main() -> ExitCode {
 
         let generator = BytecodeGenerator::new(module);
         let initfunc = codegen::generate_module(ast, generator).unwrap();
-        module.set_global(Symbol![_initfunc], initfunc.into(), true);
         let module_func: TPolymorphicCallable<_, ()> = initfunc.into();
 
         vm.heap().undefer_gc();

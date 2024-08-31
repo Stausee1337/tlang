@@ -53,11 +53,11 @@ def main(n) {
     sf(stretch_depth);
     var long_lived_tree = make_tree(n);
 
-    print([n, check_tree(long_lived_tree)]);
+    // print([n, check_tree(long_lived_tree)]);
 
-    if (true) {
-        return false;
-    }
+    // if (true) {
+    //     return false;
+    // }
 
     var d = 4;
     var mmd = n + 4; 
