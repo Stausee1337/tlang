@@ -1,4 +1,4 @@
-use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::{NonNull, copy_nonoverlapping}, alloc::Layout, cell::Cell, any::TypeId, mem::{transmute, ManuallyDrop}};
+use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::{NonNull, copy_nonoverlapping}, alloc::Layout, cell::{Cell, UnsafeCell}, any::TypeId, mem::{transmute, ManuallyDrop}};
 use rustix::{
     io,
     mm::{mmap_anonymous, munmap, MapFlags, ProtFlags}
@@ -74,7 +74,7 @@ impl HeapBlock {
 
     const CAPACITY: usize = Self::PAGE_SIZE - std::mem::size_of::<Self>();
 
-    unsafe fn map(heap: &Heap, previous: &mut Self) -> io::Result<NonNull<HeapBlock>> {
+    unsafe fn map(heap: &Heap, previous: &mut Self) -> io::Result<*mut HeapBlock> {
         let block = mmap_anonymous(
             std::ptr::null_mut(),
             Self::PAGE_SIZE,
@@ -101,7 +101,6 @@ impl HeapBlock {
 
         // debug!("Create Block @ {:p} ", block);
 
-        let block = NonNull::new_unchecked(block);
         Ok(block)
     }
 
@@ -110,7 +109,7 @@ impl HeapBlock {
         munmap(self.data() as *mut c_void, HeapBlock::PAGE_SIZE)
     }
 
-    unsafe fn fork(&mut self, heap: &Heap) -> io::Result<NonNull<HeapBlock>> {
+    unsafe fn fork(&mut self, heap: &Heap) -> io::Result<*mut HeapBlock> {
         Self::map(heap, self)
     }
 
@@ -189,29 +188,55 @@ impl HeapBlock {
 
 pub struct Heap {
     vm: Eternal<VM>,
-    tag: Cell<u16>,
-    current_block: Cell<NonNull<HeapBlock>>,
-    defer_gc: Cell<bool>
+    data: UnsafeCell<HeapData>
+}
+
+struct HeapData {
+    tag: u16,
+    current_block: *mut HeapBlock,
+    defer_gc: bool,
+
+    // GC Collection params
+    allocations: usize,
+    /// amount of allocations to start a collection
+    gc_allocations_threshold: usize,
+    /// counts the number of collections, in which no memory was reclamed
+    fruitless_collections: usize,
+    /// amount of fruitless collections needed
+    /// to double the number of allocations needed to start a collection,
+    /// as well as doubling this number
+    gc_collections_threshold: usize,
 }
 
 impl Heap {
     pub fn init(vm: Eternal<VM>) -> Self {
         let block: *const HeapBlock = &*HeapBlock::EMPTY;
-        let block = unsafe { NonNull::new_unchecked(block as *mut HeapBlock) };
         Self {
-            tag: Cell::new(0),
             vm,
-            current_block: Cell::new(block),
-            defer_gc: Cell::new(false)
+            data: UnsafeCell::new(HeapData {
+                current_block: block as *mut HeapBlock,
+                tag: 0,
+                defer_gc: false,
+
+                allocations: 0,
+                gc_allocations_threshold: 192, // ca. 3 Blocks  
+                fruitless_collections: 0,
+                gc_collections_threshold: 8
+            })
         }
     }
 
+    #[inline(always)]
+    pub fn data(&self) -> &mut HeapData {
+        unsafe { &mut *self.data.get() }
+    }
+
     pub fn defer_gc(&self) {
-        self.defer_gc.set(true);
+        self.data().defer_gc = true;
     }
 
     pub fn undefer_gc(&self) {
-        self.defer_gc.set(false);
+        self.data().defer_gc = false;
     }
 
     pub fn allocate_atom<A: Atom>(&self, atom: A) -> GCRef<A> {
@@ -241,36 +266,58 @@ impl Heap {
     }
 
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let this = self.data();
         unsafe {
-            let block = self.current_block.get().as_mut();
             assert!(layout.size() != 0, "ZST are unsupported");
 
             let raw: *mut u8;
-            if let Some(ptr) = block.alloc_raw(layout) {
+            if let Some(ptr) = (*this.current_block).alloc_raw(layout) {
                 raw = ptr;
             } else {
-                if block.previous().is_some() && !self.defer_gc.get() {
+                if (*this.current_block).previous().is_some() &&
+                        !this.defer_gc &&
+                        this.allocations >= this.gc_allocations_threshold {
                     let vm = self.vm();
-                    let collector = GarbageCollector::with_last_tag(self.tag.get());
+                    let collector = GarbageCollector::with_last_tag(this.tag);
                     collector.mark_phase(&vm);
-                    collector.sweep_phase(&vm);
+                    let freed_count = collector.sweep_phase(&vm);
+                    /*println!("Run GC after {} allocations counting {} fruitless collections",
+                             this.allocations, this.fruitless_collections);*/
 
-                    self.tag.set(collector.current_tag);
+                    if freed_count == 0 {
+                        this.fruitless_collections += 1;
+                    } else {
+                        this.fruitless_collections = 0;
+                        /*if this.gc_collections_threshold > 8 {
+                            this.gc_collections_threshold /= 2;
+                        }
+                        if this.gc_allocations_threshold > 192 {
+                            this.gc_allocations_threshold /= 2;
+                        }*/
+                    }
 
-                    let block = self.current_block.get().as_mut();
-                    if let Some(ptr) = block.alloc_raw(layout) {
+                    if this.fruitless_collections == this.gc_collections_threshold {
+                        this.fruitless_collections = 0;
+                        this.gc_collections_threshold *= 2;
+                        this.gc_allocations_threshold *= 2;
+                    }
+
+                    this.tag = collector.current_tag;
+                    this.allocations = 0;
+
+                    if let Some(ptr) = (*this.current_block).alloc_raw(layout) {
                         raw = ptr;
                     } else {
-                        self.current_block.set(block.fork(self).unwrap());
-                        let block = self.current_block.get().as_mut();
-                        raw = block.alloc_raw(layout).ok_or(AllocError)?;
+                        this.current_block = (*this.current_block).fork(self).unwrap();
+                        raw = (*this.current_block).alloc_raw(layout).ok_or(AllocError)?;
                     }
                 } else {
-                    self.current_block.set(block.fork(self).unwrap());
-                    let block = self.current_block.get().as_mut();
-                    raw = block.alloc_raw(layout).ok_or(AllocError)?;
+                    this.current_block = (*this.current_block).fork(self).unwrap();
+                    raw = (*this.current_block).alloc_raw(layout).ok_or(AllocError)?;
                 }
             }
+
+            this.allocations += 1;
 
             let raw = NonNull::new(raw).unwrap();
             Ok(NonNull::slice_from_raw_parts(raw, layout.size()))
@@ -280,17 +327,20 @@ impl Heap {
 
 impl Drop for Heap {
     fn drop(&mut self) {
-        let mut current_block: NonNull<HeapBlock> = self.current_block.get();
+        let this = self.data.get_mut();
+        let mut current_block = this.current_block;
+        let mut count = 0usize;
         unsafe {
             loop {
-                let block = current_block.as_mut();
-                let Some(previous) = block.previous() else {
+                let Some(previous) = (*current_block).previous() else {
                     break;
                 };
-                block.unmap().unwrap(); 
-                current_block = previous;
+                count += 1;
+                (*current_block).unmap().unwrap(); 
+                current_block = previous.as_ptr();
             }
         }
+        println!("Unmaped {count} blocks");
     }
 }
 
@@ -414,16 +464,16 @@ impl GarbageCollector {
         });
     }
 
-    fn sweep_phase(&self, vm: &VM) {
+    fn sweep_phase(&self, vm: &VM) -> usize {
         let heap = vm.heap(); 
-        let mut current_block: NonNull<HeapBlock> = heap.current_block.get();
         unsafe {
             let mut block_count = 0usize;
             let mut atom_count = 0usize;
             let mut freed_count = 0usize;
 
-            let mut place: *mut HeapBlock = heap.current_block.get().as_ptr();
-            let mut last: *mut *mut HeapBlock = &mut place;
+            // let mut place: *mut HeapBlock = heap.current_block.get().as_ptr();
+            let mut current_block: NonNull<HeapBlock> = NonNull::new_unchecked(heap.data().current_block);
+            let mut last: *mut *mut HeapBlock = std::ptr::addr_of_mut!(heap.data().current_block);
             loop {
                 let block = current_block.as_mut();
                 let Some(previous) = block.previous() else {
@@ -483,9 +533,10 @@ impl GarbageCollector {
 
                 current_block = previous;
             }
-            heap.current_block.set(NonNull::new_unchecked(place));
+            // heap.current_block.set(NonNull::new_unchecked(place));
             // println!("New current HeapBlock {:p}", heap.current_block.get());
             // println!("Swept across {block_count} blocks w/ {atom_count} atoms; Collected {freed_count}");
+            freed_count
         }
     }
 }

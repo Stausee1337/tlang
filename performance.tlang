@@ -81,7 +81,7 @@ def main(n) {
 def gc_test() {
     var i = 0;
     while (i < 100000) {
-        print(i);
+        var x = i.fmt();
 
         i = i + 1;
     }
@@ -89,6 +89,6 @@ def gc_test() {
 
 
 // fib(10000000);
-main(15);
-// gc_test();
+// main(15);
+gc_test();
 
