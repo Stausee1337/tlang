@@ -1,4 +1,4 @@
-use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::{NonNull, copy_nonoverlapping}, alloc::Layout, cell::{Cell, UnsafeCell}, any::TypeId, mem::{transmute, ManuallyDrop}};
+use std::{ops::{Deref, DerefMut}, ffi::c_void, ptr::{NonNull, copy_nonoverlapping}, alloc::Layout, cell::{Cell, UnsafeCell}, any::TypeId, mem::{transmute, ManuallyDrop}, usize, io::Write};
 use rustix::{
     io,
     mm::{mmap_anonymous, munmap, MapFlags, ProtFlags}
@@ -33,10 +33,6 @@ impl AllocHead {
             .byte_add(std::mem::size_of::<Self>());
         atom.drop();
         self.state = State::DEAD;
-
-        let current_entry = self as *mut _ as *mut FreeListEntry;
-        (*current_entry).next = *freelist_end;
-        *freelist_end = current_entry;
     }
 }
 
@@ -45,6 +41,20 @@ const_assert_eq!(std::mem::size_of::<AllocHead>(), 8);
 #[inline(always)]
 fn align_up(size: usize, align: usize) -> usize {
     (size + align - 1) & !(align - 1)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(usize)]
+enum Generations {
+    Gen0 = 0,
+    Gen1 = 1,
+    Gen2 = 2,
+}
+
+impl Generations {
+    fn next(self) -> Self {
+        unsafe { transmute((self as usize) + 1) }
+    }
 }
 
 #[repr(C)]
@@ -57,7 +67,7 @@ struct FreeListEntry {
 struct HeapBlock {
     heap: *const Heap,
     previous: *mut HeapBlock,
-    allocated_bytes: usize,
+    generation: Generations,
     freelist: *mut FreeListEntry
 }
 
@@ -68,8 +78,8 @@ impl HeapBlock {
     const EMPTY: &'static HeapBlock = &HeapBlock {
         heap: std::ptr::null(),
         previous: std::ptr::null_mut(),
-        allocated_bytes: Self::PAGE_SIZE,
-        freelist: std::ptr::null_mut()
+        generation: Generations::Gen2,
+        freelist: std::ptr::null_mut(),
     };
 
     const CAPACITY: usize = Self::PAGE_SIZE - std::mem::size_of::<Self>();
@@ -85,8 +95,8 @@ impl HeapBlock {
         *block = HeapBlock {
             heap: &*heap,
             previous: &mut *previous,
-            allocated_bytes: std::mem::size_of::<Self>(),
-            freelist: std::ptr::null_mut()
+            generation: Generations::Gen0,
+            freelist: std::ptr::null_mut(),
         };
         let freelist = (block as *mut FreeListEntry).byte_add(std::mem::size_of::<Self>());
 
@@ -126,13 +136,14 @@ impl HeapBlock {
         let size = layout.size();
         let align = layout.align();
 
-        let mut previous: *mut *mut FreeListEntry = &mut self.freelist;
+        let mut previous: *mut *mut FreeListEntry = std::ptr::addr_of_mut!(self.freelist);
         let mut entry = self.freelist;
+        let mut iteration = 0;
         while !entry.is_null() {
             let head_size = std::mem::size_of::<AllocHead>();
 
             let head = &mut (*entry).head;
-            debug_assert!(head.state == State::DEAD);
+            assert!(head.state == State::DEAD);
             let avialable_size = (head.size as usize) - head_size;
             
             let align_ptr = (head as *mut _ as usize) + std::mem::size_of::<AllocHead>();
@@ -141,8 +152,9 @@ impl HeapBlock {
             let size = align_up(size + padding, Self::ALIGN);
 
             if avialable_size < size {
+                previous = std::ptr::addr_of_mut!((*entry).next);
                 entry = (*entry).next;
-                previous = &mut entry;
+                iteration += 1;
                 continue;
             }
 
@@ -198,6 +210,7 @@ struct HeapData {
 
     // GC Collection params
     allocations: usize,
+    previous_nodes_count: usize,
     /// amount of allocations to start a collection
     gc_allocations_threshold: usize,
     /// counts the number of collections, in which no memory was reclamed
@@ -219,6 +232,7 @@ impl Heap {
                 defer_gc: false,
 
                 allocations: 0,
+                previous_nodes_count: 0,
                 gc_allocations_threshold: 192, // ca. 3 Blocks  
                 fruitless_collections: 0,
                 gc_collections_threshold: 8
@@ -279,8 +293,18 @@ impl Heap {
                         this.allocations >= this.gc_allocations_threshold {
                     let vm = self.vm();
                     let collector = GarbageCollector::with_last_tag(this.tag);
-                    collector.mark_phase(&vm);
-                    let freed_count = collector.sweep_phase(&vm);
+                    let nodes_count = collector.mark_phase(&vm);
+
+                    let mut sweep_mode = SweepMode::Ephermeral;
+                    if nodes_count < this.previous_nodes_count {
+                        sweep_mode = SweepMode::Extended( (this.previous_nodes_count - nodes_count)/2 );
+                    }
+
+                    if this.fruitless_collections == this.gc_collections_threshold {
+                        sweep_mode = SweepMode::Full;
+                    }
+
+                    let freed_count = collector.sweep_phase(&vm, sweep_mode);
                     /*println!("Run GC after {} allocations counting {} fruitless collections",
                              this.allocations, this.fruitless_collections);*/
 
@@ -304,6 +328,7 @@ impl Heap {
 
                     this.tag = collector.current_tag;
                     this.allocations = 0;
+                    this.previous_nodes_count = nodes_count;
 
                     if let Some(ptr) = (*this.current_block).alloc_raw(layout) {
                         raw = ptr;
@@ -435,6 +460,16 @@ impl<'l> StackWalker<'l> {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum SweepMode {
+    /// Only collect the ephermeral generations (Gen0)
+    Ephermeral,
+    /// Collect Gen0 + Gen1
+    Extended(/* threshold: */ usize),
+    /// Collect all generations Gen0, Gen1 and Gen2
+    Full
+}
+
 struct GarbageCollector {
     current_tag: u16,
 }
@@ -446,7 +481,7 @@ impl GarbageCollector {
         }
     }
 
-    fn mark_phase(&self, vm: &VM) {
+    fn mark_phase(&self, vm: &VM) -> usize {
         // recursivly visit every life object, starting at the static (eternal) objects
         let mut visitor = Visitor {
             count: 0,
@@ -462,16 +497,24 @@ impl GarbageCollector {
         walker.walk(|value| {
             value.visit(&mut visitor);
         });
+        
+        visitor.count
     }
 
-    fn sweep_phase(&self, vm: &VM) -> usize {
+    fn sweep_phase(&self, vm: &VM, sweep_mode: SweepMode) -> usize {
         let heap = vm.heap(); 
         unsafe {
             let mut block_count = 0usize;
             let mut atom_count = 0usize;
             let mut freed_count = 0usize;
 
-            // let mut place: *mut HeapBlock = heap.current_block.get().as_ptr();
+            let mut max_gen = if sweep_mode == SweepMode::Full {
+                Generations::Gen2
+            } else {
+                // always starts out as Gen0, dynamically adjusted during sweep
+                Generations::Gen0
+            };
+
             let mut current_block: NonNull<HeapBlock> = NonNull::new_unchecked(heap.data().current_block);
             let mut last: *mut *mut HeapBlock = std::ptr::addr_of_mut!(heap.data().current_block);
             loop {
@@ -480,27 +523,32 @@ impl GarbageCollector {
                     break;
                 };
 
+                if block.generation > max_gen {
+                    break;
+                }
+                let initial_generation = block.generation;
+
                 let mut head = (block as *mut _ as *mut AllocHead)
                     .byte_add(std::mem::size_of::<HeapBlock>());
                 let first_head = head;
 
                 let mut last_empty: *mut AllocHead = std::ptr::null_mut();
                 let mut sweep_size = 0;
+                block.freelist = std::ptr::null_mut();
                 while sweep_size < HeapBlock::CAPACITY {
                     if (*head).tag != self.current_tag && (*head).state == State::ALIVE {
                         freed_count += 1;
                         (*head).free(&mut block.freelist);
-                        if last_empty.is_null() {
-                            last_empty = head;
-                        }
                     }
 
                     if (*head).state == State::DEAD {
                         if last_empty.is_null() {
+                            let current_entry = head as *mut FreeListEntry;
+                            (*current_entry).next = block.freelist;
+                            block.freelist = current_entry;
+
                             last_empty = head;
                         } else {
-                            let entry = head as *mut FreeListEntry;
-                            block.freelist = (*entry).next;
                             (*last_empty).size += (*head).size;
                         }
                     } else {
@@ -513,31 +561,159 @@ impl GarbageCollector {
                     atom_count += 1;
                 }
 
-                //let block_space = (HeapBlock::PAGE_SIZE - block.allocated_bytes) as u32;
+                let mut smallest_entry_size = HeapBlock::CAPACITY;
+                let mut entry = block.freelist;
+                let mut freelist_size = 0;
+                let mut entry_count = 0;
+                while !entry.is_null() {
+                    let size = (*entry).head.size as usize;
+                    freelist_size += size;
+                    if size < smallest_entry_size {
+                        smallest_entry_size = size;
+                    }
 
-                /*if (*first_entry).head.size > 3000 {
-                    let next_entry = (*first_entry).next;
-                    panic!("{} {:p}, {} {:?}",
-                           (*first_entry).head.size, (*first_entry).next, (*next_entry).head.size, (*next_entry).head.state);
-                }*/
+                    entry_count += 1;
+                    entry = (*entry).next;
+                }
+
+                // let fragmentation_ratio = (freelist_size/smallest_entry_size) * entry_count;
+                // if entry_count > 0 && fragmentation_ratio != 1 {
+                //     println!("{fragmentation_ratio} Ratio; {freelist_size}/{smallest_entry_size}");
+                // }
+                if block.generation < Generations::Gen2 {
+                    block.generation = block.generation.next(); // Upgrade block to the next higher
+                                                                // generation
+                }
 
                 let first_entry = first_head as *mut FreeListEntry;
                 if (*first_entry).head.state == State::DEAD && (*first_entry).head.size == HeapBlock::CAPACITY as u32 {
                     block.unmap().unwrap();
                     *last = previous.as_ptr();
                 } else {
+                    let next_gen = (*block.previous).generation;
                     last = std::ptr::addr_of_mut!(block.previous);
                 }
 
                 block_count += 1;
 
+                if previous.as_ref().generation > max_gen {
+                    if let SweepMode::Extended(threshold) = sweep_mode {
+                        if freed_count < threshold {
+                            max_gen = Generations::Gen1;
+                        }
+                    }
+                }
+
                 current_block = previous;
+            } 
+
+            if block_count == 0 {
+                return 0;
             }
-            // heap.current_block.set(NonNull::new_unchecked(place));
-            // println!("New current HeapBlock {:p}", heap.current_block.get());
+
+            /*resolve_sandwitch_blocks(
+                heap.data().current_block,
+                std::ptr::addr_of_mut!(heap.data().current_block),
+                gen1_boundary, gen2_boundary);*/
+
+            // check_sandwitch_blocks(heap.data().current_block, block_count);
             // println!("Swept across {block_count} blocks w/ {atom_count} atoms; Collected {freed_count}");
             freed_count
         }
+    }
+}
+
+unsafe fn find_end(mut block: *mut HeapBlock) -> *mut *mut HeapBlock {
+    while !(*block).previous.is_null() {
+        block = (*block).previous; 
+    }
+    std::ptr::addr_of_mut!((*block).previous)
+}
+
+unsafe fn resolve_sandwitch_blocks(
+    mut current_block: *mut HeapBlock,
+    mut last: *mut *mut HeapBlock,
+    gen1_boundary: *mut *mut HeapBlock,
+    gen2_boundary: *mut *mut HeapBlock
+) {
+
+    // println!("Resolve Sandwitch Blocks");
+    let mut current_generation = Generations::Gen0;
+    loop {
+        let block = &mut *current_block;
+
+        if block.previous.is_null() {
+            break;
+        }
+
+        if std::ptr::addr_eq(block, *gen1_boundary) {
+            current_generation = Generations::Gen1;
+        } else if !gen2_boundary.is_null() && std::ptr::addr_eq(block, *gen2_boundary) {
+            break; // Can't downgrade from Gen0
+        }
+
+        // println!(" -> Block @ {block:p} {:?}", block.generation);
+
+        if block.generation > current_generation {
+
+            current_block = block.previous;
+            *last = block.previous; 
+
+            let boundary = if block.generation == Generations::Gen1 {
+                gen1_boundary
+            } else {
+                gen2_boundary
+            };
+
+            // move the current block to the boundary
+            block.previous = *boundary;
+            *boundary = block;
+
+            continue;
+        }
+
+        if block.generation == Generations::Gen2 && gen2_boundary.is_null() {
+            break;
+        }
+
+        /*if !moving_block.is_null() && (*moving_block).generation <= (*block.previous).generation {
+            current_block = block.previous;
+            last = std::ptr::addr_of_mut!(block.previous);
+
+            let end = find_end(moving_block);
+            println!("   * Releasing sandwitch block");
+            *end = block.previous;
+            block.previous = moving_block;
+            moving_block = std::ptr::null_mut();
+
+            continue;
+        }*/
+
+        current_block = block.previous;
+        last = std::ptr::addr_of_mut!(block.previous);
+    }
+}
+
+unsafe fn check_sandwitch_blocks(mut current_block: *mut HeapBlock, block_count: usize) {
+    let mut count = 0;
+    let mut failed = false;
+    loop {
+        let block = &mut *current_block;
+        // println!(" -> Block @ {block:p} {:?}", block.generation);
+
+        if block.previous.is_null() {
+            break;
+        }
+        count += 1;
+
+        if block.generation > (*block.previous).generation {
+            failed = true;
+        }
+
+        current_block = block.previous;
+    }
+    if failed {
+        panic!("Sandwitch block");
     }
 }
 

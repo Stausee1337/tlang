@@ -89,6 +89,6 @@ def gc_test() {
 
 
 // fib(10000000);
-// main(15);
-gc_test();
+main(15);
+// gc_test();
 
