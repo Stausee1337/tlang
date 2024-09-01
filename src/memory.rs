@@ -136,6 +136,10 @@ impl HeapBlock {
         let size = layout.size();
         let align = layout.align();
 
+        // if self.generation > Generations::Gen0 {
+        //     println!("Allocating in non-ephermeral generation {:?}", self.generation);
+        // }
+
         let mut previous: *mut *mut FreeListEntry = std::ptr::addr_of_mut!(self.freelist);
         let mut entry = self.freelist;
         let mut iteration = 0;
@@ -300,7 +304,7 @@ impl Heap {
                         sweep_mode = SweepMode::Extended( (this.previous_nodes_count - nodes_count)/2 );
                     }
 
-                    if this.fruitless_collections == this.gc_collections_threshold {
+                    if this.fruitless_collections == (this.gc_collections_threshold - 1) {
                         sweep_mode = SweepMode::Full;
                     }
 
@@ -503,6 +507,7 @@ impl GarbageCollector {
 
     fn sweep_phase(&self, vm: &VM, sweep_mode: SweepMode) -> usize {
         let heap = vm.heap(); 
+        let mut all_blocks: Vec<*mut HeapBlock> = Vec::new();
         unsafe {
             let mut block_count = 0usize;
             let mut atom_count = 0usize;
@@ -526,7 +531,6 @@ impl GarbageCollector {
                 if block.generation > max_gen {
                     break;
                 }
-                let initial_generation = block.generation;
 
                 let mut head = (block as *mut _ as *mut AllocHead)
                     .byte_add(std::mem::size_of::<HeapBlock>());
@@ -580,7 +584,7 @@ impl GarbageCollector {
                 // if entry_count > 0 && fragmentation_ratio != 1 {
                 //     println!("{fragmentation_ratio} Ratio; {freelist_size}/{smallest_entry_size}");
                 // }
-                if block.generation < Generations::Gen2 {
+                if block.generation < Generations::Gen2 && freelist_size < 1376 {
                     block.generation = block.generation.next(); // Upgrade block to the next higher
                                                                 // generation
                 }
@@ -590,12 +594,13 @@ impl GarbageCollector {
                     block.unmap().unwrap();
                     *last = previous.as_ptr();
                 } else {
-                    let next_gen = (*block.previous).generation;
+                    all_blocks.push(block);
                     last = std::ptr::addr_of_mut!(block.previous);
                 }
 
                 block_count += 1;
 
+                // println!("{previous:p}");
                 if previous.as_ref().generation > max_gen {
                     if let SweepMode::Extended(threshold) = sweep_mode {
                         if freed_count < threshold {
@@ -605,11 +610,25 @@ impl GarbageCollector {
                 }
 
                 current_block = previous;
-            } 
+            }
 
             if block_count == 0 {
                 return 0;
             }
+
+            all_blocks.sort_by(|&a, &b| (*a).generation.cmp(&(*b).generation));
+
+            let mut last = all_blocks.pop().unwrap();
+            (*last).previous = current_block.as_ptr();
+            for &block in all_blocks.iter().rev() {
+                // println!("Updating previous as {last:p} {:?}", (*block).generation);
+                (*block).previous = last;
+                last = block;
+            }
+
+            (*last).generation = Generations::Gen0;
+
+            heap.data().current_block = last;
 
             /*resolve_sandwitch_blocks(
                 heap.data().current_block,
@@ -617,7 +636,7 @@ impl GarbageCollector {
                 gen1_boundary, gen2_boundary);*/
 
             // check_sandwitch_blocks(heap.data().current_block, block_count);
-            // println!("Swept across {block_count} blocks w/ {atom_count} atoms; Collected {freed_count}");
+            // println!("Swept {sweep_mode:?} across {block_count} blocks w/ {atom_count} atoms; Collected {freed_count}");
             freed_count
         }
     }
