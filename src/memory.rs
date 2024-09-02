@@ -26,7 +26,7 @@ struct AllocHead {
 }
 
 impl AllocHead {
-    const MAX_SIZE: u32 = (HeapBlock::PAGE_SIZE - std::mem::size_of::<HeapBlock>()) as u32;
+    const MAX_SIZE: u32 = (HeapBlock::BLOCK_SIZE - std::mem::size_of::<HeapBlock>()) as u32;
 
     unsafe fn free(&mut self, freelist_end: &mut *mut FreeListEntry) {
         let atom = &mut *(self as *mut Self as *mut AtomTrait)
@@ -64,7 +64,9 @@ struct FreeListEntry {
 }
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct HeapBlock {
+    sentinel: usize,
     heap: *const Heap,
     previous: *mut HeapBlock,
     generation: Generations,
@@ -73,26 +75,29 @@ struct HeapBlock {
 
 impl HeapBlock {
     const PAGE_SIZE: usize = 4096;
+    const BLOCK_SIZE: usize = 4 * Self::PAGE_SIZE; // 16 KiB
     const ALIGN: usize = std::mem::size_of::<usize>();
 
     const EMPTY: &'static HeapBlock = &HeapBlock {
+        sentinel: 0xdeadbeef,
         heap: std::ptr::null(),
         previous: std::ptr::null_mut(),
         generation: Generations::Gen2,
         freelist: std::ptr::null_mut(),
     };
 
-    const CAPACITY: usize = Self::PAGE_SIZE - std::mem::size_of::<Self>();
+    const CAPACITY: usize = Self::BLOCK_SIZE - std::mem::size_of::<Self>();
 
     unsafe fn map(heap: &Heap, previous: &mut Self) -> io::Result<*mut HeapBlock> {
         let block = mmap_anonymous(
             std::ptr::null_mut(),
-            Self::PAGE_SIZE,
+            Self::BLOCK_SIZE,
             ProtFlags::READ | ProtFlags::WRITE,
             MapFlags::PRIVATE,
         )? as *mut Self;
 
         *block = HeapBlock {
+            sentinel: 0xdeadbeef,
             heap: &*heap,
             previous: &mut *previous,
             generation: Generations::Gen0,
@@ -123,7 +128,7 @@ impl HeapBlock {
 
     unsafe fn unmap(&mut self) -> io::Result<()> {
         // debug!("Free Block @ {:p} ", self.data());
-        munmap(self.data() as *mut c_void, HeapBlock::PAGE_SIZE)
+        munmap(self.data() as *mut c_void, HeapBlock::BLOCK_SIZE)
     }
 
     #[inline(always)]
@@ -138,10 +143,6 @@ impl HeapBlock {
 
         let size = layout.size();
         let align = layout.align();
-
-        // if self.generation > Generations::Gen0 {
-        //     println!("Allocating in non-ephermeral generation {:?}", self.generation);
-        // }
 
         let mut previous: *mut *mut FreeListEntry = std::ptr::addr_of_mut!(self.freelist);
         let mut entry = self.freelist;
@@ -196,8 +197,16 @@ impl HeapBlock {
     }
 
     unsafe fn from_allocation<T: Sized>(ptr: *const T) -> &'static HeapBlock {
-        let ptr = ((ptr as usize) & !(HeapBlock::PAGE_SIZE - 1)) as *const HeapBlock;
-        &*ptr
+        let mut ptr = ptr as *const HeapBlock;
+
+        for _ in 0..4 {
+            ptr = ((ptr as usize) & !(HeapBlock::PAGE_SIZE - 1)) as *const HeapBlock;
+            if (*ptr).sentinel == 0xdeadbeef {
+                return &*ptr;
+            }
+            ptr = ptr.byte_sub(1);
+        }
+        std::process::abort();
     }
 
     fn previous(&self) -> Option<NonNull<Self>> {
@@ -242,7 +251,7 @@ impl Heap {
 
                 allocations: 0,
                 previous_nodes_count: 0,
-                gc_allocations_threshold: 192, // ca. 3 Blocks  
+                gc_allocations_threshold: 768, // ca. 3 Blocks  
                 fruitless_collections: 0,
                 gc_collections_threshold: 8
             })
