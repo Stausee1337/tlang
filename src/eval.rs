@@ -93,7 +93,7 @@ impl<'l> StackFrame<'l> {
     }
 
     #[inline(always)]
-    fn alloc<F: FnOnce(Self) -> R, R>(mut self, code: &TRawCode, f: F) -> R {
+    fn alloc<F: FnOnce(Self, &TRawCode) -> R, R>(mut self, code: &TRawCode, f: F) -> R {
         assert!(self.arguments().len() >= code.params());
 
         let mut aligned_num = code.registers() + code.max_args() + 3;
@@ -130,7 +130,7 @@ impl<'l> StackFrame<'l> {
         self.data.registers = regs;
         self.data.buffer = buffer;
         self.data.descriptors = code.descriptors();
-        let rv = f(self);
+        let rv = f(self, code);
 
         let rsp = get_stack_ptr!();
         set_stack_ptr!(rsp + alloc_size);
@@ -315,8 +315,8 @@ impl TRawCode {
         // +                  +
         // +------------------+
         
-        let mut stream = CodeStream::from_raw(self);
-        frame.alloc(self, |frame| { 
+        frame.alloc(self, |frame, this| { 
+            let mut stream = CodeStream::from_raw(this);
             Self::inner_eval(frame, &mut stream)
         })
     }

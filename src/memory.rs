@@ -251,7 +251,7 @@ impl Heap {
 
                 allocations: 0,
                 previous_nodes_count: 0,
-                gc_allocations_threshold: 768, // ca. 3 Blocks  
+                gc_allocations_threshold: 1536,
                 fruitless_collections: 0,
                 gc_collections_threshold: 8
             })
