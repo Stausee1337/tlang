@@ -98,7 +98,16 @@ impl HeapBlock {
             generation: Generations::Gen0,
             freelist: std::ptr::null_mut(),
         };
-        let freelist = (block as *mut FreeListEntry).byte_add(std::mem::size_of::<Self>());
+
+        (*block).reset(previous);
+
+        // debug!("Create Block @ {:p} ", block);
+
+        Ok(block)
+    }
+
+    unsafe fn reset(&mut self, previous: &mut Self) {
+        let freelist = (self as *mut _ as *mut FreeListEntry).byte_add(std::mem::size_of::<Self>());
 
         (*freelist).head = AllocHead {
             state: State::DEAD,
@@ -107,20 +116,14 @@ impl HeapBlock {
         };
         (*freelist).next = std::ptr::null_mut();
 
-        (*block).freelist = freelist;
-
-        // debug!("Create Block @ {:p} ", block);
-
-        Ok(block)
+        self.previous = &mut *previous;
+        self.generation = Generations::Gen0;
+        self.freelist = freelist;
     }
 
     unsafe fn unmap(&mut self) -> io::Result<()> {
         // debug!("Free Block @ {:p} ", self.data());
         munmap(self.data() as *mut c_void, HeapBlock::PAGE_SIZE)
-    }
-
-    unsafe fn fork(&mut self, heap: &Heap) -> io::Result<*mut HeapBlock> {
-        Self::map(heap, self)
     }
 
     #[inline(always)]
@@ -210,6 +213,7 @@ pub struct Heap {
 struct HeapData {
     tag: u16,
     current_block: *mut HeapBlock,
+    block_cache: *mut HeapBlock,
     defer_gc: bool,
 
     // GC Collection params
@@ -232,6 +236,7 @@ impl Heap {
             vm,
             data: UnsafeCell::new(HeapData {
                 current_block: block as *mut HeapBlock,
+                block_cache: std::ptr::null_mut(),
                 tag: 0,
                 defer_gc: false,
 
@@ -281,6 +286,19 @@ impl Heap {
 
     pub fn vm(&self) -> Eternal<VM> {
         self.vm.clone()
+    }
+
+    unsafe fn fork_block(&self) -> io::Result<*mut HeapBlock> {
+        let this = self.data();
+        if !this.block_cache.is_null() {
+            let block = this.block_cache;
+            this.block_cache = (*block).previous;
+
+            (*block).reset(&mut *this.current_block);
+
+            return Ok(block);
+        }
+        HeapBlock::map(self, &mut *this.current_block)
     }
 
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
@@ -337,11 +355,11 @@ impl Heap {
                     if let Some(ptr) = (*this.current_block).alloc_raw(layout) {
                         raw = ptr;
                     } else {
-                        this.current_block = (*this.current_block).fork(self).unwrap();
+                        this.current_block = self.fork_block().unwrap();
                         raw = (*this.current_block).alloc_raw(layout).ok_or(AllocError)?;
                     }
                 } else {
-                    this.current_block = (*this.current_block).fork(self).unwrap();
+                    this.current_block = self.fork_block().unwrap();
                     raw = (*this.current_block).alloc_raw(layout).ok_or(AllocError)?;
                 }
             }
@@ -368,8 +386,26 @@ impl Drop for Heap {
                 (*current_block).unmap().unwrap(); 
                 current_block = previous.as_ptr();
             }
+            println!("Unmaped {count} blocks");
+
+            current_block = this.block_cache;
+            count = 0;
+
+
+
+            if !this.block_cache.is_null() {
+                loop {
+                    let Some(previous) = (*current_block).previous() else {
+                        break;
+                    };
+                    count += 1;
+                    (*current_block).unmap().unwrap(); 
+                    current_block = previous.as_ptr();
+                }
+            }
+
+            println!("And {count} cached blocks");
         }
-        println!("Unmaped {count} blocks");
     }
 }
 
@@ -506,7 +542,7 @@ impl GarbageCollector {
     }
 
     fn sweep_phase(&self, vm: &VM, sweep_mode: SweepMode) -> usize {
-        let heap = vm.heap(); 
+        let heap = vm.heap().data();
         let mut all_blocks: Vec<*mut HeapBlock> = Vec::new();
         unsafe {
             let mut block_count = 0usize;
@@ -520,8 +556,8 @@ impl GarbageCollector {
                 Generations::Gen0
             };
 
-            let mut current_block: NonNull<HeapBlock> = NonNull::new_unchecked(heap.data().current_block);
-            let mut last: *mut *mut HeapBlock = std::ptr::addr_of_mut!(heap.data().current_block);
+            let mut current_block: NonNull<HeapBlock> = NonNull::new_unchecked(heap.current_block);
+            let mut last: *mut *mut HeapBlock = std::ptr::addr_of_mut!(heap.current_block);
             loop {
                 let block = current_block.as_mut();
                 let Some(previous) = block.previous() else {
@@ -591,7 +627,8 @@ impl GarbageCollector {
 
                 let first_entry = first_head as *mut FreeListEntry;
                 if (*first_entry).head.state == State::DEAD && (*first_entry).head.size == HeapBlock::CAPACITY as u32 {
-                    block.unmap().unwrap();
+                    block.previous = heap.block_cache;
+                    heap.block_cache = block;
                     *last = previous.as_ptr();
                 } else {
                     all_blocks.push(block);
@@ -628,111 +665,11 @@ impl GarbageCollector {
 
             (*last).generation = Generations::Gen0;
 
-            heap.data().current_block = last;
+            heap.current_block = last;
 
-            /*resolve_sandwitch_blocks(
-                heap.data().current_block,
-                std::ptr::addr_of_mut!(heap.data().current_block),
-                gen1_boundary, gen2_boundary);*/
-
-            // check_sandwitch_blocks(heap.data().current_block, block_count);
             // println!("Swept {sweep_mode:?} across {block_count} blocks w/ {atom_count} atoms; Collected {freed_count}");
             freed_count
         }
-    }
-}
-
-unsafe fn find_end(mut block: *mut HeapBlock) -> *mut *mut HeapBlock {
-    while !(*block).previous.is_null() {
-        block = (*block).previous; 
-    }
-    std::ptr::addr_of_mut!((*block).previous)
-}
-
-unsafe fn resolve_sandwitch_blocks(
-    mut current_block: *mut HeapBlock,
-    mut last: *mut *mut HeapBlock,
-    gen1_boundary: *mut *mut HeapBlock,
-    gen2_boundary: *mut *mut HeapBlock
-) {
-
-    // println!("Resolve Sandwitch Blocks");
-    let mut current_generation = Generations::Gen0;
-    loop {
-        let block = &mut *current_block;
-
-        if block.previous.is_null() {
-            break;
-        }
-
-        if std::ptr::addr_eq(block, *gen1_boundary) {
-            current_generation = Generations::Gen1;
-        } else if !gen2_boundary.is_null() && std::ptr::addr_eq(block, *gen2_boundary) {
-            break; // Can't downgrade from Gen0
-        }
-
-        // println!(" -> Block @ {block:p} {:?}", block.generation);
-
-        if block.generation > current_generation {
-
-            current_block = block.previous;
-            *last = block.previous; 
-
-            let boundary = if block.generation == Generations::Gen1 {
-                gen1_boundary
-            } else {
-                gen2_boundary
-            };
-
-            // move the current block to the boundary
-            block.previous = *boundary;
-            *boundary = block;
-
-            continue;
-        }
-
-        if block.generation == Generations::Gen2 && gen2_boundary.is_null() {
-            break;
-        }
-
-        /*if !moving_block.is_null() && (*moving_block).generation <= (*block.previous).generation {
-            current_block = block.previous;
-            last = std::ptr::addr_of_mut!(block.previous);
-
-            let end = find_end(moving_block);
-            println!("   * Releasing sandwitch block");
-            *end = block.previous;
-            block.previous = moving_block;
-            moving_block = std::ptr::null_mut();
-
-            continue;
-        }*/
-
-        current_block = block.previous;
-        last = std::ptr::addr_of_mut!(block.previous);
-    }
-}
-
-unsafe fn check_sandwitch_blocks(mut current_block: *mut HeapBlock, block_count: usize) {
-    let mut count = 0;
-    let mut failed = false;
-    loop {
-        let block = &mut *current_block;
-        // println!(" -> Block @ {block:p} {:?}", block.generation);
-
-        if block.previous.is_null() {
-            break;
-        }
-        count += 1;
-
-        if block.generation > (*block.previous).generation {
-            failed = true;
-        }
-
-        current_block = block.previous;
-    }
-    if failed {
-        panic!("Sandwitch block");
     }
 }
 
