@@ -147,16 +147,11 @@ impl<'l> StackFrame<'l> {
     #[inline(always)]
     fn decode(self, op: Operand) -> TValue {
         match op {
-            // Operand::Null => TValue::null(),
-            // Operand::Bool(bool) => TBool::from_bool(bool).into(),
-            // Operand::Int32(int) => TInteger::from_int32(int).into(),
             Operand::Register(reg) => {
-                let idx = reg.index();
-                let num_args = self.arguments().len();
-                if idx < num_args {
-                    return self.arguments()[idx];
-                }
-                self.registers()[idx - num_args]
+                self.registers()[reg.index()]
+            }
+            Operand::Parameter(param) => {
+                self.arguments()[param.index()]
             }
             Operand::Descriptor(desc) => self.descriptors()[desc.index()],
         }
@@ -164,16 +159,18 @@ impl<'l> StackFrame<'l> {
 
     #[inline(always)]
     fn decode_mut(mut self, op: Operand) -> &'l mut TValue {
-        let Operand::Register(reg) = op else {
-            eprintln!("cannot be decoded as mutable");
-            std::process::abort();
-        };
-        let idx = reg.index();
-        let num_args = self.arguments().len();
-        if idx < num_args {
-            return &mut self.arguments()[idx];
+        match op {
+            Operand::Register(reg) => {
+                &mut self.registers()[reg.index()]
+            }
+            Operand::Parameter(param) => {
+                &mut self.arguments()[param.index()]
+            }
+            Operand::Descriptor(desc) => {
+                eprintln!("cannot be decoded as mutable");
+                std::process::abort();
+            }
         }
-        &mut self.registers()[idx - num_args]
     }
 }
 
@@ -326,7 +323,7 @@ impl TRawCode {
     fn inner_eval(mut frame: StackFrame, stream: &mut CodeStream) -> TValue {
         loop {
             let op: OpCode = unsafe { std::mem::transmute(stream.current()) };
-            stream.bump(1);
+            // stream.bump(1);
             // let now = Instant::now();
             match op {
                 OpCode::Mov => {

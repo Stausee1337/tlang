@@ -12,6 +12,7 @@ pub enum Operand {
     // Null,
     // Bool(bool),
     // Int32(i32),
+    Parameter(Parameter),
     Register(Register),
     Descriptor(Descriptor),
 }
@@ -29,10 +30,16 @@ impl std::fmt::Debug for Operand {
             // Operand::Null => f.write_str("Null"),
             // Operand::Bool(bool) => write!(f, "Bool({bool})"),
             // Operand::Int32(int) => write!(f, "Int32({int})"),
+            Operand::Parameter(arg) => write!(f, "{:?}", arg),
             Operand::Register(reg) => write!(f, "{:?}", reg),
             Operand::Descriptor(desc) => write!(f, "{desc:?}"),
         }
     }
+}
+
+define_index_type! {
+    pub struct Parameter = u32;
+    DEBUG_FORMAT = "~{}";
 }
 
 define_index_type! {
@@ -224,10 +231,17 @@ define_index_type! {
     DEBUG_FORMAT = "bb{}";
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BackingData {
+    Param(Parameter),
+    Reg(Register),
+    Undefined,
+}
+
 #[derive(Clone, Copy)]
 pub struct Local {
     pub constant: bool,
-    pub register: Option<Register>,
+    pub backing_data: BackingData,
 }
 
 struct BasicBlock {
@@ -304,7 +318,7 @@ impl CGFunction {
     }
 
     fn function(name: Symbol, _closure: bool, params: &[&Ident]) -> Result<Self, Ident> {
-        let mut rv = Self {
+        let mut this = Self {
             name: Some(name),
             num_params: params.len() as u32,
             ribs: vec![Rib::new(RibKind::Function)],
@@ -312,12 +326,17 @@ impl CGFunction {
             ..Self::module()
         };
 
-        for param in params {
-            rv.register_local(param.symbol, false).map_err(|_| **param)?;
-            rv.declare_local(param.symbol);
+        for (idx, param) in params.iter().enumerate() {
+            let local = Local {
+                constant: false,
+                backing_data: BackingData::Param(Parameter::from_usize(idx))
+            };
+            if let Some(..) = this.current_rib_mut().locals.insert(param.symbol, local) {
+                return Err((*param).clone());
+            }
         }
 
-        Ok(rv)
+        Ok(this)
     }
 
     fn current_block(&self) -> &BasicBlock {
@@ -371,7 +390,7 @@ impl CGFunction {
     pub fn find_local(&self, symbol: Symbol) -> Option<Local> {
         for rib in self.ribs.iter().rev() {
             if let Some(local) = rib.locals.get(&symbol) {
-                if local.register.is_some() {
+                if let BackingData::Param(..) | BackingData::Reg(..) = local.backing_data {
                     return Some(*local);
                 }
             }
@@ -397,7 +416,7 @@ impl CGFunction {
     pub fn register_local(&mut self, symbol: Symbol, constant: bool) -> Result<(), ()> {
         let local = Local {
             constant,
-            register: None
+            backing_data: BackingData::Undefined
         };
         if let Some(..) = self.current_rib_mut().locals.insert(symbol, local) {
             return Err(());
@@ -410,14 +429,18 @@ impl CGFunction {
         let reg = self.register_allocator.next();
         let local = self.current_rib_mut().locals.get_mut(&symbol)
             .expect("register local before declare");
-        debug_assert!(local.register.is_none());
-        local.register = Some(reg);
+        debug_assert!(local.backing_data == BackingData::Undefined);
+        local.backing_data = BackingData::Reg(reg);
         Operand::Register(reg)
     }
 
     pub fn get_local_reg(&self, symbol: Symbol) -> Operand {
-        let reg = self.find_local(symbol).expect("symbol corresponds to actual local");
-        Operand::Register(reg.register.expect("find_local finds declared locals"))
+        let local = self.find_local(symbol).expect("symbol corresponds to actual local");
+        match local.backing_data {
+            BackingData::Param(arg) => Operand::Parameter(arg),
+            BackingData::Reg(reg) => Operand::Register(reg),
+            BackingData::Undefined => panic!("find_local finds declared locals")
+        }
     }
 
     fn descriptor<T: Into<TValue>>(&mut self, tvalue: T) -> Operand {

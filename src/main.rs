@@ -14,7 +14,6 @@ extern crate self as tlang;
 
 use bumpalo::Bump;
 use getopts::{Options, ParsingStyle};
-use tlang_macros::Symbol;
 
 use crate::{bytecode::BytecodeGenerator, interop::TPolymorphicCallable,  tvalue::TString, vm::TModule};
 

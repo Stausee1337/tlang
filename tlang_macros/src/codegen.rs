@@ -401,8 +401,13 @@ pub fn generate_decode(token_stream: TokenStream) -> Result<TokenStream, syn::Er
             use std::ops::Deref;
             use crate::bytecode::Instruction;
 
-            let instruction: crate::bytecode::instructions::#ident = *(#stream).read();
-            (#stream).bump(std::mem::size_of::<crate::bytecode::instructions::#ident>());
+            #[repr(C, packed)]
+            struct Reader(crate::bytecode::OpCode, crate::bytecode::instructions::#ident);
+
+            let Reader(_, instruction): Reader = *(#stream).read();
+            (#stream).bump(
+                std::mem::size_of::<crate::bytecode::instructions::#ident>() + 
+                std::mem::size_of::<crate::bytecode::OpCode>());
             let crate::bytecode::instructions::#ident { #fields, .. } = instruction;
 
             #decode_logic
