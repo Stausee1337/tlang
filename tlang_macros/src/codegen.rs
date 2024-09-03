@@ -718,7 +718,7 @@ pub fn generate_tcall(token_stream: TokenStream) -> Result<TokenStream, syn::Err
             let resolved_func: tlang::interop::TPolymorphicCallable<_, _> = tlang::tvalue::resolve_by_symbol(
                 #vm, tlang_macros::Symbol![#sym], value, false);
             if resolved_func.is_method() {
-                resolved_func(#self_, #arguments)
+                resolved_func(value, #arguments)
             } else {
                 let resolved_func2: tlang::interop::TPolymorphicCallable<_, _> = resolved_func.reencode();
                 resolved_func2(#arguments)

@@ -43,14 +43,10 @@ def make_check(d) {
     return result;
 }
 
-def sf(stretch_depth) {
-    print([stretch_depth, make_check(stretch_depth)]);
-}
-
 def main(n) {
     var stretch_depth = n + 1;
 
-    sf(stretch_depth);
+    print([stretch_depth, make_check(stretch_depth)]);
     var long_lived_tree = make_tree(n);
 
     // print([n, check_tree(long_lived_tree)]);
@@ -80,7 +76,7 @@ def main(n) {
 
 def gc_test() {
     var i = 0;
-    while (i < 100000) {
+    while (i < 1000000) {
         var x = i.fmt();
 
         i = i + 1;

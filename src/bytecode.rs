@@ -932,6 +932,10 @@ define_instructions! {
     },
     MakeEmptyList { dst: Operand },
 
+    MakeAnonObject {
+        dst: Operand,
+        fields: u32
+    },
+
     Error,
-    Noop
 }

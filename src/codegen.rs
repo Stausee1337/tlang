@@ -1,3 +1,4 @@
+use hashbrown::HashMap;
 
 use crate::lexer::Span;
 use crate::memory::GCRef;
@@ -620,8 +621,16 @@ impl<'ast> GeneratorNode for ListExpr<'ast> {
 }
 
 impl<'ast> GeneratorNode for ObjectExpr<'ast> {
-    fn generate_bytecode(&self, _generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let dst = generator.allocate_reg();
+        generator.emit_make_anon_object(dst, self.inits.len() as u32);
+
+        for (ident, init) in self.inits {
+            let init = init.generate_bytecode(generator)?.unwrap();
+            generator.emit_set_attribute(dst, ident.symbol, init);
+        }
+
+        Ok(Some(dst))
     }
 }
 

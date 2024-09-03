@@ -48,3 +48,14 @@ print(a * b);
 print(a != null);
 
 print((2).pow(3));
+
+print({});
+var obj = {
+    first: 12,
+    second: false,
+    third: 0.1
+};
+
+print(obj);
+print(obj.second);
+

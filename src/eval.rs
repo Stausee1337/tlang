@@ -7,7 +7,7 @@ use crate::{
         CodeStream, OpCode, Operand, TRawCode, OperandList
     },
     memory::GCRef,
-    tvalue::{TBool, TFunction, TInteger, TValue, resolve_by_symbol, TList},
+    tvalue::{TBool, TFunction, TInteger, TValue, resolve_by_symbol, TList, TObject},
     interop::TPropertyAccess,
     vm::{TModule, VM}, debug
 };
@@ -148,7 +148,7 @@ impl<'l> StackFrame<'l> {
     fn decode(self, op: Operand) -> TValue {
         match op {
             Operand::Register(reg) => {
-                self.registers()[reg.index()]
+                unsafe { *self.registers().as_ptr().add(reg.index()) }
             }
             Operand::Parameter(param) => {
                 self.arguments()[param.index()]
@@ -161,7 +161,7 @@ impl<'l> StackFrame<'l> {
     fn decode_mut(mut self, op: Operand) -> &'l mut TValue {
         match op {
             Operand::Register(reg) => {
-                &mut self.registers()[reg.index()]
+                unsafe { &mut *self.registers().as_mut_ptr().add(reg.index()) }
             }
             Operand::Parameter(param) => {
                 &mut self.arguments()[param.index()]
@@ -497,10 +497,15 @@ impl TRawCode {
                     *dst = TList::new_empty(vm).into();
                 }
 
+                OpCode::MakeAnonObject => {
+                    let vm = frame.vm;
+                    decode!(stream, frame, MakeAnonObject { fields, &mut dst });
+                    *dst = TObject::new_with_capacity(vm, fields as usize).into();
+                }
+
                 OpCode::Error => {
                     panic!("Error");
                 }
-                OpCode::Noop => (),
             }
             // debug!("perf {:?}", now.elapsed());
         }

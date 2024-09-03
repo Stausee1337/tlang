@@ -805,8 +805,8 @@ impl<T> GCRef<T> {
         self.heap().vm().clone()
     }
 
-    pub fn refrence_eq(&self, other: Self) -> bool {
-        std::ptr::addr_eq(self.0.as_ptr(), other.0.as_ptr())
+    pub fn refrence_eq(this: Self, other: Self) -> bool {
+        std::ptr::addr_eq(this.0.as_ptr(), other.0.as_ptr())
     }
 
     unsafe fn head(this: Self) -> *mut AllocHead {

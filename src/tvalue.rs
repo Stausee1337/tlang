@@ -181,7 +181,7 @@ impl TValue {
     pub fn query_object<T: Typed>(&self, vm: &VM) -> Option<GCRef<T>> {
         if let TValueKind::Object = self.kind() {
             let ty = vm.types().query::<T>();
-            if !self.ttype(vm)?.refrence_eq(ty) {
+            if !GCRef::refrence_eq(self.ttype(vm)?, ty) {
                 return None;
             }
             return self.as_object();
@@ -383,8 +383,8 @@ pub struct TObject: () {
 }
 
 impl TObject {
-    pub fn new(vm: &VM) -> GCRef<Self> {
-        let descriptor = vm.heap().allocate_atom(HashTable::new());
+    pub fn new_with_capacity(vm: &VM, capacity: usize) -> GCRef<Self> {
+        let descriptor = vm.heap().allocate_atom(HashTable::with_capacity(capacity));
         vm.heap().allocate_atom(Self {
             ty: vm.types().query::<Self>(),
             descriptor: Some(descriptor),
@@ -409,15 +409,24 @@ impl TObject {
         }
     }
 
-    pub fn get_attribute(&mut self, name: Symbol) -> Option<&mut TValue> {
+    pub fn get_attribute(&mut self, name: Symbol, allows_insert: bool) -> Option<&mut TValue> {
         let Some(descriptor) = &mut self.descriptor else {
             debug_assert!(!self.ty.variable);
             panic!("cannot get attribute on fixed type");
         };
-        if let Some(val) = descriptor.find_mut(name.hash, |val| val.0 == name) {
-            return Some(&mut val.1);
+        match descriptor.entry(
+            name.hash,
+            |val| val.0 == name,
+            |val| val.0.hash) {
+            Entry::Occupied(mut entry) => {
+                Some(&mut entry.into_mut().1)
+            }
+            Entry::Vacant(entry) if allows_insert => {
+                let mut entry = entry.insert((name, TValue::null()));
+                Some(&mut entry.into_mut().1)
+            }
+            _ => None
         }
-        None
     }
 
     pub fn set_attribute(&mut self, name: Symbol, value: TValue) {
@@ -466,21 +475,29 @@ impl Typed for TObject {
         prelude.set_global(Symbol![Object], ttype.into(), true).unwrap();
 
         ttype.define_method(Symbol![eq], TFunction::rustfunc(
-                prelude, Some("object::eq"), |this: TValue, other: TValue| {
+                prelude, Some("object.eq"), |this: TValue, other: TValue| {
                     TBool::from_bool(this.encoded() == other.encoded())
                 }));
 
         ttype.define_method(Symbol![ne], TFunction::rustfunc(
-                prelude, Some("object::ne"), move |this: TValue, other: TValue| {
+                prelude, Some("object.ne"), move |this: TValue, other: TValue| {
                     let vm = ttype.vm();
                     let eq: TBool = tcall!(&vm, TValue::eq(this, other));
                     !eq
                 }));
 
         ttype.define_method(Symbol![fmt], TFunction::rustfunc(
-                prelude, Some("object::fmt"), move |this: TValue| {
+                prelude, Some("object.fmt"), move |this: TValue| {
                     let vm = ttype.vm();
-                    TString::from_format(&vm, format_args!("{} {{}}", this.ttype(&vm).unwrap().name))
+                    let ty = this.ttype(&vm).unwrap();
+
+                    let object = this.as_gcref::<TObject>();
+                    if GCRef::refrence_eq(ty, ttype) && object.descriptor.is_some() {
+                        let formatter = TObjectFormatter { object };
+                        return TString::from_format(&vm, format_args!("{formatter}"))
+                    }
+
+                    TString::from_format(&vm, format_args!("{} {{}}", ty.name))
                 }));
 
 
@@ -500,6 +517,35 @@ impl Atom for HashTable<(Symbol, TValue)> {
             // debug!("Visit {}", val.ttype(&vm).map(|ty| ty.name.as_slice()).unwrap_or("null"));
             val.visit(visitor);
         }
+    }
+}
+
+struct TObjectFormatter {
+    object: GCRef<TObject>,
+}
+
+impl std::fmt::Display for TObjectFormatter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('{')?;
+        let vm = self.object.vm();
+
+        if let Some(descriptor) = self.object.descriptor {
+            if !descriptor.is_empty() {
+                f.write_char(' ')?;
+                for (idx, (key, value)) in descriptor.iter().enumerate() {
+                    if idx > 0 {
+                        f.write_str(", ")?;
+                    }
+                    f.write_str(vm.symbols().get(*key).as_slice())?;
+                    f.write_str(": ")?;
+                    let string: GCRef<TString> = tcall!(&vm, TValue::fmt(*value));
+                    f.write_str(string.as_slice())?;
+                }
+                f.write_char(' ')?;
+            }
+        }
+
+        f.write_char('}')
     }
 }
 
@@ -1549,7 +1595,7 @@ impl GCRef<TType> {
     pub fn is_subclass(&self, needle: GCRef<TType>) -> bool {
         let mut current = *self;
         loop {
-            if current.refrence_eq(needle) {
+            if GCRef::refrence_eq(current, needle) {
                 return true;
             }
             let Some(base) = self.basety else {
@@ -1952,23 +1998,22 @@ where
     if resolve_to_attribute {
         if let Some(mut tobject) = value.query_tobject() {
             if tobject.ty.variable {
-                if let Some(found) = tobject.get_attribute(name) {
+                if let Some(found) = tobject.get_attribute(name, true) {
                     return R::propcast(value, found, true, vm);
                 }
             }
         }
     }
-    
-    let mut mut_current = value.ttype(vm);
 
-    while let Some(mut current) = mut_current {
-        if let Some(val) = current.base.get_attribute(name) {
+    let mut current_ty = value.ttype(vm);
+    while let Some(mut current) = current_ty {
+        if let Some(val) = current.base.get_attribute(name, false) {
             return R::propcast(value, val, false, vm)
         }
-        mut_current = current.basety.clone();
+        current_ty = current.basety.clone();
     }
-    
-    panic!("Could not find property");
+
+    panic!("Could not find property {}", vm.symbols().get(name));
 }
 
 pub fn print(module: GCRef<TModule>, msg: TValue) {
