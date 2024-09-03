@@ -58,4 +58,19 @@ var obj = {
 
 print(obj);
 print(obj.second);
+obj.second = true;
+print(obj);
+
+print("Hello %s", obj, Type.of(obj));
+
+// record User {
+//     var firstname;
+//     var lastname;
+//     var age;
+//     var is_female;
+// 
+//     def login(self) {
+//         print(["Logging in the user", self]);
+//     }
+// }
 

@@ -102,6 +102,15 @@ impl VMDowncast for TValue {
     }
 }
 
+impl VMDowncast for () {
+    fn vmdowncast(value: TValue, _vm: &VM) -> Option<Self> {
+        if value.encoded() == TValue::null().encoded() {
+            return Some(());
+        }
+        None
+    }
+}
+
 impl<T: VMDowncast> VMDowncast for Option<T> {
     fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
         if value.encoded() == TValue::null().encoded() {
@@ -111,13 +120,26 @@ impl<T: VMDowncast> VMDowncast for Option<T> {
     }
 }
 
+pub struct TVariadicArguments {
+    raw: Vec<TValue>
+}
+
+impl TVariadicArguments {
+    pub fn from_raw(raw: Vec<TValue>) -> Self {
+        Self { raw }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &TValue> + '_ {
+        self.raw.iter()
+    }
+}
+
 pub trait VMArgs: std::marker::Tuple + Sized {
     const SIZE: usize;
 
     fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self>;
     fn encode_into(self, vm: &VM, slice: &mut [TValue]);
 }
-
 
 impl VMArgs for () {
     const SIZE: usize = 0;
@@ -131,13 +153,20 @@ impl VMArgs for () {
     { }
 }
 
-impl VMDowncast for () {
-    fn vmdowncast(value: TValue, _vm: &VM) -> Option<Self> {
-        if value.encoded() == TValue::null().encoded() {
-            return Some(());
-        }
-        None
+impl VMArgs for (TVariadicArguments,) {
+    const SIZE: usize = 8;
+
+    fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self> {
+        let args: Vec<TValue> = args.into_iter(0, true).collect();
+        Some((TVariadicArguments::from_raw(args),))
     }
+
+    fn encode_into(self, vm: &VM, slice: &mut [TValue]) {
+        for (idx, value) in self.0.iter().enumerate() {
+            slice[idx] = value.vmcast(vm);
+        }
+    }
+
 }
 
 impl<T1> VMArgs for (T1,)
@@ -156,6 +185,30 @@ where
 
     fn encode_into(self, vm: &VM, slice: &mut [TValue]) {
         slice[0] = self.0.vmcast(vm);
+    }
+}
+
+impl<T1> VMArgs for (T1, TVariadicArguments) 
+where
+    T1: VMDowncast + VMCast
+{
+    const SIZE: usize = 8;
+    
+    fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self> {
+        let mut iter = args.into_iter(1, true);
+        let arg1 = iter.next()?;
+        let args: Vec<TValue> = iter.collect();
+        Some((
+            T1::vmdowncast(arg1, vm)?,
+            TVariadicArguments::from_raw(args)
+        )) 
+    }
+
+    fn encode_into(self, vm: &VM, slice: &mut [TValue]) { 
+        slice[0] = self.0.vmcast(vm);
+        for (idx, value) in self.1.iter().enumerate() {
+            slice[idx + 1] = value.vmcast(vm);
+        }
     }
 }
 

@@ -46,7 +46,7 @@ def make_check(d) {
 def main(n) {
     var stretch_depth = n + 1;
 
-    print([stretch_depth, make_check(stretch_depth)]);
+    print(stretch_depth, make_check(stretch_depth));
     var long_lived_tree = make_tree(n);
 
     // print([n, check_tree(long_lived_tree)]);
@@ -67,11 +67,11 @@ def main(n) {
             j = j + 1;
         }
 
-        print([i, d, cs]);
+        print(i, d, cs);
         d = d + 2;
     }
 
-    print([n, check_tree(long_lived_tree)]);
+    print(n, check_tree(long_lived_tree));
 }
 
 def gc_test() {

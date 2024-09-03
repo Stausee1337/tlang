@@ -7,7 +7,7 @@ use bitflags::bitflags;
 use hashbrown::{hash_map::RawVacantEntryMut, HashTable, hash_table::Entry};
 use tlang_macros::tcall;
 
-use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::{TArgsBuffer, StackFrame}, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast, TPolymorphicCallable}, debug};
+use crate::{memory::{GCRef, Atom, Visitor}, symbol::Symbol, bytecode::TRawCode, bigint::{TBigint, self, to_bigint}, vm::{VM, TModule}, eval::{TArgsBuffer, StackFrame}, interop::{TPolymorphicObject, VMDowncast, TPolymorphicWrapper, VMArgs, VMCast, TPolymorphicCallable, TVariadicArguments}, debug};
 
 
 macro_rules! __tobject_struct {
@@ -2016,14 +2016,21 @@ where
     panic!("Could not find property {}", vm.symbols().get(name));
 }
 
-pub fn print(module: GCRef<TModule>, msg: TValue) {
+pub fn print(module: GCRef<TModule>, args: TVariadicArguments) {
     let vm = module.vm();
-    if msg.encoded() == TValue::null().encoded() {
-        println!("null");
-        return;
+
+    for (idx, msg) in args.iter().enumerate() {
+        if idx > 0 {
+            print!(", ");
+        }
+
+        if msg.encoded() == TValue::null().encoded() {
+            print!("null");
+            continue;
+        }
+
+        let msg_str: GCRef<TString> = tcall!(&vm, TValue::fmt(*msg));
+        print!("{msg_str}");
     }
-
-    let msg_str: GCRef<TString> = tcall!(&vm, TValue::fmt(msg));
-
-    println!("{msg_str}");
+    println!();
 }
