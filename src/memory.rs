@@ -485,16 +485,13 @@ impl<'l> StackWalker<'l> {
                 }
 
                 let mut idx = 0;
-                loop {
-                    let value = values[idx];
-                    if values[idx].encoded() == 0x0 {
+                for value in values {
+                    if value.encoded() == 0x0 {
                         break;
                     }
-                    f(value);
+                    f(*value);
 
                     // debug!("  - {:?} 0x{:x}", value.kind(), value.encoded());
-
-                    idx += 1;
                 }
 
                 frame = frame.previous();

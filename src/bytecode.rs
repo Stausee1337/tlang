@@ -4,26 +4,33 @@ use std::{ops::IndexMut, fmt::{Write, Result as FmtResult}, usize, cell::OnceCel
 use ahash::HashMap;
 use tlang_macros::define_instructions;
 
-use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TObject, FunctionFlags}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, vm::{VM, TModule, Eternal}};
+use crate::{tvalue::{TFunction, TValue, TString, TInteger, TFloat, TFnKind, TObject, FunctionFlags, TBool}, symbol::Symbol, parse::Ident, codegen, memory::GCRef, vm::{VM, TModule, Eternal}};
 use index_vec::{IndexVec, define_index_type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Operand {
-    Null,
-    Bool(bool),
+    // Null,
+    // Bool(bool),
+    // Int32(i32),
     Register(Register),
     Descriptor(Descriptor),
-    Int32(i32),
+}
+
+impl Operand {
+    pub fn null() -> Self {
+        // under the assumption that the first descriptor of every function is TValue::null()
+        Operand::Descriptor(Descriptor::from_raw(0))
+    }
 }
 
 impl std::fmt::Debug for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> FmtResult {
         match self {
-            Operand::Null => f.write_str("Null"),
-            Operand::Bool(bool) => write!(f, "Bool({bool})"),
+            // Operand::Null => f.write_str("Null"),
+            // Operand::Bool(bool) => write!(f, "Bool({bool})"),
+            // Operand::Int32(int) => write!(f, "Int32({int})"),
             Operand::Register(reg) => write!(f, "{:?}", reg),
             Operand::Descriptor(desc) => write!(f, "{desc:?}"),
-            Operand::Int32(int) => write!(f, "Int32({int})"),
         }
     }
 }
@@ -289,7 +296,7 @@ impl CGFunction {
             num_params: 0,
             num_locals: 0,
             max_arguments: 1,
-            descriptor_table: Default::default(),
+            descriptor_table: IndexVec::from_vec(vec![TValue::null()]),
             blocks: vec![BasicBlock::new()].into(),
             current_block: CodeLabel::from_raw(0),
             register_allocator: RegisterAllocator::new(),
@@ -469,6 +476,16 @@ impl BytecodeGenerator {
         self.function_stack.push(func);
         do_work(self)?;
         let func = self.function_stack.pop().unwrap();
+    
+        // struct N;
+        // let mut n = N;
+        // impl std::fmt::Write for N {
+        //     fn write_str(&mut self, s: &str) -> FmtResult {
+        //         print!("{s}");
+        //         Ok(())
+        //     }
+        // }
+        // FunctionDisassembler::dissassemble(&func, &mut n).unwrap();
 
         let func = TFunction::from_codegen(&self.vm(), func, self.module);
         if let Err(crate::vm::GlobalErr::Redeclared(..)) = self.module.set_global(name.symbol, func.into(), true) {
@@ -552,11 +569,19 @@ impl BytecodeGenerator {
         self.current_fn_mut().descriptor(string)
     }
 
+    pub fn make_i32(&mut self, int: i32) -> Operand {
+        self.current_fn_mut().descriptor(TInteger::from_int32(int))
+    }
+
     pub fn make_int(&mut self, int: u64) -> Operand {
         if let Ok(int) = i32::try_from(int) {
-            return Operand::Int32(int);
+            return self.make_i32(int);
         }
         self.current_fn_mut().descriptor(TInteger::from_usize(int as usize))
+    }
+
+    pub fn make_bool(&mut self, bool: bool) -> Operand {
+        self.current_fn_mut().descriptor(TBool::from_bool(bool))
     }
 
     pub fn make_float(&mut self, float: f64) -> Operand {
@@ -564,15 +589,6 @@ impl BytecodeGenerator {
     }
 
     pub fn root_function(self) -> GCRef<TFunction> {
-        // struct N;
-        // let mut n = N;
-        // impl std::fmt::Write for N {
-        //     fn write_str(&mut self, s: &str) -> FmtResult {
-        //         print!("{s}");
-        //         Ok(())
-        //     }
-        // }
-        // FunctionDisassembler::dissassemble(&self.root_fn, &mut n).unwrap();
         TFunction::from_codegen(&self.vm(), self.root_fn, self.module)
     }
 }

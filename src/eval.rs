@@ -147,8 +147,9 @@ impl<'l> StackFrame<'l> {
     #[inline(always)]
     fn decode(self, op: Operand) -> TValue {
         match op {
-            Operand::Null => TValue::null(),
-            Operand::Bool(bool) => TBool::from_bool(bool).into(),
+            // Operand::Null => TValue::null(),
+            // Operand::Bool(bool) => TBool::from_bool(bool).into(),
+            // Operand::Int32(int) => TInteger::from_int32(int).into(),
             Operand::Register(reg) => {
                 let idx = reg.index();
                 let num_args = self.arguments().len();
@@ -158,14 +159,14 @@ impl<'l> StackFrame<'l> {
                 self.registers()[idx - num_args]
             }
             Operand::Descriptor(desc) => self.descriptors()[desc.index()],
-            Operand::Int32(int) => TInteger::from_int32(int).into(),
         }
     }
 
     #[inline(always)]
     fn decode_mut(mut self, op: Operand) -> &'l mut TValue {
         let Operand::Register(reg) = op else {
-            panic!("cannot be decoded as mutable");
+            eprintln!("cannot be decoded as mutable");
+            std::process::abort();
         };
         let idx = reg.index();
         let num_args = self.arguments().len();

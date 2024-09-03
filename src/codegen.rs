@@ -30,7 +30,7 @@ pub trait GeneratorNode {
 pub fn generate_module<'ast>(module: Module<'ast>, mut generator: BytecodeGenerator) -> Result<GCRef<TFunction>, CodegenErr> {
     generate_body(module.body, &mut generator)?;
     if !generator.is_terminated() {
-        generator.emit_return(Operand::Null);
+        generator.emit_return(Operand::null());
     }
     Ok(generator.root_function())
 }
@@ -116,7 +116,7 @@ impl<'ast> GeneratorNode for Return<'ast> {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
         let value = if let Some(value) = self.value {
             value.generate_bytecode(generator)?.unwrap()
-        } else { Operand::Null };
+        } else { Operand::null() };
 
         generator.emit_return(value);
 
@@ -235,7 +235,8 @@ impl<'ast> Variable<'ast> {
 
         for (idx, name) in self.names.into_iter().enumerate() {
             let src = generator.allocate_reg();
-            generator.emit_get_subscript(src, init, Operand::Int32(idx as i32));
+            let idx_ = generator.make_int(idx as u64);
+            generator.emit_get_subscript(src, init, idx_);
             declare(name.symbol, src, generator);
         }
     }
@@ -255,7 +256,7 @@ impl<'ast> GeneratorNode for Variable<'ast> {
                 span
             });
         } else {
-            Operand::Null
+            Operand::null()
         };
 
         if generator.find_rib(RibKind::Module, 1).is_some() { // declare (and init) global
@@ -280,7 +281,7 @@ impl<'ast> GeneratorNode for Function<'ast> {
         let _ = generator.with_function(self.name, self.params, |generator| {
             generate_body(self.body, generator)?;
             if !generator.is_terminated() {
-                generator.emit_return(Operand::Null);
+                generator.emit_return(Operand::null());
             }
             Ok(())
         })?;
@@ -299,7 +300,7 @@ impl<'ast> GeneratorNode for AssignExpr<'ast> {
                 if let Some(local) = generator.find_local(ident.symbol) {
                     if local.constant {
                         generator.emit_error();
-                        return Ok(Some(Operand::Null));
+                        return Ok(Some(Operand::null()));
                     }
 
                     generator.emit_mov(generator.get_local_reg(ident.symbol), src);
@@ -336,12 +337,13 @@ impl<'ast> GeneratorNode for AssignExpr<'ast> {
                     };
 
                     let src = generator.allocate_reg();
-                    generator.emit_get_subscript(src, base, Operand::Int32(idx as i32));
+                    let idx_ = generator.make_int(idx as u64);
+                    generator.emit_get_subscript(src, base, idx_);
 
                     if let Some(local) = generator.find_local(ident.symbol) {
                         if local.constant {
                             generator.emit_error();
-                            return Ok(Some(Operand::Null));
+                            return Ok(Some(Operand::null()));
                         }
 
                         generator.emit_mov(generator.get_local_reg(ident.symbol), src);
@@ -363,10 +365,10 @@ impl<'ast> GeneratorNode for AssignExpr<'ast> {
 impl GeneratorNode for Literal {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
         Ok(Some(match self.kind {
-            LiteralKind::Null => Operand::Null,
+            LiteralKind::Null => Operand::null(),
             LiteralKind::Integer(int) => generator.make_int(int),
             LiteralKind::Float(float) => generator.make_float(float),
-            LiteralKind::Boolean(bool) => Operand::Bool(bool),
+            LiteralKind::Boolean(bool) => generator.make_bool(bool),
             LiteralKind::String(str) => generator.make_string(str),
         }))
     }
@@ -502,11 +504,13 @@ impl<'ast> GeneratorNode for BinaryExpr<'ast> {
                 self.generate_bool(true_target, false_target, generator)?;
 
                 generator.set_current_block(false_target);
-                generator.emit_mov(dst, Operand::Bool(false));
+                let false_ = generator.make_bool(false);
+                generator.emit_mov(dst, false_);
                 generator.emit_branch(end_block);
 
                 generator.set_current_block(true_target);
-                generator.emit_mov(dst, Operand::Bool(true));
+                let true_ = generator.make_bool(true);
+                generator.emit_mov(dst, true_);
                 generator.emit_branch(end_block);
 
                 generator.set_current_block(end_block);
