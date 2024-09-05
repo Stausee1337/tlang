@@ -2,7 +2,7 @@ use std::{any::TypeId, sync::OnceLock, mem::{offset_of, ManuallyDrop}, ptr::NonN
 
 use hashbrown::hash_map::RawEntryMut;
 
-use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, TString, TValue, Typed, TObject, TFunction, TInteger, TBool, TFloat, self, TProperty, TList}};
+use crate::{memory::{Heap, GCRef, Atom, Visitor}, symbol::{SymbolCache, Symbol}, tvalue::{TType, TString, TValue, Typed, TObject, TFunction, TInteger, TBool, TFloat, self, TProperty, TList, TypeFlags}};
 
 #[macro_export]
 #[cfg(debug_assertions)]
@@ -170,176 +170,23 @@ impl Primitives {
 
 impl GCRef<Primitives> {
     pub fn float_type(self) -> GCRef<TType> {
-        *self.float.get_or_init(|| {
-            let vm = self.vm();
-            let mut ttype = vm.heap().allocate_atom(TType {
-                base: TObject::base(&vm, vm.types().query::<TType>()),
-                basety: Some(vm.types().query::<TObject>()),
-                basesize: 0, // primitive
-                name: TString::from_slice(&vm, "float"),
-                modname: TString::from_slice(&vm, "prelude"),
-                variable: false
-            });
-
-            let mut prelude = vm.modules().prelude();
-            prelude.set_global(Symbol![float], ttype.into(), true).unwrap();
-
-            ttype.define_method(Symbol![fmt], TFunction::rustfunc(
-                    prelude, Some("float.fmt"),
-                    move |this: TFloat| {
-                        let vm = self.vm();
-                        TString::from_format(&vm, format_args!("{this}"))
-                    }));
-
-            tvalue::float_init_arithmetics(ttype);
-            tvalue::float_init_unarys(ttype);
-            tvalue::float_init_cmps(ttype);
-
-            ttype
-        })
+        *self.float.get_or_init(|| TFloat::initialize_type(&self.vm()))
     }
 
     pub fn int_type(self) -> GCRef<TType> {
-        *self.int.get_or_init(|| {
-            let vm = self.vm();
-            let mut ttype = vm.heap().allocate_atom(TType {
-                base: TObject::base(&vm, vm.types().query::<TType>()),
-                basety: Some(vm.types().query::<TObject>()),
-                basesize: 0, // primitive
-                name: TString::from_slice(&vm, "int"),
-                modname: TString::from_slice(&vm, "prelude"),
-                variable: false
-            });
-
-            let mut prelude = vm.modules().prelude();
-            prelude.set_global(Symbol![int], ttype.into(), true).unwrap();
-
-            ttype.define_method(Symbol![fmt], TFunction::rustfunc(
-                    prelude, Some("int.fmt"),
-                    move |this: TInteger| {
-                        let vm = self.vm();
-                        TString::from_format(&vm, format_args!("{this}"))
-                    }));
-
-            ttype.define_method(Symbol![pow], TFunction::rustfunc(
-                    prelude, Some("int.pow"), TInteger::pow));
-
-            tvalue::int_init_arithmetics(ttype);
-            tvalue::int_init_cmps(ttype);
-
-            ttype
-        })
+        *self.int.get_or_init(|| TInteger::initialize_type(&self.vm()))
     }
 
     pub fn bool_type(self) -> GCRef<TType> {
-        *self.bool.get_or_init(|| {
-            let vm = self.vm();
-            let mut ttype = vm.heap().allocate_atom(TType {
-                base: TObject::base(&vm, vm.types().query::<TType>()),
-                basety: Some(vm.types().query::<TObject>()),
-                basesize: 0, // primitive
-                name: TString::from_slice(&vm, "bool"),
-                modname: TString::from_slice(&vm, "prelude"),
-                variable: false
-            });
-
-            let mut prelude = vm.modules().prelude();
-            prelude.set_global(Symbol![bool], ttype.into(), true).unwrap();
-
-            ttype.define_method(Symbol![fmt], TFunction::rustfunc(
-                    prelude, Some("bool.fmt"),
-                    move |this: TBool| {
-                        let vm = self.vm();
-                        TString::from_format(&vm, format_args!("{this}"))
-                    }));
-
-            ttype
-        })
+        *self.bool.get_or_init(|| TBool::initialize_type(&self.vm()))
     }
 
     pub fn string_type(&self) -> GCRef<TType> {
-        *self.string.get_or_init(|| {
-            let vm = self.vm();
-            let mut ttype = vm.heap().allocate_atom(TType {
-                base: TObject::base(&vm, vm.types().query::<TType>()),
-                basety: Some(vm.types().query::<TObject>()),
-                basesize: 0, // primitive
-                name: TString::from_slice(&vm, "string"),
-                modname: TString::from_slice(&vm, "prelude"),
-                variable: false
-            });
-
-            let mut prelude = vm.modules().prelude();
-            prelude.set_global(Symbol![string], ttype.into(), true).unwrap();
-
-            ttype.define_method(Symbol![fmt], TFunction::rustfunc(
-                    prelude, Some("string.fmt"), |this: GCRef<TString>| this));
-            ttype.define_method(Symbol![eq], TFunction::rustfunc(
-                    prelude, Some("string.eq"), |this: GCRef<TString>, other: GCRef<TString>| this.eq(&other)));
-
-            ttype.define_method(
-                Symbol![get_iterator],
-                TFunction::rustfunc(prelude, Some("string.get_iterator"), GCRef::<TString>::get_iterator));
-
-            ttype.define_property(
-                Symbol![length],
-                TProperty::get(
-                    prelude,
-                    TFunction::rustfunc(prelude, None, |string: GCRef<TString>| unsafe {
-                        let ptr = string.as_ptr() as *mut u8;
-                        *(ptr.add(offset_of!(TString, length)) as *mut TInteger)
-                    })));
-
-            ttype
-        })
+        *self.string.get_or_init(|| TString::initialize_type(&self.vm()))
     }
 
     pub fn list_type(self) -> GCRef<TType> {
-        *self.list.get_or_init(|| {
-            let vm = self.vm();
-            let mut ttype = vm.heap().allocate_atom(TType {
-                base: TObject::base(&vm, vm.types().query::<TType>()),
-                basety: Some(vm.types().query::<TObject>()),
-                basesize: 0, // primitive
-                name: TString::from_slice(&vm, "list"),
-                modname: TString::from_slice(&vm, "prelude"),
-                variable: false
-            });
-
-            let mut prelude = vm.modules().prelude();
-            prelude.set_global(Symbol![list], ttype.into(), true).unwrap();
-
-            ttype.define_method(
-                Symbol![fmt],
-                TFunction::rustfunc(prelude, Some("list.fmt"), |this: GCRef<TList>| {
-                    TString::from_format(&this.vm(), format_args!("{this}"))
-                }));
-
-            ttype.define_method(
-                Symbol![push],
-                TFunction::rustfunc(prelude, Some("list.push"), GCRef::<TList>::push));
-
-            ttype.define_method(
-                Symbol![get_index],
-                TFunction::rustfunc(prelude, Some("list.get_index"),
-                |this: GCRef<TList>, index: TInteger| this[index]));
-
-            ttype.define_method(
-                Symbol![set_index],
-                TFunction::rustfunc(prelude, Some("list.set_index"),
-                |mut this: GCRef<TList>, index: TInteger, value: TValue| { this[index] = value; }));
-
-            ttype.define_property(
-                Symbol![length],
-                TProperty::get(
-                    prelude,
-                    TFunction::rustfunc(prelude, None, |list: GCRef<TList>| unsafe {
-                        let ptr = list.as_ptr() as *mut u8;
-                        *(ptr.add(offset_of!(TList, length)) as *mut TInteger)
-                    })));
-
-            ttype
-        })
+        *self.list.get_or_init(|| TList::initialize_type(&self.vm()))
     }
 }
 
@@ -445,7 +292,7 @@ pub enum GlobalErr {
 }
 
 pub struct TModule {
-    name: GCRef<TString>,
+    pub(crate) name: GCRef<TString>,
     source: Option<GCRef<TString>>,
     table: hashbrown::HashTable<(Symbol, TValue, bool)>
 }

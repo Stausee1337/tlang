@@ -392,7 +392,7 @@ impl TObject {
     }
 
     pub fn base(vm: &VM, ty: GCRef<TType>) -> Self {
-        let descriptor = if ty.variable {
+        let descriptor = if ty.flags.contains(TypeFlags::VARIABLE) {
             Some(vm.heap().allocate_atom(HashTable::new()))
         } else {
             None
@@ -411,7 +411,7 @@ impl TObject {
 
     pub fn get_attribute(&mut self, name: Symbol, allows_insert: bool) -> Option<&mut TValue> {
         let Some(descriptor) = &mut self.descriptor else {
-            debug_assert!(!self.ty.variable);
+            debug_assert!(!self.ty.flags.contains(TypeFlags::VARIABLE));
             panic!("cannot get attribute on fixed type");
         };
         match descriptor.entry(
@@ -431,7 +431,7 @@ impl TObject {
 
     pub fn set_attribute(&mut self, name: Symbol, value: TValue) {
         let Some(descriptor) = &mut self.descriptor else {
-            debug_assert!(!self.ty.variable);
+            debug_assert!(!self.ty.flags.contains(TypeFlags::VARIABLE));
             panic!("cannot set attribute on fixed type {:p} {:p}", std::ptr::addr_of!(self.ty), self.ty.as_ptr());
         };
         match descriptor.entry(
@@ -465,28 +465,29 @@ impl Typed for TObject {
             basety: None, // There's nothing above Object in the hierarchy
             name: TString::from_slice(vm, "Object"),
             modname: TString::from_slice(vm, "prelude"),
-            variable: true
+            flags: TypeFlags::OPEN | TypeFlags::VARIABLE
         });
         entry.insert(TypeId::of::<Self>(), ttype);
 
         ttype.base = TObject::base(vm, vm.types().query::<TType>());
 
+        let mut builder = TTypeBuilder::new(vm);
         let mut prelude = vm.modules().prelude();
         prelude.set_global(Symbol![Object], ttype.into(), true).unwrap();
 
-        ttype.define_method(Symbol![eq], TFunction::rustfunc(
+        builder.define_method(Symbol![eq], TFunction::rustfunc(
                 prelude, Some("object.eq"), |this: TValue, other: TValue| {
                     TBool::from_bool(this.encoded() == other.encoded())
                 }));
 
-        ttype.define_method(Symbol![ne], TFunction::rustfunc(
+        builder.define_method(Symbol![ne], TFunction::rustfunc(
                 prelude, Some("object.ne"), move |this: TValue, other: TValue| {
                     let vm = ttype.vm();
                     let eq: TBool = tcall!(&vm, TValue::eq(this, other));
                     !eq
                 }));
 
-        ttype.define_method(Symbol![fmt], TFunction::rustfunc(
+        builder.define_method(Symbol![fmt], TFunction::rustfunc(
                 prelude, Some("object.fmt"), move |this: TValue| {
                     let vm = ttype.vm();
                     let ty = this.ttype(&vm).unwrap();
@@ -500,6 +501,7 @@ impl Typed for TObject {
                     TString::from_format(&vm, format_args!("{} {{}}", ty.name))
                 }));
 
+        ttype.base.descriptor = Some(builder.descriptor);
 
         ttype
     }
@@ -608,14 +610,43 @@ impl std::ops::Not for TBool {
     }
 }
 
-pub fn bool_init_unarys(mut ttype: GCRef<TType>) {
-    let vm = ttype.vm();
-
+pub fn bool_init_unarys(builder: &mut TTypeBuilder) {
+    let vm = builder.vm();
     let prelude = vm.modules().prelude();
 
-    ttype.define_method(Symbol![not], TFunction::rustfunc(
-            prelude, Some("bool::not"),
+    builder.define_method(Symbol![not], TFunction::rustfunc(
+            prelude, Some("bool.not"),
             <TBool as std::ops::Not>::not));
+}
+
+impl TBool {
+    pub fn initialize_type(vm: &VM) -> GCRef<TType> {
+        let mut ttype = vm.heap().allocate_atom(TType {
+            base: TObject::base(&vm, vm.types().query::<TType>()),
+            basety: Some(vm.types().query::<TObject>()),
+            basesize: 0, // primitive
+            name: TString::from_slice(&vm, "bool"),
+            modname: TString::from_slice(&vm, "prelude"),
+            flags: TypeFlags::empty()
+        });
+
+        let mut prelude = vm.modules().prelude();
+        prelude.set_global(Symbol![bool], ttype.into(), true).unwrap();
+        let mut builder = TTypeBuilder::new(vm);
+
+        builder.define_method(Symbol![fmt], TFunction::rustfunc(
+                prelude, Some("bool.fmt"),
+                move |this: TBool| {
+                    let vm = prelude.vm();
+                    TString::from_format(&vm, format_args!("{this}"))
+                }));
+        
+        bool_init_unarys(&mut builder);
+
+        ttype.base.descriptor = Some(builder.descriptor);
+
+        ttype
+    }
 }
 
 #[repr(C)]
@@ -864,6 +895,45 @@ impl std::fmt::Debug for GCRef<TString> {
     }
 }
 
+impl TString {
+    pub(crate) fn initialize_type(vm: &VM) -> GCRef<TType>{
+        let mut ttype = vm.heap().allocate_atom(TType {
+            base: TObject::base(&vm, vm.types().query::<TType>()),
+            basety: Some(vm.types().query::<TObject>()),
+            basesize: 0, // primitive
+            name: TString::from_slice(&vm, "string"),
+            modname: TString::from_slice(&vm, "prelude"),
+            flags: TypeFlags::empty()
+        });
+
+        let mut prelude = vm.modules().prelude();
+        prelude.set_global(Symbol![string], ttype.into(), true).unwrap();
+        let mut builder = TTypeBuilder::new(vm);
+
+        builder.define_method(Symbol![fmt], TFunction::rustfunc(
+                prelude, Some("string.fmt"), |this: GCRef<TString>| this));
+        builder.define_method(Symbol![eq], TFunction::rustfunc(
+                prelude, Some("string.eq"), |this: GCRef<TString>, other: GCRef<TString>| this.eq(&other)));
+
+        builder.define_method(
+            Symbol![get_iterator],
+            TFunction::rustfunc(prelude, Some("string.get_iterator"), GCRef::<TString>::get_iterator));
+
+        builder.define_property(
+            Symbol![length],
+            TProperty::get(
+                prelude,
+                TFunction::rustfunc(prelude, None, |string: GCRef<TString>| unsafe {
+                    let ptr = string.as_ptr() as *mut u8;
+                    *(ptr.add(offset_of!(TString, length)) as *mut TInteger)
+                })));
+
+        ttype.base.descriptor = Some(builder.descriptor);
+
+        ttype
+    } 
+}
+
 tobject! {
 pub struct TStringIterator {
     backing_string: GCRef<TString>,
@@ -929,27 +999,28 @@ impl GCRef<TStringIterator> {
 
 impl Typed for TStringIterator {
     fn initialize(vm: &VM) -> GCRef<TType> {
-        let mut ttype = vm.heap().allocate_atom(TType {
-            base: TObject::base(vm, vm.types().query::<TType>()),
-            basety: Some(vm.types().query::<TObject>()),
-            basesize: std::mem::size_of::<Self>(),
-            name: TString::from_slice(&vm, "StringIterator"),
-            modname: TString::from_slice(&vm, "prelude"),
-            variable: false
-        });
-
         let prelude = vm.modules().prelude();
+        let mut builder = TTypeBuilder::new(vm);
 
-        ttype.define_method(
+        builder.define_method(
             Symbol![next],
             TFunction::rustfunc(prelude, Some("StringIterator.next"), GCRef::<TStringIterator>::next));
 
-        ttype.define_property(
+        builder.define_property(
             Symbol![current],
             TProperty::get(
                 prelude,
                 TFunction::rustfunc(prelude, Some("StringIterator.current"),
                 GCRef::<TStringIterator>::current)));
+
+        let mut ttype = vm.heap().allocate_atom(TType {
+            base: TObject::base_with_descriptor(vm, vm.types().query::<TType>(), Some(builder.descriptor)),
+            basety: Some(vm.types().query::<TObject>()),
+            basesize: std::mem::size_of::<Self>(),
+            name: TString::from_slice(&vm, "StringIterator"),
+            modname: TString::from_slice(&vm, "prelude"),
+            flags: TypeFlags::empty()
+        });
 
         ttype
     }
@@ -1082,16 +1153,16 @@ impl crate::interop::vmops::Invert for TInteger {
     }
 }
 
-pub fn int_init_unarys(mut ttype: GCRef<TType>) {
-    let vm = ttype.vm();
+pub fn int_init_unarys(builder: &mut TTypeBuilder) {
+    let vm = builder.vm();
 
     let prelude = vm.modules().prelude();
 
-    ttype.define_method(Symbol![neg], TFunction::rustfunc(
+    builder.define_method(Symbol![neg], TFunction::rustfunc(
             prelude, Some("int.neg"),
             <TInteger as std::ops::Neg>::neg));
 
-    ttype.define_method(Symbol![invert], TFunction::rustfunc(
+    builder.define_method(Symbol![invert], TFunction::rustfunc(
             prelude, Some("int.invert"),
             <TInteger as crate::interop::vmops::Invert>::invert));
 }
@@ -1147,11 +1218,11 @@ macro_rules! iter_int_arithmetics {
     ($(impl $op:ident for $ty:ident in ($fn:ident$(, $checked_fn:ident)?);)*) => {
         $(impl_int_arithmetic!($op, $ty, $fn, $($checked_fn)?);)*
 
-        pub(crate) fn int_init_arithmetics(mut ttype: GCRef<TType>) {
-            let vm = ttype.vm();
+        pub(crate) fn int_init_arithmetics(builder: &mut TTypeBuilder) {
+            let vm = builder.vm();
             let prelude = vm.modules().prelude();
             $(
-                ttype.define_method(Symbol![$fn], TFunction::rustfunc(
+                builder.define_method(Symbol![$fn], TFunction::rustfunc(
                         prelude, Some(concat!("int.", stringify!($fn))),
                         <TInteger as std::ops::$op<TValue>>::$fn));
             )*
@@ -1210,11 +1281,11 @@ macro_rules! iter_int_cmps {
     ($(impl $op:ident for $ty:ident in $fn:ident;)*) => {
         $(impl_int_cmp!($op, $ty, $fn);)*
 
-        pub(crate) fn int_init_cmps(mut ttype: GCRef<TType>) {
-            let vm = ttype.vm();
+        pub(crate) fn int_init_cmps(builder: &mut TTypeBuilder) {
+            let vm = builder.vm();
             let prelude = vm.modules().prelude();
             $(
-                ttype.define_method(Symbol![$fn], TFunction::rustfunc(
+                builder.define_method(Symbol![$fn], TFunction::rustfunc(
                         prelude, Some(concat!("int.", stringify!($fn))),
                         <TInteger as $crate::interop::vmops::$op<TValue>>::$fn));
             )*
@@ -1244,6 +1315,40 @@ impl Into<TFloat> for TInteger {
             IntegerKind::Bigint(bigint) =>
                 TFloat(bigint::smart_to_f64(bigint))
         }
+    }
+}
+
+impl TInteger {
+    pub(crate) fn initialize_type(vm: &VM) -> GCRef<TType> {
+        let mut ttype = vm.heap().allocate_atom(TType {
+            base: TObject::base(&vm, vm.types().query::<TType>()),
+            basety: Some(vm.types().query::<TObject>()),
+            basesize: 0, // primitive
+            name: TString::from_slice(&vm, "int"),
+            modname: TString::from_slice(&vm, "prelude"),
+            flags: TypeFlags::empty()
+        });
+
+        let mut prelude = vm.modules().prelude();
+        prelude.set_global(Symbol![int], ttype.into(), true).unwrap();
+        let mut builder = TTypeBuilder::new(vm);
+
+        builder.define_method(Symbol![fmt], TFunction::rustfunc(
+                prelude, Some("int.fmt"),
+                move |this: TInteger| {
+                    let vm = prelude.vm();
+                    TString::from_format(&vm, format_args!("{this}"))
+                }));
+
+        builder.define_method(Symbol![pow], TFunction::rustfunc(
+                prelude, Some("int.pow"), TInteger::pow));
+
+        int_init_arithmetics(&mut builder);
+        int_init_cmps(&mut builder);
+
+        ttype.base.descriptor = Some(builder.descriptor);
+
+        ttype
     }
 }
 
@@ -1289,10 +1394,10 @@ impl std::ops::Neg for TFloat {
     }
 }
 
-pub fn float_init_unarys(mut ttype: GCRef<TType>) {
-    let vm = ttype.vm();
+pub fn float_init_unarys(builder: &mut TTypeBuilder) {
+    let vm = builder.vm();
 
-    ttype.define_method(Symbol![neg], TFunction::rustfunc(
+    builder.define_method(Symbol![neg], TFunction::rustfunc(
             vm.modules().prelude(), Some("float::neg"),
             <TInteger as std::ops::Neg>::neg));
 }
@@ -1330,11 +1435,11 @@ macro_rules! iter_float_arithmetics {
     ($(impl $op:ident for $ty:ident in $fn:ident;)*) => {
         $(impl_float_arithmetic!($op, $ty, $fn);)*
 
-        pub(crate) fn float_init_arithmetics(mut ttype: GCRef<TType>) {
-            let vm = ttype.vm();
+        pub(crate) fn float_init_arithmetics(builder: &mut TTypeBuilder) {
+            let vm = builder.vm();
             let prelude = vm.modules().prelude();
             $(
-                ttype.define_method(Symbol![$fn], TFunction::rustfunc(
+                builder.define_method(Symbol![$fn], TFunction::rustfunc(
                         prelude, Some(concat!("float.", stringify!($fn))),
                         <TFloat as std::ops::$op<TValue>>::$fn));
             )*
@@ -1379,11 +1484,11 @@ macro_rules! iter_float_cmps {
     ($(impl $op:ident for $ty:ident in $fn:ident;)*) => {
         $(impl_float_cmp!($op, $ty, $fn);)*
 
-        pub(crate) fn float_init_cmps(mut ttype: GCRef<TType>) {
-            let vm = ttype.vm();
+        pub(crate) fn float_init_cmps(builder: &mut TTypeBuilder) {
+            let vm = builder.vm();
             let mut prelude = vm.modules().prelude();
             $(
-                ttype.define_method(Symbol![$fn], TFunction::rustfunc(
+                builder.define_method(Symbol![$fn], TFunction::rustfunc(
                         prelude, Some(concat!("float::", stringify!($fn))),
                         <TFloat as $crate::interop::vmops::$op<TValue>>::$fn));
             )*
@@ -1394,6 +1499,38 @@ macro_rules! iter_float_cmps {
 iter_float_cmps! {
     impl Lt for TFloat in lt; impl Le for TFloat in le;
     impl Gt for TFloat in gt; impl Ge for TFloat in ge;
+}
+
+impl TFloat {
+    pub(crate) fn initialize_type(vm: &VM) -> GCRef<TType> {
+        let mut ttype = vm.heap().allocate_atom(TType {
+            base: TObject::base(&vm, vm.types().query::<TType>()),
+            basety: Some(vm.types().query::<TObject>()),
+            basesize: 0, // primitive
+            name: TString::from_slice(&vm, "float"),
+            modname: TString::from_slice(&vm, "prelude"),
+            flags: TypeFlags::empty()
+        });
+
+        let mut prelude = vm.modules().prelude();
+        prelude.set_global(Symbol![float], ttype.into(), true).unwrap();
+        let mut builder = TTypeBuilder::new(vm);
+
+        builder.define_method(Symbol![fmt], TFunction::rustfunc(
+                prelude, Some("float.fmt"),
+                move |this: TFloat| {
+                    let vm = prelude.vm();
+                    TString::from_format(&vm, format_args!("{this}"))
+                }));
+
+        float_init_arithmetics(&mut builder);
+        float_init_unarys(&mut builder);
+        float_init_cmps(&mut builder);
+
+        ttype.base.descriptor = Some(builder.descriptor);
+
+        ttype
+    }
 }
 
 pub struct TList {
@@ -1581,13 +1718,73 @@ impl Atom for TList {
     }
 }
 
+impl TList {
+    pub(crate) fn initialize_type(vm: &VM) -> GCRef<TType> {
+        let mut ttype = vm.heap().allocate_atom(TType {
+            base: TObject::base(&vm, vm.types().query::<TType>()),
+            basety: Some(vm.types().query::<TObject>()),
+            basesize: 0, // primitive
+            name: TString::from_slice(&vm, "list"),
+            modname: TString::from_slice(&vm, "prelude"),
+            flags: TypeFlags::empty()
+        });
+
+        let mut prelude = vm.modules().prelude();
+        prelude.set_global(Symbol![list], ttype.into(), true).unwrap();
+        let mut builder = TTypeBuilder::new(vm);
+
+        builder.define_method(
+            Symbol![fmt],
+            TFunction::rustfunc(prelude, Some("list.fmt"), |this: GCRef<TList>| {
+                TString::from_format(&this.vm(), format_args!("{this}"))
+            }));
+
+        builder.define_method(
+            Symbol![push],
+            TFunction::rustfunc(prelude, Some("list.push"), GCRef::<TList>::push));
+
+        builder.define_method(
+            Symbol![get_index],
+            TFunction::rustfunc(prelude, Some("list.get_index"),
+            |this: GCRef<TList>, index: TInteger| this[index]));
+
+        builder.define_method(
+            Symbol![set_index],
+            TFunction::rustfunc(prelude, Some("list.set_index"),
+            |mut this: GCRef<TList>, index: TInteger, value: TValue| { this[index] = value; }));
+
+        builder.define_property(
+            Symbol![length],
+            TProperty::get(
+                prelude,
+                TFunction::rustfunc(prelude, None, |list: GCRef<TList>| unsafe {
+                    let ptr = list.as_ptr() as *mut u8;
+                    *(ptr.add(offset_of!(TList, length)) as *mut TInteger)
+                })));
+
+        ttype.base.descriptor = Some(builder.descriptor);
+
+        ttype
+    }
+}
+
+bitflags! {
+    #[derive(Debug)]
+    pub struct TypeFlags: u8 {
+        /// Allows a type to be extended
+        const OPEN     = 0b10;
+        /// Allows a type's instance to be altered
+        const VARIABLE = 0b01;
+    }
+}
+
 tobject! {
 pub struct TType {
     pub basety: Option<GCRef<TType>>,
     pub basesize: usize,
     pub name: GCRef<TString>,
     pub modname: GCRef<TString>,
-    pub variable: bool
+    pub flags: TypeFlags
 }
 }
 
@@ -1598,25 +1795,12 @@ impl GCRef<TType> {
             if GCRef::refrence_eq(current, needle) {
                 return true;
             }
-            let Some(base) = self.basety else {
+            let Some(base) = current.basety else {
                 break;
             };
             current = base;
         }
         false
-    }
-
-    pub fn define_property(&mut self, name: Symbol, property: GCRef<TProperty>) {
-        self.base.set_attribute(name, property.into());
-    }
-
-    pub fn define_method(&mut self, name: Symbol, mut method: GCRef<TFunction>) {
-        method.flags.insert(FunctionFlags::METHOD);
-        self.base.set_attribute(name, method.into());
-    }
-
-    pub fn define_static_method(&mut self, name: Symbol, method: GCRef<TFunction>) { 
-        self.base.set_attribute(name, method.into());
     }
 
     pub fn properties<F: FnMut(GCRef<TProperty>)>(&self, mut f: F) {
@@ -1640,7 +1824,7 @@ impl Typed for TType {
             basesize: std::mem::size_of::<Self>(),
             name: TString::from_slice(vm, "Type"),
             modname: TString::from_slice(vm, "prelude"),
-            variable: true
+            flags: TypeFlags::empty()
         });
 
         entry.insert(TypeId::of::<Self>(), ttype);
@@ -1650,26 +1834,29 @@ impl Typed for TType {
 
         let mut prelude = vm.modules().prelude();
         prelude.set_global(Symbol![Type], ttype.into(), true).unwrap();
+        let mut builder = TTypeBuilder::new(vm);
 
-        ttype.define_property(
+        builder.define_property(
             Symbol![base],
             TProperty::offset::<TType, Option<GCRef<TType>>>(prelude, Accessor::GET, offset_of!(TType, basety)));
-        ttype.define_property(
+        builder.define_property(
             Symbol![name],
             TProperty::offset::<TType, GCRef<TString>>(prelude, Accessor::GET, offset_of!(TType, name)));
-        ttype.define_property(
+        builder.define_property(
             Symbol![modname],
             TProperty::offset::<TType, GCRef<TString>>(prelude, Accessor::GET, offset_of!(TType, modname)));
-        ttype.define_method(
+        builder.define_method(
             Symbol![fmt],
-            TFunction::rustfunc(prelude, Some("type::fmt"), |this: GCRef<TType>| {
+            TFunction::rustfunc(prelude, Some("type.fmt"), |this: GCRef<TType>| {
                 TString::from_format(&this.vm(), format_args!("[type {}] {{}}", this.name))
             }));
-        ttype.define_static_method(
+        builder.define_static_method(
             Symbol![of],
-            TFunction::rustfunc(prelude, Some("type::of"), move |value: TValue| {
+            TFunction::rustfunc(prelude, Some("type.of"), move |value: TValue| {
                 value.ttype(&prelude.vm())
             }));
+
+        ttype.base.descriptor = Some(builder.descriptor);
 
         ttype
         
@@ -1680,7 +1867,56 @@ impl Typed for TType {
     }
 }
 
-bitflags::bitflags! {
+pub struct TTypeBuilder<'l> {
+    vm: &'l VM,
+    descriptor: GCRef<HashTable<(Symbol, TValue)>>
+}
+
+impl<'l> TTypeBuilder<'l> {
+    pub fn new(vm: &'l VM) -> Self {
+        Self {
+            vm,
+            descriptor: vm.heap().allocate_atom(Default::default())
+        }
+    }
+
+    pub fn vm(&self) -> &VM {
+        self.vm
+    }
+
+    pub fn build(self) -> GCRef<TType> {
+        todo!()
+    }
+
+    fn insert(&mut self, name: Symbol, value: TValue) {
+        match self.descriptor.entry(
+            name.hash,
+            |val| val.0 == name,
+            |val| val.0.hash) {
+            Entry::Occupied(mut entry) => {
+                *entry.get_mut() = (name, value);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert((name, value));
+            }
+        }
+    }
+
+    pub fn define_property(&mut self, name: Symbol, property: GCRef<TProperty>) {
+        self.insert(name, property.into());
+    }
+
+    pub fn define_method(&mut self, name: Symbol, mut method: GCRef<TFunction>) {
+        method.flags.insert(FunctionFlags::METHOD);
+        self.insert(name, method.into());
+    }
+
+    pub fn define_static_method(&mut self, name: Symbol, method: GCRef<TFunction>) { 
+        self.insert(name, method.into());
+    }
+}
+
+bitflags! {
     pub struct Accessor: u8 {
         const GET = 0b10;
         const SET = 0b01;
@@ -1743,19 +1979,22 @@ impl Typed for TProperty {
             basesize: std::mem::size_of::<Self>(),
             name: TString::from_slice(vm, "property"),
             modname: TString::from_slice(vm, "prelude"),
-            variable: false
+            flags: TypeFlags::empty()
         });
         entry.insert(TypeId::of::<Self>(), ttype);
 
+        let mut builder = TTypeBuilder::new(vm);
         let prelude = vm.modules().prelude();
 
-        ttype.define_property(
+        builder.define_property(
             Symbol![get],
             TProperty::offset::<Self, Option<GCRef<TFunction>>>(prelude, Accessor::GET, offset_of!(TProperty, get)));
 
-        ttype.define_property(
+        builder.define_property(
             Symbol![set],
             TProperty::offset::<Self, Option<GCRef<TFunction>>>(prelude, Accessor::GET, offset_of!(TProperty, set)));
+
+        ttype.base.descriptor = Some(builder.descriptor);
 
         ttype
     }
@@ -1794,27 +2033,28 @@ impl Typed for TFunction {
     fn initialize_entry(
             vm: &VM,
             entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
-        ) -> GCRef<TType> { 
+        ) -> GCRef<TType> {
         let mut ttype = vm.heap().allocate_atom(TType {
             base: TObject::base(vm, vm.types().query::<TType>()),
             basety: Some(vm.types().query::<TObject>()),
             basesize: std::mem::size_of::<Self>(),
             name: TString::from_slice(vm, "function"),
             modname: TString::from_slice(vm, "prelude"),
-            variable: false
+            flags: TypeFlags::empty()
         });
         entry.insert(TypeId::of::<Self>(), ttype);
 
         let mut prelude = vm.modules().prelude();
         prelude.set_global(Symbol![Function], ttype.into(), true).unwrap();
+        let mut builder = TTypeBuilder::new(vm);
 
-        ttype.define_property(
+        builder.define_property(
             Symbol![name],
             TProperty::offset::<Self, Option<GCRef<TString>>>(prelude, Accessor::GET, offset_of!(Self, name)));
 
-        ttype.define_method(
+        builder.define_method(
             Symbol![fmt],
-            TFunction::rustfunc(prelude, Some("function::fmt"), |this: GCRef<TFunction>| {
+            TFunction::rustfunc(prelude, Some("function.fmt"), |this: GCRef<TFunction>| {
                 let name = if let Some(name) = this.name {
                     name.as_slice()
                 } else {
@@ -1831,6 +2071,8 @@ impl Typed for TFunction {
                 }
                 TString::from_slice(&this.vm(), &string)
             }));
+
+        ttype.base.descriptor = Some(builder.descriptor);
 
         ttype
     }
@@ -1997,9 +2239,16 @@ where
 
     if resolve_to_attribute {
         if let Some(mut tobject) = value.query_tobject() {
-            if tobject.ty.variable {
+            if tobject.descriptor.is_some() {
+                let variable_type = tobject.ty.flags.contains(TypeFlags::VARIABLE);
+                let ttype = tobject.ty;
                 if let Some(found) = tobject.get_attribute(name, true) {
-                    return R::propcast(value, found, true, vm);
+                    let access = if variable_type {
+                        tlang::interop::AccessType::Writeable
+                    } else {
+                        tlang::interop::AccessType::ReadOnly
+                    };
+                    return R::propcast(value, found, access, vm);
                 }
             }
         }
@@ -2008,7 +2257,7 @@ where
     let mut current_ty = value.ttype(vm);
     while let Some(mut current) = current_ty {
         if let Some(val) = current.base.get_attribute(name, false) {
-            return R::propcast(value, val, false, vm)
+            return R::propcast(value, val, tlang::interop::AccessType::TypeChain, vm)
         }
         current_ty = current.basety.clone();
     }

@@ -187,21 +187,8 @@ impl TArgsBuffer {
         unsafe { Self(&mut *x) }
     }
 
-    pub fn gc_alloc<const SIZE: usize>(vm: &VM, args: [TValue; SIZE]) -> Self {
-        let mut list = TList::new_with_capacity(vm, SIZE + 1);
-        for val in args {
-            list.push(val);
-        }
-        list.push(list.into());
-        
-        unsafe {
-            Self(
-                std::slice::from_raw_parts_mut(
-                    list.data_ptr(),
-                    SIZE
-                )
-            )
-        }
+    pub fn len(&self) -> usize {
+        unsafe { &*self.0 }.len()
     }
 
     #[inline]

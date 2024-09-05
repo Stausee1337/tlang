@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, cell::OnceCell, mem::MaybeUninit};
 
-use crate::{memory::GCRef, tvalue::{TObject, TValue, TString, Typed, TInteger, TFunction, CallResult, TProperty, FunctionFlags, TBool}, vm::{VM, Eternal}, eval::TArgsBuffer};
+use crate::{memory::GCRef, tvalue::{TObject, TValue, TString, Typed, TInteger, TFunction, CallResult, TProperty, FunctionFlags, TBool}, vm::{VM, Eternal}, eval::TArgsBuffer, debug};
 
 
 pub struct TPolymorphicWrapper<T: TPolymorphicObject> {
@@ -351,11 +351,11 @@ impl<In: VMArgs, R: VMDowncast> From<GCRef<TFunction>> for TPolymorphicCallable<
 }
 
 pub trait VMPropertyCast {
-    fn propcast(this: TValue, value: &mut TValue, writeable: bool, vm: &VM) -> Self;
+    fn propcast(this: TValue, value: &mut TValue, writeable: AccessType, vm: &VM) -> Self;
 }
 
 impl<T: VMDowncast> VMPropertyCast for T {
-    fn propcast(_this: TValue, value: &mut TValue, _writeable: bool, vm: &VM) -> T {
+    fn propcast(_this: TValue, value: &mut TValue, _writeable: AccessType, vm: &VM) -> T {
         T::vmdowncast(*value, vm).unwrap()
     }
 }
@@ -400,11 +400,18 @@ impl<T: VMDowncast + VMCast + Copy + 'static> TPropertyAccess<T> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AccessType {
+    Writeable,
+    ReadOnly,
+    TypeChain
+}
+
 impl<T: VMDowncast + VMCast + Copy + 'static> VMPropertyCast for TPropertyAccess<T> {
-    fn propcast(this: TValue, value: &mut TValue, writeable: bool, vm: &VM) -> Self {
+    fn propcast(this: TValue, value: &mut TValue, access: AccessType, vm: &VM) -> Self {
         let kind = 'kind: {
-            if !writeable { // if properties are accessed as writeable, these are direct
-                            // accesses, and need to be resolved as attributes
+            if access == AccessType::TypeChain { // if properties are accessed as writeable, these are direct
+                                                 // accesses, and need to be resolved as attributes
                 if let Some(property) = GCRef::<TProperty>::vmdowncast(*value, vm) {
                     break 'kind AccessKind::Property {
                         property, this,
@@ -421,7 +428,7 @@ impl<T: VMDowncast + VMCast + Copy + 'static> VMPropertyCast for TPropertyAccess
             copy: OnceCell::new(),
             place: MaybeUninit::uninit(),
             write: false,
-            writeable
+            writeable: access == AccessType::Writeable
         }
     }
 }
