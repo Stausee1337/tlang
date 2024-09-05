@@ -28,6 +28,7 @@ pub enum Statement<'ast> {
     WhileLoop(WhileLoop<'ast>),
     Variable(Variable<'ast>),
     Function(Function<'ast>),
+    Record(Record<'ast>),
     Expression(Expression<'ast>),
 }
 
@@ -87,6 +88,35 @@ pub struct Function<'ast> {
     pub params: &'ast [&'ast Ident],
     pub body: &'ast [&'ast Statement<'ast>],
     pub span: Span
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Record<'ast> {
+    pub name: Ident,
+    pub base: Option<&'ast Expression<'ast>>,
+    pub body: &'ast [&'ast RecordItem<'ast>],
+    pub span: Span
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum RecordItem<'ast> {
+    Property(Property<'ast>),
+    Constant(Constant<'ast>),
+    Method(Function<'ast>),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Property<'ast> {
+    name: Ident,
+    init: Option<&'ast Expression<'ast>>,
+    span: Span,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Constant<'ast> {
+    name: Ident,
+    init: Option<&'ast Expression<'ast>>,
+    span: Span,
 }
 
 #[derive(Debug, Copy, Clone, GeneratorNode)]

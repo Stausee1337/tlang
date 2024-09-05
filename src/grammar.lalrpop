@@ -65,6 +65,7 @@ DelimitedStatement: parse::Statement<'ast> = {
     ForStatement,
     DefStatement,
     WhileStatement,
+    RecordStatement
 }
 
 IfStatement: parse::Statement<'ast> = {
@@ -109,14 +110,53 @@ WhileStatement: parse::Statement<'ast> = {
 }
 
 DefStatement: parse::Statement<'ast> = {
-    <start:@L> "def" <name:Ident> "(" <params:SeperatedList<Ident, ",">> ")" <end:@R> "{" <body:Body> "}" => parse::Statement::Function(parse::Function {
+    <fdef:FunctionDefinition> => parse::Statement::Function(fdef)
+}
+
+FunctionDefinition: parse::Function<'ast> = {
+    <start:@L> "def" <name:Ident> "(" <params:SeperatedList<Ident, ",">> ")" "{" <body:Body> "}" <end:@R> => parse::Function {
         name,
         params,
         body: ctx.slice(body),
         span: Span { start, end }
-    })
+    }
 }
 
+RecordStatement: parse::Statement<'ast> = {
+    <start:@L> "record" <name:Ident> <base:(":" <Expression>)?> "{"  <body:RecordBody> "}" <end:@R> => 
+        parse::Statement::Record(parse::Record {
+            name,
+            base: base.map(|b| ctx.alloc(b)),
+            body: ctx.slice(body),
+            span: Span { start, end }
+        })
+};
+
+RecordBody: Vec<&'ast parse::RecordItem<'ast>> = {
+    => vec![],
+    <mut statements:RecordBody> <next:RecordItem> => {
+        statements.push(ctx.alloc(next));
+        statements
+    },
+
+    <b:RecordBody> ";" => b,
+};
+
+RecordItem: parse::RecordItem<'ast> = {
+    <start:@L> "var" <name:Ident> <init:("=" <Expression>)?> ";" <end:@R> => 
+        parse::RecordItem::Property(parse::Property {
+            name,
+            init: init.map(|e| ctx.alloc(e)),
+            span: Span { start, end }
+        }),
+    <start:@L> "const" <name:Ident> <init:("=" <Expression>)?> ";" <end:@R> => 
+        parse::RecordItem::Constant(parse::Constant {
+            name,
+            init: init.map(|e| ctx.alloc(e)),
+            span: Span { start, end }
+        }),
+    <def:FunctionDefinition> => parse::RecordItem::Method(def),
+};
 
 AssignSuffix: (parse::AssignOp, parse::Expression<'ast>) = {
     <op:AssignOp> <expr:Expression> => (op, expr),

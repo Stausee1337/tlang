@@ -2,7 +2,7 @@ use hashbrown::HashMap;
 
 use crate::lexer::Span;
 use crate::memory::GCRef;
-use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop, Variable, Function, AssignExpr, Literal, Ident, BinaryExpr, UnaryExpr, CallExpr, AttributeExpr, SubscriptExpr, ListExpr, ObjectExpr, Lambda, Module, Statement, LiteralKind, Expression, BinaryOp, UnaryOp};
+use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop, Variable, Function, AssignExpr, Literal, Ident, BinaryExpr, UnaryExpr, CallExpr, AttributeExpr, SubscriptExpr, ListExpr, ObjectExpr, Lambda, Module, Statement, LiteralKind, Expression, BinaryOp, UnaryOp, Record};
 
 use crate::bytecode::{Operand, BytecodeGenerator, CodeLabel, RibKind};
 use crate::symbol::Symbol;
@@ -287,6 +287,12 @@ impl<'ast> GeneratorNode for Function<'ast> {
             Ok(())
         })?;
         Ok(None)
+    }
+}
+
+impl<'ast> GeneratorNode for Record<'ast> {
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        todo!()
     }
 }
 
