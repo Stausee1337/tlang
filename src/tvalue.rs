@@ -432,7 +432,7 @@ impl TObject {
     pub fn set_attribute(&mut self, name: Symbol, value: TValue) {
         let Some(descriptor) = &mut self.descriptor else {
             debug_assert!(!self.ty.flags.contains(TypeFlags::VARIABLE));
-            panic!("cannot set attribute on fixed type {:p} {:p}", std::ptr::addr_of!(self.ty), self.ty.as_ptr());
+            panic!("cannot set attribute on fixed type {:p} {:p}", std::ptr::addr_of!(self.ty), GCRef::as_ptr(self.ty));
         };
         match descriptor.entry(
             name.hash,
@@ -831,10 +831,8 @@ impl TString {
         }
         self.data.ptr as *mut u8
     }
-}
 
-impl GCRef<TString> {
-    pub fn get_iterator(self) -> GCRef<TStringIterator> {
+    pub fn get_iterator(self: GCRef<Self>) -> GCRef<TStringIterator> {
         TStringIterator::new(self)
     }
 }
@@ -917,14 +915,14 @@ impl TString {
 
         builder.define_method(
             Symbol![get_iterator],
-            TFunction::rustfunc(prelude, Some("string.get_iterator"), GCRef::<TString>::get_iterator));
+            TFunction::rustfunc(prelude, Some("string.get_iterator"), TString::get_iterator));
 
         builder.define_property(
             Symbol![length],
             TProperty::get(
                 prelude,
                 TFunction::rustfunc(prelude, None, |string: GCRef<TString>| unsafe {
-                    let ptr = string.as_ptr() as *mut u8;
+                    let ptr = GCRef::as_ptr(string) as *mut u8;
                     *(ptr.add(offset_of!(TString, length)) as *mut TInteger)
                 })));
 
@@ -954,8 +952,8 @@ impl TStringIterator {
     }
 }
 
-impl GCRef<TStringIterator> {
-    pub fn next(mut self) -> bool {
+impl TStringIterator {
+    pub fn next(mut self: GCRef<Self>) -> bool {
         struct InnerIterator<'a> {
             bytes: &'a [u8],
             offset: &'a mut usize
@@ -989,7 +987,7 @@ impl GCRef<TStringIterator> {
         true
     }
 
-    pub fn current(self) -> GCRef<TString> {
+    pub fn current(self: GCRef<Self>) -> GCRef<TString> {
         let Some(codepoint) = self.current_codepoint else {
             panic!("Iterator is not even initialized. Call next() first");
         };
@@ -1004,14 +1002,14 @@ impl Typed for TStringIterator {
 
         builder.define_method(
             Symbol![next],
-            TFunction::rustfunc(prelude, Some("StringIterator.next"), GCRef::<TStringIterator>::next));
+            TFunction::rustfunc(prelude, Some("StringIterator.next"), TStringIterator::next));
 
         builder.define_property(
             Symbol![current],
             TProperty::get(
                 prelude,
                 TFunction::rustfunc(prelude, Some("StringIterator.current"),
-                GCRef::<TStringIterator>::current)));
+                TStringIterator::current)));
 
         let mut ttype = vm.heap().allocate_atom(TType {
             base: TObject::base_with_descriptor(vm, vm.types().query::<TType>(), Some(builder.descriptor)),
@@ -1577,11 +1575,11 @@ impl TList {
 
 const AMORTIZED_LIST_INITIAL_CAP: usize = std::mem::size_of::<&()>();
 
-impl GCRef<TList> {
+impl TList {
     #[inline]
-    pub unsafe fn data_ptr(&mut self) -> *mut TValue {
+    pub unsafe fn data_ptr(&self) -> *mut TValue {
         if self.capacity < 0 {
-            return self.data.immediate.as_mut_ptr();
+            return self.data.immediate.as_ptr() as *mut _;
         }
         self.data.ptr
     }
@@ -1592,7 +1590,7 @@ impl GCRef<TList> {
     }
 
     #[inline]
-    fn index_access_helper<'a>(mut self, index: usize) -> &'a mut TValue {
+    fn index_access_helper<'a>(&self, index: usize) -> &'a mut TValue {
         if index >= self.length.as_usize().unwrap() {
             panic!("list out of bounds access");
         }
@@ -1613,7 +1611,7 @@ impl GCRef<TList> {
         }
     }
 
-    pub fn grow(mut self, new_capacity: usize) {
+    pub fn grow(mut self: GCRef<Self>, new_capacity: usize) {
         let mut new_capacity = (new_capacity).next_power_of_two();
         if new_capacity < AMORTIZED_LIST_INITIAL_CAP {
             new_capacity = AMORTIZED_LIST_INITIAL_CAP;
@@ -1642,7 +1640,7 @@ impl GCRef<TList> {
         }
     }
 
-    pub fn push(mut self, value: TValue) {
+    pub fn push(mut self: GCRef<Self>, value: TValue) {
         unsafe {
             let length = self.length.as_usize().unwrap();
             if length == self.capacity() {
@@ -1655,31 +1653,31 @@ impl GCRef<TList> {
     }
 }
 
-impl std::ops::Index<usize> for GCRef<TList> {
+impl std::ops::Index<usize> for TList {
     type Output = TValue;
 
     fn index(&self, index: usize) -> &Self::Output {
-        GCRef::index_access_helper::<'_>(*self, index)
+        Self::index_access_helper(self, index)
     }
 }
 
-impl std::ops::IndexMut<usize> for GCRef<TList> {
+impl std::ops::IndexMut<usize> for TList {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        GCRef::index_access_helper::<'_>(*self, index) 
+        Self::index_access_helper(self, index) 
     }
 }
 
-impl std::ops::Index<TInteger> for GCRef<TList> {
+impl std::ops::Index<TInteger> for TList {
     type Output = TValue;
 
     fn index(&self, index: TInteger) -> &Self::Output {
-        GCRef::index_access_helper::<'_>(*self, self.wrapping_index_translation(index))
+        Self::index_access_helper(self, self.wrapping_index_translation(index))
     }
 }
 
-impl std::ops::IndexMut<TInteger> for GCRef<TList> {
+impl std::ops::IndexMut<TInteger> for TList {
     fn index_mut(&mut self, index: TInteger) -> &mut Self::Output { 
-        GCRef::index_access_helper::<'_>(*self, self.wrapping_index_translation(index))
+        Self::index_access_helper(self, self.wrapping_index_translation(index))
     }
 }
 
@@ -1748,7 +1746,7 @@ impl TList {
 
         builder.define_method(
             Symbol![push],
-            TFunction::rustfunc(prelude, Some("list.push"), GCRef::<TList>::push));
+            TFunction::rustfunc(prelude, Some("list.push"), TList::push));
 
         builder.define_method(
             Symbol![get_index],
@@ -1765,7 +1763,7 @@ impl TList {
             TProperty::get(
                 prelude,
                 TFunction::rustfunc(prelude, None, |list: GCRef<TList>| unsafe {
-                    let ptr = list.as_ptr() as *mut u8;
+                    let ptr = GCRef::as_ptr(list) as *mut u8;
                     *(ptr.add(offset_of!(TList, length)) as *mut TInteger)
                 })));
 
@@ -1795,9 +1793,9 @@ pub struct TType {
 }
 }
 
-impl GCRef<TType> {
-    pub fn is_subclass(&self, needle: GCRef<TType>) -> bool {
-        let mut current = *self;
+impl TType {
+    pub fn is_subclass(self: GCRef<Self>, needle: GCRef<TType>) -> bool {
+        let mut current = self;
         loop {
             if GCRef::refrence_eq(current, needle) {
                 return true;
@@ -1810,7 +1808,7 @@ impl GCRef<TType> {
         false
     }
 
-    pub fn properties<F: FnMut(GCRef<TProperty>)>(&self, mut f: F) {
+    pub fn properties<F: FnMut(GCRef<TProperty>)>(self: GCRef<Self>, mut f: F) {
         let vm = self.vm();
         self.base.attributes(|attr| {
             if let Some(prop) = attr.query_object::<TProperty>(&vm) {
@@ -1954,8 +1952,8 @@ impl WeirdBuilder {
     }
 }
 
-impl GCRef<WeirdBuilder> {
-    pub fn declare(mut self, kind: i32, name: GCRef<TString>, value: TValue) {
+impl WeirdBuilder {
+    pub fn declare(mut self: GCRef<WeirdBuilder>, kind: i32, name: GCRef<TString>, value: TValue) {
         const METHOD: i32 = 0;
         const OFFSET_PROPERTY: i32 = 1;
         const CONSTANT: i32 = 2;
@@ -1980,11 +1978,11 @@ impl GCRef<WeirdBuilder> {
         };
     }
 
-    pub fn finalize(self) -> GCRef<TType> {
+    pub fn finalize(self: GCRef<WeirdBuilder>) -> GCRef<TType> {
         self.ttype
     }
 
-    fn insert(&mut self, name: Symbol, value: TValue) {
+    fn insert(mut self: GCRef<WeirdBuilder>, name: Symbol, value: TValue) {
         match self.descriptor.entry(
             name.hash,
             |val| val.0 == name,
@@ -2006,7 +2004,7 @@ impl Typed for WeirdBuilder {
 
         builder.define_method(
             Symbol![declare],
-            TFunction::rustfunc(prelude, Some("TypeBuilder.declare"), GCRef::<WeirdBuilder>::declare));
+            TFunction::rustfunc(prelude, Some("TypeBuilder.declare"), WeirdBuilder::declare));
 
         let mut ttype = vm.heap().allocate_atom(TType {
             base: TObject::base_with_descriptor(vm, vm.types().query::<TType>(), Some(builder.descriptor)),
@@ -2083,7 +2081,7 @@ impl TProperty {
                     .filter(|obj| obj.ty.is_subclass(ttype))
                     .unwrap();
                 unsafe {
-                    let ptr = object.as_ptr() as *mut u8;
+                    let ptr = GCRef::as_ptr(object) as *mut u8;
                     *(ptr.add(offset) as *mut TValue)
                 }
             }))
@@ -2096,7 +2094,7 @@ impl TProperty {
                     .filter(|obj| obj.ty.is_subclass(ttype))
                     .unwrap();
                 unsafe {
-                    let ptr = object.as_ptr() as *mut u8;
+                    let ptr = GCRef::as_ptr(object) as *mut u8;
                     *(ptr.add(offset) as *mut TValue) = value;
                 }
             }))
@@ -2285,12 +2283,12 @@ impl TFunction {
     }
 }
 
-impl GCRef<TFunction> {
+impl TFunction {
     #[inline(always)]
-    pub fn call(&self, arguments: TArgsBuffer) -> TValue {
+    pub fn call(self: GCRef<TFunction>, arguments: TArgsBuffer) -> TValue {
         match &self.kind {
             TFnKind::Function(code) =>
-                code.evaluate(StackFrame::new(*self, arguments)),
+                code.evaluate(StackFrame::new(self, arguments)),
             TFnKind::Nativefunc(n @ Nativefunc { traitfn, .. })=>
                 traitfn(n, self.module, arguments),
             TFnKind::BoundMethod(tfunction, base) => {
@@ -2303,7 +2301,7 @@ impl GCRef<TFunction> {
     }
 
     #[inline(always)]
-    pub fn fastcall<In, R>(&self, args: In) -> CallResult<In, R>
+    pub fn fastcall<In, R>(self: GCRef<TFunction>, args: In) -> CallResult<In, R>
     where
         In: std::marker::Tuple + 'static,
         R: 'static
@@ -2315,14 +2313,14 @@ impl GCRef<TFunction> {
         }
     }
 
-    pub fn bind(&self, this: TValue) -> GCRef<TFunction> {
+    pub fn bind(self: GCRef<TFunction>, this: TValue) -> GCRef<TFunction> {
         debug!("created method wrapper for function {:?}", self.name);
         let vm = self.vm();
         vm.heap().allocate_atom(TFunction {
             base: TObject::base(&vm, vm.types().query::<TFunction>()),
             name: self.name,
             module: self.module,
-            kind: TFnKind::BoundMethod(*self, this),
+            kind: TFnKind::BoundMethod(self, this),
             flags: FunctionFlags::empty()
         })
     }

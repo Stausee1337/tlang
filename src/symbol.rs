@@ -95,10 +95,8 @@ impl SymbolCache {
         }
         panic!("tried to get unknown symbol");
     }
-}
 
-impl GCRef<SymbolCache> {
-    pub fn intern_slice(&mut self, str: &str) -> Symbol {
+    pub fn intern_slice(mut self: GCRef<Self>, str: &str) -> Symbol {
         let vm = self.vm();
         if let Some(sym) = self.cache_find(str) {
             return sym;

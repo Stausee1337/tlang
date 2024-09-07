@@ -7,7 +7,7 @@ use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop
 
 use crate::bytecode::{Operand, BytecodeGenerator, CodeLabel, RibKind};
 use crate::symbol::Symbol;
-use crate::tvalue::{TFunction, TValue, TString, Accessor, FunctionFlags};
+use crate::tvalue::{TFunction, TString, Accessor, FunctionFlags};
 
 #[derive(Debug)]
 pub enum CodegenErr {
@@ -353,7 +353,7 @@ impl<'ast> GeneratorNode for Record<'ast> {
             let name = vm.symbols().get(symbol);
             let entry = items
                 .raw_entry_mut()
-                .from_hash(symbol.hash, |key| std::ptr::addr_eq(key.as_ptr(), name.as_ptr()));
+                .from_hash(symbol.hash, |key| std::ptr::addr_eq(GCRef::as_ptr(*key), GCRef::as_ptr(name)));
             match entry {
                 RawEntryMut::Occupied(mut entry) => {
                     entry.insert(decl);

@@ -1,4 +1,4 @@
-use std::{any::TypeId, sync::OnceLock, mem::{offset_of, ManuallyDrop}, ptr::NonNull, ops::Deref};
+use std::{any::TypeId, sync::OnceLock, mem::ManuallyDrop, ptr::NonNull, ops::Deref};
 
 use hashbrown::hash_map::RawEntryMut;
 
@@ -168,24 +168,24 @@ impl Primitives {
     }
 }
 
-impl GCRef<Primitives> {
-    pub fn float_type(self) -> GCRef<TType> {
+impl Primitives {
+    pub fn float_type(self: GCRef<Self>) -> GCRef<TType> {
         *self.float.get_or_init(|| TFloat::initialize_type(&self.vm()))
     }
 
-    pub fn int_type(self) -> GCRef<TType> {
+    pub fn int_type(self: GCRef<Self>) -> GCRef<TType> {
         *self.int.get_or_init(|| TInteger::initialize_type(&self.vm()))
     }
 
-    pub fn bool_type(self) -> GCRef<TType> {
+    pub fn bool_type(self: GCRef<Self>) -> GCRef<TType> {
         *self.bool.get_or_init(|| TBool::initialize_type(&self.vm()))
     }
 
-    pub fn string_type(&self) -> GCRef<TType> {
+    pub fn string_type(self: GCRef<Self>) -> GCRef<TType> {
         *self.string.get_or_init(|| TString::initialize_type(&self.vm()))
     }
 
-    pub fn list_type(self) -> GCRef<TType> {
+    pub fn list_type(self: GCRef<Self>) -> GCRef<TType> {
         *self.list.get_or_init(|| TList::initialize_type(&self.vm()))
     }
 }
@@ -214,8 +214,8 @@ impl TModules {
     }
 }
 
-impl GCRef<TModules> {
-    pub fn prelude(&self) -> GCRef<TModule> {
+impl TModules {
+    pub fn prelude(self: GCRef<Self>) -> GCRef<TModule> {
         *self.prelude.get_or_init(|| {
             let vm = self.vm();
             let module = TModule::new(&vm, TString::from_slice(&vm, "prelude"));
@@ -224,11 +224,11 @@ impl GCRef<TModules> {
         })
     }
 
-    pub fn get(&mut self, key: &str) -> Option<GCRef<TModule>> {
+    pub fn get(mut self: GCRef<Self>, key: &str) -> Option<GCRef<TModule>> {
         self.imported.get(key).map(|module| *module)
     }
 
-    pub fn insert(&mut self, key: &str, module: GCRef<TModule>) {
+    pub fn insert(mut self: GCRef<Self>, key: &str, module: GCRef<TModule>) {
         match self.imported
             .raw_entry_mut()
             .from_key(key) {
@@ -257,12 +257,9 @@ impl RustTypeInterner {
     fn new() -> Self {
         RustTypeInterner(Default::default())
     }    
-}
-
-impl GCRef<RustTypeInterner> {
 
     #[inline(never)]
-    pub fn query<T: Typed>(&mut self) -> GCRef<TType> {
+    pub fn query<T: Typed>(mut self: GCRef<Self>) -> GCRef<TType> {
         let vm = self.vm();
 
         let key = TypeId::of::<T>();
@@ -323,9 +320,7 @@ impl TModule {
     pub fn set_source(&mut self, source: Option<GCRef<TString>>) {
         self.source = source;
     }
-}
 
-impl GCRef<TModule> {
     pub fn set_global(&mut self, name: Symbol, value: TValue, constant: bool) -> Result<(), GlobalErr> {
         let Err(..) = self.get_global(name) else {
             return Err(GlobalErr::Redeclared(name));
@@ -365,7 +360,7 @@ impl GCRef<TModule> {
         self.table.iter().map(|entry| (entry.0, entry.1))
     }
 
-    pub fn import(&mut self, path: &str, what: Option<&mut dyn Iterator<Item = Symbol>>) {
+    pub fn import(mut self: GCRef<Self>, path: &str, what: Option<&mut dyn Iterator<Item = Symbol>>) {
         // FIXME: call into import logic here to resolve
         // file bound modules as well
         let Some(mut module) = self.vm().modules().get(path) else {

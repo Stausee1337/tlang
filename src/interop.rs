@@ -29,7 +29,7 @@ impl<T: TPolymorphicObject> VMDowncast for TPolymorphicWrapper<T> {
 
 impl<T: TPolymorphicObject> TPolymorphicWrapper<T> {
     pub(crate) unsafe fn raw_access<P: Sized>(&self, offset: usize) -> *mut P {
-        let ptr = self.object.as_ptr() as *mut u8;
+        let ptr = GCRef::as_ptr(self.object) as *mut u8;
         ptr.add(offset) as *mut P
     }
 }

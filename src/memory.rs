@@ -790,19 +790,19 @@ impl<T> GCRef<T> {
         GCRef::from_raw(std::ptr::null_mut())
     }
 
-    pub const fn as_ptr(&self) -> *mut T {
-        self.0.as_ptr()
+    pub const fn as_ptr(this: Self) -> *mut T {
+        this.0.as_ptr()
     }
 
-    pub fn heap(&self) -> &Heap {
+    pub fn heap<'vm>(this: Self) -> &'vm Heap {
         unsafe {
-            let block = HeapBlock::from_allocation(self.as_ptr());
+            let block = HeapBlock::from_allocation(GCRef::as_ptr(this));
             &*block.heap
         }
     }
 
     pub fn vm(&self) -> Eternal<VM> {
-        self.heap().vm().clone()
+        GCRef::heap(*self).vm().clone()
     }
 
     pub fn refrence_eq(this: Self, other: Self) -> bool {
@@ -810,14 +810,14 @@ impl<T> GCRef<T> {
     }
 
     unsafe fn head(this: Self) -> *mut AllocHead {
-        this.as_ptr().byte_sub(
+        GCRef::as_ptr(this).byte_sub(
             std::mem::size_of::<AtomTrait>()
             + std::mem::size_of::<AllocHead>()
         ) as *mut AllocHead
     }
 
     unsafe fn atom<'a>(this: Self) -> &'a AtomTrait {
-        &*(this.as_ptr().byte_sub(std::mem::size_of::<AtomTrait>()) as *const AtomTrait)
+        &*(GCRef::as_ptr(this).byte_sub(std::mem::size_of::<AtomTrait>()) as *const AtomTrait)
     }
 }
 

@@ -512,7 +512,7 @@ impl TRawCode {
                     initializer(weird_builder);
 
                     let newtype = weird_builder.finalize();
-                    module.set_global(name, newtype.into(), true);
+                    module.set_global(name, newtype.into(), true).unwrap();
                 }
 
                 OpCode::Error => {

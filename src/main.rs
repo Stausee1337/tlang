@@ -6,7 +6,7 @@
 #![feature(fmt_internals)]
 #![feature(ptr_sub_ptr)]
 #![feature(slice_ptr_len)]
-#![feature(naked_functions)]
+#![feature(arbitrary_self_types)]
 
 use std::{env, fs::File, io::{Read, self}, path::Path, process::ExitCode, time::Instant};
 
