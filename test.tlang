@@ -76,5 +76,6 @@ record User {
     }
 }
 
-print(User);
+// print(User.firstname.get(print));
+print(Object.new(Object));
 

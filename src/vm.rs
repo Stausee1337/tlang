@@ -148,22 +148,35 @@ fn init_prelude_functions(vm: &VM) {
     prelude.set_global(Symbol![print], printfn.into(), true).unwrap();
 }
 
+type Initializer = fn(vm: &VM) -> TValue;
+
 pub struct Primitives {
     float: OnceLock<GCRef<TType>>,
     int: OnceLock<GCRef<TType>>,
     bool: OnceLock<GCRef<TType>>,
     string: OnceLock<GCRef<TType>>,
-    list: OnceLock<GCRef<TType>>
+    list: OnceLock<GCRef<TType>>,
+
+    zeroed_initializers: [Initializer; 5]
 }
 
 impl Primitives {
     fn lazy() -> Self {
+        let zeroed_initializers: [Initializer; 5] = [
+            |_vm| TFloat::from_float(0.0).into(),
+            |_vm| TInteger::from_int32(0).into(),
+            |_vm| TBool::from_bool(false).into(),
+            |vm| TString::from_slice(vm, "").into(),
+            |vm| TList::new_empty(vm).into(),
+        ];
         Primitives {
             float: OnceLock::new(),
             int: OnceLock::new(),
             string: OnceLock::new(),
             bool: OnceLock::new(),
-            list: OnceLock::new()
+            list: OnceLock::new(),
+
+            zeroed_initializers
         }
     }
 }
@@ -187,6 +200,25 @@ impl Primitives {
 
     pub fn list_type(self: GCRef<Self>) -> GCRef<TType> {
         *self.list.get_or_init(|| TList::initialize_type(&self.vm()))
+    }
+
+    pub fn zeroed(self: GCRef<Self>, ptype: GCRef<TType>) -> TValue {
+        let list = [
+            self.float_type(),
+            self.int_type(),
+            self.bool_type(),
+            self.string_type(),
+            self.list_type(),
+        ];
+
+        for (idx, ty) in list.into_iter().enumerate() {
+            if GCRef::refrence_eq(ty, ptype) {
+                return self.zeroed_initializers[idx](&self.vm());
+            }
+        }
+
+        eprintln!("{} is not a primitive, yet it as a basesize < sizeof(TObject)", ptype.name);
+        std::process::abort();
     }
 }
 

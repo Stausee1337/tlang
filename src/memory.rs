@@ -794,7 +794,7 @@ impl<T> GCRef<T> {
         this.0.as_ptr()
     }
 
-    pub fn heap<'vm>(this: Self) -> &'vm Heap {
+    pub fn heap<'a>(this: Self) -> &'a Heap {
         unsafe {
             let block = HeapBlock::from_allocation(GCRef::as_ptr(this));
             &*block.heap

@@ -452,6 +452,17 @@ impl TObject {
             descriptor.iter().for_each(|val| f(val.1));
         }
     }
+
+    pub fn alloc(ttype: GCRef<TType>) -> TValue {
+        if ttype.flags.contains(TypeFlags::ABSTRACT) {
+            panic!("cannot instanciate abstract type {}", ttype.name);
+        }
+        let vm = ttype.vm();
+        if ttype.basesize < std::mem::size_of::<TObject>() {
+            return vm.primitives().zeroed(ttype);
+        }
+        todo!()
+    }
 }
 
 impl Typed for TObject {
@@ -476,19 +487,19 @@ impl Typed for TObject {
         prelude.set_global(Symbol![Object], ttype.into(), true).unwrap();
 
         builder.define_method(Symbol![eq], TFunction::rustfunc(
-                prelude, Some("object.eq"), |this: TValue, other: TValue| {
+                prelude, Some("Object.eq"), |this: TValue, other: TValue| {
                     TBool::from_bool(this.encoded() == other.encoded())
                 }));
 
         builder.define_method(Symbol![ne], TFunction::rustfunc(
-                prelude, Some("object.ne"), move |this: TValue, other: TValue| {
+                prelude, Some("Object.ne"), move |this: TValue, other: TValue| {
                     let vm = ttype.vm();
                     let eq: TBool = tcall!(&vm, TValue::eq(this, other));
                     !eq
                 }));
 
         builder.define_method(Symbol![fmt], TFunction::rustfunc(
-                prelude, Some("object.fmt"), move |this: TValue| {
+                prelude, Some("Object.fmt"), move |this: TValue| {
                     let vm = ttype.vm();
                     let ty = this.ttype(&vm).unwrap();
 
@@ -500,6 +511,10 @@ impl Typed for TObject {
 
                     TString::from_format(&vm, format_args!("{} {{}}", ty.name))
                 }));
+        
+        builder.define_static_method(Symbol![new], TFunction::rustfunc(
+                prelude, Some("Object.new"), TObject::alloc
+            ));
 
         ttype.base.descriptor = Some(builder.descriptor);
 
@@ -1777,9 +1792,12 @@ bitflags! {
     #[derive(Debug)]
     pub struct TypeFlags: u8 {
         /// Allows a type to be extended
-        const OPEN     = 0b10;
+        const OPEN     = 0b100;
+        /// Makes a type uninstanciatable.
+        /// specifically, it makes `Object.new` refuse to allocate the type
+        const ABSTRACT = 0b010;
         /// Allows a type's instance to be altered
-        const VARIABLE = 0b01;
+        const VARIABLE = 0b001;
     }
 }
 
@@ -2079,7 +2097,7 @@ impl TProperty {
             Some(TFunction::rustfunc(module, None, move |this: TValue| {
                 let object = this.query_object::<TObject>(&ttype.vm())
                     .filter(|obj| obj.ty.is_subclass(ttype))
-                    .unwrap();
+                    .expect(&format!("expected instance of type {}", ttype.name));
                 unsafe {
                     let ptr = GCRef::as_ptr(object) as *mut u8;
                     *(ptr.add(offset) as *mut TValue)
@@ -2088,11 +2106,12 @@ impl TProperty {
         } else {
             None
         };
+
         let set = if accessor.contains(Accessor::SET) {
             Some(TFunction::rustfunc(module, None, move |this: TValue, value: TValue| {
                 let object = this.query_object::<TObject>(&ttype.vm())
                     .filter(|obj| obj.ty.is_subclass(ttype))
-                    .unwrap();
+                    .expect(&format!("expected instance of type {}", ttype.name));
                 unsafe {
                     let ptr = GCRef::as_ptr(object) as *mut u8;
                     *(ptr.add(offset) as *mut TValue) = value;
