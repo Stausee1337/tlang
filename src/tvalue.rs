@@ -3,7 +3,7 @@ use std::{mem::{transmute, offset_of}, fmt::{Display, Write}, alloc::Layout, any
 
 use ahash::AHasher;
 use allocator_api2::alloc::Global;
-use bitflags::bitflags;
+use bitflags::{bitflags, Flags};
 use hashbrown::{hash_map::RawVacantEntryMut, HashTable, hash_table::Entry};
 use tlang_macros::tcall;
 
@@ -1037,6 +1037,13 @@ enum IntegerKind {
 pub struct TInteger(IntegerKind);
 
 impl TInteger {
+    pub fn as_i32(&self) -> Option<i32> {
+        match self.0 {
+            IntegerKind::Int32(int) => Some(int),
+            IntegerKind::Bigint(bigint) => bigint::try_as_i32(bigint)
+        }
+    }
+
     pub fn as_usize(&self) -> Option<usize> {
         match self.0 {
             IntegerKind::Int32(int) => usize::try_from(int).ok(),
@@ -1916,6 +1923,112 @@ impl<'l> TTypeBuilder<'l> {
     }
 }
 
+tobject! {
+pub struct WeirdBuilder {
+    pub module: GCRef<TModule>,
+    ttype: GCRef<TType>,
+    descriptor: GCRef<HashTable<(Symbol, TValue)>>
+}
+}
+
+impl WeirdBuilder {
+    pub fn new(module: GCRef<TModule>, name: GCRef<TString>, base: GCRef<TType>) -> GCRef<WeirdBuilder> {
+        let vm = module.vm();
+        let descriptor = vm.heap().allocate_atom(Default::default());
+        if !base.flags.contains(TypeFlags::OPEN) {
+            panic!("cannot extend closed type {}", base.name);
+        }
+        let ttype = vm.heap().allocate_atom(TType {
+            base: TObject::base_with_descriptor(&vm, vm.types().query::<TType>(), Some(descriptor)),
+            basety: Some(base),
+            basesize: base.basesize,
+            name,
+            modname: module.name,
+            flags: TypeFlags::empty()
+        });
+        vm.heap().allocate_atom(WeirdBuilder {
+            base: TObject::base(&vm, vm.types().query::<Self>()),
+            module, ttype,
+            descriptor
+        })
+    }
+}
+
+impl GCRef<WeirdBuilder> {
+    pub fn declare(mut self, kind: i32, name: GCRef<TString>, value: TValue) {
+        const METHOD: i32 = 0;
+        const OFFSET_PROPERTY: i32 = 1;
+        const CONSTANT: i32 = 2;
+
+        let name = self.vm().symbols().intern(name);
+
+        let value = match kind {
+            METHOD =>
+                self.insert(name, value),
+            OFFSET_PROPERTY => {
+                let accessor = value.query_integer()
+                    .unwrap()
+                    .as_usize()
+                    .unwrap();
+                let accessor = Accessor::from_bits(accessor as u8).unwrap();
+                TProperty::offset2(self, name, accessor);
+            }
+            CONSTANT =>
+                self.insert(name, value),
+            _ =>
+                panic!("Invalid kind"),
+        };
+    }
+
+    pub fn finalize(self) -> GCRef<TType> {
+        self.ttype
+    }
+
+    fn insert(&mut self, name: Symbol, value: TValue) {
+        match self.descriptor.entry(
+            name.hash,
+            |val| val.0 == name,
+            |val| val.0.hash) {
+            Entry::Occupied(mut entry) => {
+                *entry.get_mut() = (name, value);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert((name, value));
+            }
+        }
+    }
+}
+
+impl Typed for WeirdBuilder {
+    fn initialize(vm: &VM) -> GCRef<TType> {
+        let prelude = vm.modules().prelude();
+        let mut builder = TTypeBuilder::new(vm);
+
+        builder.define_method(
+            Symbol![declare],
+            TFunction::rustfunc(prelude, Some("TypeBuilder.declare"), GCRef::<WeirdBuilder>::declare));
+
+        let mut ttype = vm.heap().allocate_atom(TType {
+            base: TObject::base_with_descriptor(vm, vm.types().query::<TType>(), Some(builder.descriptor)),
+            basety: Some(vm.types().query::<TObject>()),
+            basesize: std::mem::size_of::<Self>(),
+            name: TString::from_slice(&vm, "TypeBuilder"),
+            modname: TString::from_slice(&vm, "prelude"),
+            flags: TypeFlags::empty()
+        });
+
+        ttype
+    }
+
+    fn visit_override(&self, visitor: &mut Visitor)
+        where
+            Self: TPolymorphicObject {
+        visitor.feed(self.module); 
+        visitor.feed(self.descriptor); 
+        visitor.feed(self.ttype); 
+    }
+}
+
 bitflags! {
     pub struct Accessor: u8 {
         const GET = 0b10;
@@ -1956,6 +2069,48 @@ impl TProperty {
             base: TObject::base(&vm, vm.types().query::<Self>()),
             get, set
         })
+    }
+
+    pub fn offset2<'a>(mut builder: GCRef<WeirdBuilder>, name: Symbol, accessor: Accessor) {
+        let module = builder.module;
+        let mut ttype = builder.ttype;
+        let offset = ttype.basesize;
+        ttype.basesize += std::mem::size_of::<TValue>();
+
+        let get = if accessor.contains(Accessor::GET) {
+            Some(TFunction::rustfunc(module, None, move |this: TValue| {
+                let object = this.query_object::<TObject>(&ttype.vm())
+                    .filter(|obj| obj.ty.is_subclass(ttype))
+                    .unwrap();
+                unsafe {
+                    let ptr = object.as_ptr() as *mut u8;
+                    *(ptr.add(offset) as *mut TValue)
+                }
+            }))
+        } else {
+            None
+        };
+        let set = if accessor.contains(Accessor::SET) {
+            Some(TFunction::rustfunc(module, None, move |this: TValue, value: TValue| {
+                let object = this.query_object::<TObject>(&ttype.vm())
+                    .filter(|obj| obj.ty.is_subclass(ttype))
+                    .unwrap();
+                unsafe {
+                    let ptr = object.as_ptr() as *mut u8;
+                    *(ptr.add(offset) as *mut TValue) = value;
+                }
+            }))
+        } else {
+            None
+        };
+
+        let vm = module.vm();
+        let property = vm.heap().allocate_atom(Self {
+            base: TObject::base(&vm, vm.types().query::<Self>()),
+            get, set
+        });
+
+        builder.insert(name, property.into());
     }
 
     pub fn get(module: GCRef<TModule>, get: GCRef<TFunction>) -> GCRef<Self> {
@@ -2229,20 +2384,27 @@ where
     unerased_func.call(args)
 }
 
+bitflags! {
+    pub struct ResolveFlags: u8 {
+        const ATTRIBUTE = 0b10;
+        const INSERT    = 0b01;
+    }
+}
+
 #[inline(always)]
-pub fn resolve_by_symbol<'v, T, R>(vm: &VM, name: Symbol, value: T, resolve_to_attribute: bool) -> R
+pub fn resolve_by_symbol<'v, T, R>(vm: &VM, name: Symbol, value: T, flags: ResolveFlags) -> R
 where
     T: VMCast,
     R: tlang::interop::VMPropertyCast
 {
     let value = value.vmcast(vm);
 
-    if resolve_to_attribute {
+    if flags.contains(ResolveFlags::ATTRIBUTE) {
         if let Some(mut tobject) = value.query_tobject() {
             if tobject.descriptor.is_some() {
                 let variable_type = tobject.ty.flags.contains(TypeFlags::VARIABLE);
                 let ttype = tobject.ty;
-                if let Some(found) = tobject.get_attribute(name, true) {
+                if let Some(found) = tobject.get_attribute(name, variable_type && flags.contains(ResolveFlags::INSERT)) {
                     let access = if variable_type {
                         tlang::interop::AccessType::Writeable
                     } else {

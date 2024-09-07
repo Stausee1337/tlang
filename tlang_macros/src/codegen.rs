@@ -627,8 +627,18 @@ mod symbol {
     }
 }
 
+pub fn parser(input: syn::parse::ParseStream) -> syn::Result<Ident> {
+    input.step(|cursor| {
+        if let Some((ident, rest)) = cursor.ident() {
+            Ok((ident, rest))
+        } else {
+            Err(cursor.error("expected identifier"))
+        }
+    })
+}
+
 pub fn generate_symbol(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
-    let name: Ident = syn::parse2(token_stream)?;
+    let name = parser.parse2(token_stream)?;
     let name = name.to_string();
     let hash = symbol::mkhash(&name);
     let id = symbol::mkid(&name);
@@ -716,7 +726,7 @@ pub fn generate_tcall(token_stream: TokenStream) -> Result<TokenStream, syn::Err
             let value: #ty = #self_;
             // TODO: intern symbol #sym for messages in error resolval
             let resolved_func: tlang::interop::TPolymorphicCallable<_, _> = tlang::tvalue::resolve_by_symbol(
-                #vm, tlang_macros::Symbol![#sym], value, false);
+                #vm, tlang_macros::Symbol![#sym], value, tlang::tvalue::ResolveFlags::empty());
             if resolved_func.is_method() {
                 resolved_func(value, #arguments)
             } else {
@@ -785,7 +795,7 @@ pub fn generate_tget(token_stream: TokenStream) -> Result<TokenStream, syn::Erro
             let value: #ty = #self_;
             // TODO: intern symbol #sym for messages in error resolval
             let mut resolved_access: tlang::interop::TPropertyAccess<_> = tlang::tvalue::resolve_by_symbol(
-                #vm, tlang_macros::Symbol![#sym], value, true);
+                #vm, tlang_macros::Symbol![#sym], value, tlang::tvalue::ResolveFlags::ATTRIBUTE | tlang::tvalue::ResolveFlags::INSERT);
             resolved_access
         }
     })

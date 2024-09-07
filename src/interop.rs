@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, cell::OnceCell, mem::MaybeUninit};
+use std::{marker::PhantomData, cell::OnceCell, mem::MaybeUninit, backtrace::Backtrace};
 
 use crate::{memory::GCRef, tvalue::{TObject, TValue, TString, Typed, TInteger, TFunction, CallResult, TProperty, FunctionFlags, TBool}, vm::{VM, Eternal}, eval::TArgsBuffer, debug};
 
@@ -99,6 +99,15 @@ impl<T: VMCast> VMCast for Option<T> {
 impl VMDowncast for TValue {
     fn vmdowncast(value: TValue, _vm: &VM) -> Option<Self> {
         Some(value)
+    }
+}
+
+impl VMDowncast for i32 {
+    fn vmdowncast(value: TValue, vm: &VM) -> Option<Self> {
+        if let Some(int) = value.query_integer() {
+            return int.as_i32();
+        }
+        None
     }
 }
 
@@ -258,6 +267,38 @@ where
     fn encode_into(self, vm: &VM, slice: &mut [TValue]) { 
         slice[0] = self.0.vmcast(vm);
         slice[1] = self.1.vmcast(vm);
+        slice[2] = self.2.vmcast(vm);
+    }
+}
+
+impl<T1, T2, T3, T4> VMArgs for (T1, T2, T3, T4)
+where
+    T1: VMDowncast + VMCast,
+    T2: VMDowncast + VMCast,
+    T3: VMDowncast + VMCast,
+    T4: VMDowncast + VMCast
+{
+    const SIZE: usize = 3;
+
+    fn try_decode(vm: &VM, args: TArgsBuffer) -> Option<Self> {  
+        let mut iter = args.into_iter(4, false);
+        let arg1 = iter.next()?;
+        let arg2 = iter.next()?;
+        let arg3 = iter.next()?;
+        let arg4 = iter.next()?;
+        Some((
+            T1::vmdowncast(arg1, vm)?,
+            T2::vmdowncast(arg2, vm)?,
+            T3::vmdowncast(arg3, vm)?,
+            T4::vmdowncast(arg4, vm)?,
+        ))
+    }
+
+    fn encode_into(self, vm: &VM, slice: &mut [TValue]) { 
+        slice[0] = self.0.vmcast(vm);
+        slice[1] = self.1.vmcast(vm);
+        slice[2] = self.2.vmcast(vm);
+        slice[3] = self.3.vmcast(vm);
     }
 }
 

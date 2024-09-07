@@ -7,9 +7,9 @@ use crate::{
         CodeStream, OpCode, Operand, TRawCode, OperandList
     },
     memory::GCRef,
-    tvalue::{TBool, TFunction, TInteger, TValue, resolve_by_symbol, TList, TObject},
-    interop::TPropertyAccess,
-    vm::{TModule, VM}, debug
+    tvalue::{TBool, TFunction, TInteger, TValue, resolve_by_symbol, TList, TObject, WeirdBuilder, ResolveFlags},
+    interop::{TPropertyAccess, VMDowncast, TPolymorphicCallable},
+    vm::{TModule, VM}
 };
 
 macro_rules! get_stack_ptr {
@@ -355,7 +355,8 @@ impl TRawCode {
                 OpCode::GetAttribute => {
                     let vm = frame.vm;
                     decode!(stream, frame, GetAttribute { &base, attribute, &mut dst });
-                    let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base, true);
+                    let access: TPropertyAccess<TValue> = resolve_by_symbol(
+                        vm, attribute, base, ResolveFlags::ATTRIBUTE);
                     if let Some(tfunction) = access.as_method() {
                         *dst = tfunction.bind(base).into();
                     } else {
@@ -366,7 +367,8 @@ impl TRawCode {
                 OpCode::SetAttribute => {
                     let vm = frame.vm;
                     decode!(stream, frame, SetAttribute { &base, attribute, &src });
-                    let mut access: TPropertyAccess<TValue> = resolve_by_symbol(vm, attribute, base, true);
+                    let mut access: TPropertyAccess<TValue> = resolve_by_symbol(
+                        vm, attribute, base, ResolveFlags::ATTRIBUTE | ResolveFlags::INSERT);
                     *access = src;
                 }
 
@@ -436,7 +438,7 @@ impl TRawCode {
                     let vm = frame.vm;
                     decode!(stream, frame, MethodCall { arguments, &this, callee, &mut dst });
 
-                    let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, callee, this, true);
+                    let access: TPropertyAccess<TValue> = resolve_by_symbol(vm, callee, this, ResolveFlags::ATTRIBUTE);
                     if let Some(callee) = access.as_method() {
                         frame.buffer()[0] = this;
                         arguments.decode_into(1, frame);
@@ -488,6 +490,29 @@ impl TRawCode {
                     let vm = frame.vm;
                     decode!(stream, frame, MakeAnonObject { fields, &mut dst });
                     *dst = TObject::new_with_capacity(vm, fields as usize).into();
+                }
+
+                OpCode::MakeGlobalType => {
+                    let vm = frame.vm;
+                    let mut module = frame.module();
+                    decode!(stream, frame, MakeGlobalType { name, &base, &initializer });
+                    let base = if base.is_null() {
+                        vm.types().query::<TObject>()
+                    } else {
+                        VMDowncast::vmdowncast(base, vm).unwrap()
+                    };
+
+                    let weird_builder = WeirdBuilder::new(
+                        module,
+                        vm.symbols().get(name),
+                        base,
+                    );
+
+                    let initializer: TPolymorphicCallable<_, ()> = VMDowncast::vmdowncast(initializer, vm).unwrap();
+                    initializer(weird_builder);
+
+                    let newtype = weird_builder.finalize();
+                    module.set_global(name, newtype.into(), true);
                 }
 
                 OpCode::Error => {

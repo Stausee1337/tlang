@@ -95,6 +95,10 @@ pub fn smart_to_f64<'a>(_bigint: impl Into<SignedSlice<'a>>) -> f64 {
     todo!()
 }
 
+pub fn try_as_i32<'a>(_bigint: impl Into<SignedSlice<'a>>) -> Option<i32> {
+    todo!()
+}
+
 pub fn try_as_usize<'a>(_bigint: impl Into<SignedSlice<'a>>) -> Option<usize> {
     todo!()
 }

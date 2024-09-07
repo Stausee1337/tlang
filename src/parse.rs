@@ -107,16 +107,16 @@ pub enum RecordItem<'ast> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Property<'ast> {
-    name: Ident,
-    init: Option<&'ast Expression<'ast>>,
-    span: Span,
+    pub name: Ident,
+    pub init: Option<&'ast Expression<'ast>>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Constant<'ast> {
-    name: Ident,
-    init: Option<&'ast Expression<'ast>>,
-    span: Span,
+    pub name: Ident,
+    pub init: Option<&'ast Expression<'ast>>,
+    pub span: Span,
 }
 
 #[derive(Debug, Copy, Clone, GeneratorNode)]

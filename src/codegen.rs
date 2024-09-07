@@ -1,12 +1,13 @@
 use hashbrown::HashMap;
+use hashbrown::hash_map::RawEntryMut;
 
 use crate::lexer::Span;
 use crate::memory::GCRef;
-use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop, Variable, Function, AssignExpr, Literal, Ident, BinaryExpr, UnaryExpr, CallExpr, AttributeExpr, SubscriptExpr, ListExpr, ObjectExpr, Lambda, Module, Statement, LiteralKind, Expression, BinaryOp, UnaryOp, Record};
+use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop, Variable, Function, AssignExpr, Literal, Ident, BinaryExpr, UnaryExpr, CallExpr, AttributeExpr, SubscriptExpr, ListExpr, ObjectExpr, Lambda, Module, Statement, LiteralKind, Expression, BinaryOp, UnaryOp, Record, RecordItem};
 
 use crate::bytecode::{Operand, BytecodeGenerator, CodeLabel, RibKind};
 use crate::symbol::Symbol;
-use crate::tvalue::TFunction;
+use crate::tvalue::{TFunction, TValue, TString, Accessor, FunctionFlags};
 
 #[derive(Debug)]
 pub enum CodegenErr {
@@ -279,20 +280,142 @@ impl<'ast> GeneratorNode for Variable<'ast> {
 
 impl<'ast> GeneratorNode for Function<'ast> {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
-        let _ = generator.with_function(self.name, self.params, |generator| {
+        let (func, _scope) = generator.with_function(self.name, self.params, |generator| {
             generate_body(self.body, generator)?;
             if !generator.is_terminated() {
                 generator.emit_return(Operand::null());
             }
             Ok(())
         })?;
+
+        // FIXME: closures
+        let mut module = func.module;
+        if let Err(crate::vm::GlobalErr::Redeclared(..)) = module.set_global(self.name.symbol, func.into(), true) {
+            generator.emit_error();
+        }
         Ok(None)
     }
 }
 
 impl<'ast> GeneratorNode for Record<'ast> {
     fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
-        todo!()
+        if !generator.find_rib(RibKind::Module, 1).is_some() {
+            todo!("Function Local Record");
+        }
+
+        enum CGDeclaration<'ast> {
+            Method(GCRef<TFunction>),
+            OffsetProperty {
+                init: Option<&'ast Expression<'ast>>,
+                accessor: Accessor
+            },
+            Constant(&'ast Expression<'ast>)
+        }
+
+        let vm = generator.vm();
+        let mut items: HashMap<GCRef<TString>, CGDeclaration> = HashMap::new();
+        for &item in self.body {
+            let (symbol, decl) = match item {
+                RecordItem::Method(func) => {
+                    let symbol = func.name.symbol;
+                    let is_method = func.params
+                        .first()
+                        .map(|&ident| ident.symbol == Symbol![self])
+                        .unwrap_or(false);
+
+                    let (mut func, _scope) = generator.with_function(func.name, func.params, |generator| {
+                        generate_body(func.body, generator)?;
+                        if !generator.is_terminated() {
+                            generator.emit_return(Operand::null());
+                        }
+                        Ok(())
+                    })?;
+
+                    if is_method {
+                        func.flags |= FunctionFlags::METHOD;
+                    }
+
+                    (symbol, CGDeclaration::Method(func))
+                }
+                RecordItem::Property(prop) => {
+                    let symbol = prop.name.symbol;
+                    (symbol, CGDeclaration::OffsetProperty {
+                        init: prop.init,
+                        accessor: Accessor::GET | Accessor::SET
+                    })
+                }
+                RecordItem::Constant(constant) => {
+                    let symbol = constant.name.symbol;
+                    (symbol, CGDeclaration::Constant(constant.init.unwrap()))
+                }
+            };
+
+            let name = vm.symbols().get(symbol);
+            let entry = items
+                .raw_entry_mut()
+                .from_hash(symbol.hash, |key| std::ptr::addr_eq(key.as_ptr(), name.as_ptr()));
+            match entry {
+                RawEntryMut::Occupied(mut entry) => {
+                    entry.insert(decl);
+                }
+                RawEntryMut::Vacant(mut entry) => {
+                    entry.insert_with_hasher(
+                        symbol.hash, name, decl,
+                        |key| vm.symbols().intern(*key).hash);
+                }
+            }
+        }
+
+        // FIXME: this API is horrible for generating any sort of at-runtime helper.
+        // It shouldn't rely on the function or the paramters having names.
+        let (func, _scope) = generator.with_function(self.name, &[&self.name], |generator| {
+            let throw_away = generator.allocate_reg();
+            let builder = generator.get_local_reg(self.name.symbol);
+
+            let method_kind = generator.make_i32(0);
+            let property_kind = generator.make_i32(1);
+            let constant_kind = generator.make_i32(2);
+
+            generator.grow_args_buffer(4);
+
+            for (name, decl) in items {
+                let name = generator.make_string(name);
+                match decl {
+                    CGDeclaration::Method(method) => {
+                        // builder.declare(kind: 0, name, method)
+                        let method = generator.descriptor(method.into());
+                        let arguments = generator.allocate_list(vec![method_kind, name, method]);
+                        generator.emit_method_call(throw_away, builder, Symbol![declare], arguments);
+                    }
+                    CGDeclaration::OffsetProperty { accessor, .. } => {
+                        // builder.declare(kind: 1, name, access)
+                        let accessor = generator.make_i32(accessor.bits() as i32);
+                        let arguments = generator.allocate_list(vec![property_kind, name, accessor]);
+                        generator.emit_method_call(throw_away, builder, Symbol![declare], arguments);
+                    }
+                    CGDeclaration::Constant(init) => {
+                        // builder.declare(kind: 2, name, value)
+                        let value = init.generate_bytecode(generator)?.unwrap();
+                        let arguments = generator.allocate_list(vec![constant_kind, name, value]);
+                        generator.emit_method_call(throw_away, builder, Symbol![declare], arguments);
+                    }
+                }
+            }
+
+            generator.emit_return(Operand::null());
+            Ok(())
+        })?;
+
+        let base = if let Some(base) = self.base {
+            base.generate_bytecode(generator)?.unwrap()
+        } else {
+            Operand::null()
+        };
+
+        let initializer = generator.descriptor(func.into());
+        generator.emit_make_global_type(self.name.symbol, base, initializer);
+
+        Ok(None)
     }
 }
 

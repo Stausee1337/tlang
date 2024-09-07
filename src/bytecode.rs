@@ -487,7 +487,7 @@ impl BytecodeGenerator {
     }
 
     pub fn with_function<F: FnOnce(&mut Self) -> Result<(), codegen::CodegenErr>>(
-        &mut self, name: Ident, params: &[&Ident], do_work: F) -> Result<Option<ClosureScope>, codegen::CodegenErr> {
+        &mut self, name: Ident, params: &[&Ident], do_work: F) -> Result<(GCRef<TFunction>, Option<ClosureScope>), codegen::CodegenErr> {
         if self.current_fn().current_rib().kind != RibKind::Module {
             todo!("closures")
         }
@@ -511,11 +511,8 @@ impl BytecodeGenerator {
         // FunctionDisassembler::dissassemble(&func, &mut n).unwrap();
 
         let func = TFunction::from_codegen(&self.vm(), func, self.module);
-        if let Err(crate::vm::GlobalErr::Redeclared(..)) = self.module.set_global(name.symbol, func.into(), true) {
-            todo!("codegen errors that are more like runtime errors? Keep going?");
-        }
 
-        Ok(None)
+        Ok((func, None))
     }
 
     pub fn with_rib<F: FnOnce(&mut Self) -> R, R>(&mut self, kind: RibKind, do_work: F) -> R {
@@ -586,6 +583,10 @@ impl BytecodeGenerator {
     pub fn grow_args_buffer(&mut self, size: usize) {
         self.current_fn_mut()
             .grow_args_buffer(size)
+    }
+
+    pub fn descriptor(&mut self, value: TValue) -> Operand {
+        self.current_fn_mut().descriptor(value)
     }
 
     pub fn make_string(&mut self, string: GCRef<TString>) -> Operand {
@@ -935,6 +936,12 @@ define_instructions! {
     MakeAnonObject {
         dst: Operand,
         fields: u32
+    },
+
+    MakeGlobalType {
+        name: Symbol,
+        base: Operand,
+        initializer: Operand,
     },
 
     Error,

@@ -63,14 +63,18 @@ print(obj);
 
 print("Hello %s", obj, Type.of(obj));
 
-// record User: Object {
-//     var firstname;
-//     var lastname;
-//     var age = -1;
-//     var is_female;
-// 
-//     def login(self) {
-//         print("Logging in the user", self);
-//     }
-// }
+record User {
+    const MAX_AGE = 121;
+
+    var firstname;
+    var lastname;
+    var age = -1;
+    var is_female;
+
+    def login(self) {
+        print("Logging in the user", self);
+    }
+}
+
+print(User);
 
