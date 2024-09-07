@@ -2386,8 +2386,9 @@ where
 
 bitflags! {
     pub struct ResolveFlags: u8 {
-        const ATTRIBUTE = 0b10;
-        const INSERT    = 0b01;
+        const ATTRIBUTE = 0b100;
+        const INSERT    = 0b010;
+        const SHADOW    = 0b001;
     }
 }
 
@@ -2406,7 +2407,11 @@ where
                 let ttype = tobject.ty;
                 if let Some(found) = tobject.get_attribute(name, variable_type && flags.contains(ResolveFlags::INSERT)) {
                     let access = if variable_type {
-                        tlang::interop::AccessType::Writeable
+                        if flags.contains(ResolveFlags::SHADOW) {
+                            tlang::interop::AccessType::WriteOnly
+                        } else {
+                            tlang::interop::AccessType::Writeable
+                        }
                     } else {
                         tlang::interop::AccessType::ReadOnly
                     };

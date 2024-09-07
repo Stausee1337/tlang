@@ -416,6 +416,9 @@ pub struct TPropertyAccess<T: VMDowncast + VMCast + Copy + 'static> {
     copy: OnceCell<T>,
     place: MaybeUninit<T>,
     write: bool,
+    /// Flag to see if an attribute is allowed to be read 
+    /// Properties provide thier own mechanism to check if a write is legal
+    readable: bool,
     /// Flag to see if an attribute is considered writeable
     /// Properties provide thier own mechanism to check if a write is legal
     writeable: bool,
@@ -443,8 +446,9 @@ impl<T: VMDowncast + VMCast + Copy + 'static> TPropertyAccess<T> {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AccessType {
-    Writeable,
     ReadOnly,
+    Writeable,
+    WriteOnly,
     TypeChain
 }
 
@@ -469,7 +473,8 @@ impl<T: VMDowncast + VMCast + Copy + 'static> VMPropertyCast for TPropertyAccess
             copy: OnceCell::new(),
             place: MaybeUninit::uninit(),
             write: false,
-            writeable: access == AccessType::Writeable
+            readable: access != AccessType::WriteOnly,
+            writeable: access == AccessType::Writeable || access == AccessType::WriteOnly
         }
     }
 }
@@ -490,6 +495,9 @@ impl<T: VMDowncast + VMCast + Copy + 'static> TPropertyAccess<T> {
                 return self.get();
             }
             AccessKind::Attribute { attribute_val: value, vm } => {
+                if !self.readable {
+                    panic!("cannot get property");
+                }
                 let value = T::vmdowncast(unsafe { **value }, &vm).unwrap(); 
                 self.copy.set(value).map_err(|_err| ()).expect("copy is empty"); 
                 return self.get();

@@ -795,7 +795,8 @@ pub fn generate_tget(token_stream: TokenStream) -> Result<TokenStream, syn::Erro
             let value: #ty = #self_;
             // TODO: intern symbol #sym for messages in error resolval
             let mut resolved_access: tlang::interop::TPropertyAccess<_> = tlang::tvalue::resolve_by_symbol(
-                #vm, tlang_macros::Symbol![#sym], value, tlang::tvalue::ResolveFlags::ATTRIBUTE | tlang::tvalue::ResolveFlags::INSERT);
+                #vm, tlang_macros::Symbol![#sym], value, 
+                tlang::tvalue::ResolveFlags::ATTRIBUTE | tlang::tvalue::ResolveFlags::INSERT | tlang::tvalue::ResolveFlags::SHADOW);
             resolved_access
         }
     })
