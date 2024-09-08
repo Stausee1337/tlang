@@ -301,13 +301,21 @@ UnaryExpr: parse::Expression<'ast> = {
         base: ctx.alloc(expr),
         span: Span { start, end },
     }), 
-    AtomExpr
+    NewExpr
 };
 
 UnaryOp: parse::UnaryOp = {
     "-" => parse::UnaryOp::Neg,
     "!" => parse::UnaryOp::Not,
     "~" => parse::UnaryOp::Invert,
+};
+
+NewExpr: parse::Expression<'ast> = {
+    <start:@L> "new" <expr:NewExpr> <end:@R> => parse::Expression::NewExpr(parse::NewExpr {
+        expr: ctx.alloc(expr),
+        span: Span { start, end },
+    }), 
+    AtomExpr
 };
 
 AtomExpr: parse::Expression<'ast> = {
@@ -327,7 +335,7 @@ AtomExpr: parse::Expression<'ast> = {
         attr,
         base: ctx.alloc(base),
         span: Span { start, end }
-    })
+    }),
 }
 
 Atom: parse::Expression<'ast> = {
@@ -468,6 +476,7 @@ extern {
         "if" => lexer::TokenKind::If,
         "else" => lexer::TokenKind::Else,
         "record" => lexer::TokenKind::Record,
+        "new" => lexer::TokenKind::New,
         "return" => lexer::TokenKind::Return,
         "break" => lexer::TokenKind::Break,
         "continue" => lexer::TokenKind::Continue,

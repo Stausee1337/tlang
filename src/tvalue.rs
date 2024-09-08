@@ -355,11 +355,7 @@ pub trait Typed: Atom + Sized + 'static {
     fn initialize_entry(
         vm: &VM,
         entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
-    ) -> GCRef<TType> {
-        *entry.insert(TypeId::of::<Self>(), Self::initialize(vm)).1
-    }
-
-    fn initialize(vm: &VM) -> GCRef<TType>;
+    ) -> GCRef<TType>;
 
     fn visit_override(&self, visitor: &mut Visitor)
     where
@@ -383,6 +379,9 @@ pub struct TObject: () {
 }
 
 impl TObject {
+    unsafe fn ctor(this: *mut TObject, ty: GCRef<TType>) { 
+    }
+
     pub fn new_with_capacity(vm: &VM, capacity: usize) -> GCRef<Self> {
         let descriptor = vm.heap().allocate_atom(HashTable::with_capacity(capacity));
         vm.heap().allocate_atom(Self {
@@ -453,15 +452,33 @@ impl TObject {
         }
     }
 
-    pub fn alloc(ttype: GCRef<TType>) -> TValue {
-        if ttype.flags.contains(TypeFlags::ABSTRACT) {
-            panic!("cannot instanciate abstract type {}", ttype.name);
+    pub fn instanciate(ty: GCRef<TType>) -> GCRef<TObject> {
+        let vm = ty.vm();
+        if ty.basesize < std::mem::size_of::<TObject>() {
+            panic!("cannot instanciate primitive type {}", ty.name);
         }
-        let vm = ttype.vm();
-        if ttype.basesize < std::mem::size_of::<TObject>() {
-            return vm.primitives().zeroed(ttype);
+        if ty.flags.contains(TypeFlags::ABSTRACT) { 
+            panic!("cannot instanciate abstract type {}", ty.name);
         }
-        todo!()
+        let Some(ctor) = ty.ctor else {
+            eprintln!("non-abstract constructorless type {}", ty.name);
+            std::process::abort();
+        };
+
+        let extra_bytes = ty.basesize - std::mem::size_of::<TObject>();
+        let vm = ty.vm();
+        let descriptor = if ty.flags.contains(TypeFlags::VARIABLE) {
+            Some(vm.heap().allocate_atom(HashTable::new()))
+        } else {
+            None
+        };
+        let result = vm.heap().allocate_var_atom(TObject {
+            ty,
+            descriptor
+        }, extra_bytes);
+
+        unsafe { ctor(GCRef::as_ptr(result), ty) }
+        result
     }
 }
 
@@ -476,7 +493,8 @@ impl Typed for TObject {
             basety: None, // There's nothing above Object in the hierarchy
             name: TString::from_slice(vm, "Object"),
             modname: TString::from_slice(vm, "prelude"),
-            flags: TypeFlags::OPEN | TypeFlags::VARIABLE
+            flags: TypeFlags::OPEN | TypeFlags::VARIABLE,
+            ctor: Some(TObject::ctor)
         });
         entry.insert(TypeId::of::<Self>(), ttype);
 
@@ -511,18 +529,10 @@ impl Typed for TObject {
 
                     TString::from_format(&vm, format_args!("{} {{}}", ty.name))
                 }));
-        
-        builder.define_static_method(Symbol![new], TFunction::rustfunc(
-                prelude, Some("Object.new"), TObject::alloc
-            ));
 
         ttype.base.descriptor = Some(builder.descriptor);
 
         ttype
-    }
-
-    fn initialize(vm: &VM) -> GCRef<TType> {
-        unreachable!()
     }
 }
 
@@ -642,7 +652,8 @@ impl TBool {
             basesize: 0, // primitive
             name: TString::from_slice(&vm, "bool"),
             modname: TString::from_slice(&vm, "prelude"),
-            flags: TypeFlags::empty()
+            flags: TypeFlags::empty(),
+            ctor: None
         });
 
         let mut prelude = vm.modules().prelude();
@@ -916,7 +927,8 @@ impl TString {
             basesize: 0, // primitive
             name: TString::from_slice(&vm, "string"),
             modname: TString::from_slice(&vm, "prelude"),
-            flags: TypeFlags::empty()
+            flags: TypeFlags::empty(),
+            ctor: None
         });
 
         let mut prelude = vm.modules().prelude();
@@ -1011,7 +1023,10 @@ impl TStringIterator {
 }
 
 impl Typed for TStringIterator {
-    fn initialize(vm: &VM) -> GCRef<TType> {
+    fn initialize_entry(
+            vm: &VM,
+            entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
+        ) -> GCRef<TType> {
         let prelude = vm.modules().prelude();
         let mut builder = TTypeBuilder::new(vm);
 
@@ -1032,10 +1047,20 @@ impl Typed for TStringIterator {
             basesize: std::mem::size_of::<Self>(),
             name: TString::from_slice(&vm, "StringIterator"),
             modname: TString::from_slice(&vm, "prelude"),
-            flags: TypeFlags::empty()
+            flags: TypeFlags::ABSTRACT,
+            ctor: None
         });
 
+        entry.insert(TypeId::of::<Self>(), ttype);
+
         ttype
+    }
+
+    fn visit_override(&self, visitor: &mut Visitor)
+        where
+            Self: TPolymorphicObject {
+        visit_polymorphic(self, visitor);
+        visitor.feed(self.backing_string);
     }
 }
 
@@ -1346,7 +1371,8 @@ impl TInteger {
             basesize: 0, // primitive
             name: TString::from_slice(&vm, "int"),
             modname: TString::from_slice(&vm, "prelude"),
-            flags: TypeFlags::empty()
+            flags: TypeFlags::empty(),
+            ctor: None
         });
 
         let mut prelude = vm.modules().prelude();
@@ -1529,7 +1555,8 @@ impl TFloat {
             basesize: 0, // primitive
             name: TString::from_slice(&vm, "float"),
             modname: TString::from_slice(&vm, "prelude"),
-            flags: TypeFlags::empty()
+            flags: TypeFlags::empty(),
+            ctor: None
         });
 
         let mut prelude = vm.modules().prelude();
@@ -1666,6 +1693,55 @@ impl TList {
             self.length.inc();
         }
     }
+
+    pub(crate) fn initialize_type(vm: &VM) -> GCRef<TType> {
+        let mut ttype = vm.heap().allocate_atom(TType {
+            base: TObject::base(&vm, vm.types().query::<TType>()),
+            basety: Some(vm.types().query::<TObject>()),
+            basesize: 0, // primitive
+            name: TString::from_slice(&vm, "list"),
+            modname: TString::from_slice(&vm, "prelude"),
+            flags: TypeFlags::empty(),
+            ctor: None
+        });
+
+        let mut prelude = vm.modules().prelude();
+        prelude.set_global(Symbol![list], ttype.into(), true).unwrap();
+        let mut builder = TTypeBuilder::new(vm);
+
+        builder.define_method(
+            Symbol![fmt],
+            TFunction::rustfunc(prelude, Some("list.fmt"), |this: GCRef<TList>| {
+                TString::from_format(&this.vm(), format_args!("{this}"))
+            }));
+
+        builder.define_method(
+            Symbol![push],
+            TFunction::rustfunc(prelude, Some("list.push"), TList::push));
+
+        builder.define_method(
+            Symbol![get_index],
+            TFunction::rustfunc(prelude, Some("list.get_index"),
+            |this: GCRef<TList>, index: TInteger| this[index]));
+
+        builder.define_method(
+            Symbol![set_index],
+            TFunction::rustfunc(prelude, Some("list.set_index"),
+            |mut this: GCRef<TList>, index: TInteger, value: TValue| { this[index] = value; }));
+
+        builder.define_property(
+            Symbol![length],
+            TProperty::get(
+                prelude,
+                TFunction::rustfunc(prelude, None, |list: GCRef<TList>| unsafe {
+                    let ptr = GCRef::as_ptr(list) as *mut u8;
+                    *(ptr.add(offset_of!(TList, length)) as *mut TInteger)
+                })));
+
+        ttype.base.descriptor = Some(builder.descriptor);
+
+        ttype
+    }
 }
 
 impl std::ops::Index<usize> for TList {
@@ -1738,68 +1814,19 @@ impl Atom for TList {
     }
 }
 
-impl TList {
-    pub(crate) fn initialize_type(vm: &VM) -> GCRef<TType> {
-        let mut ttype = vm.heap().allocate_atom(TType {
-            base: TObject::base(&vm, vm.types().query::<TType>()),
-            basety: Some(vm.types().query::<TObject>()),
-            basesize: 0, // primitive
-            name: TString::from_slice(&vm, "list"),
-            modname: TString::from_slice(&vm, "prelude"),
-            flags: TypeFlags::empty()
-        });
-
-        let mut prelude = vm.modules().prelude();
-        prelude.set_global(Symbol![list], ttype.into(), true).unwrap();
-        let mut builder = TTypeBuilder::new(vm);
-
-        builder.define_method(
-            Symbol![fmt],
-            TFunction::rustfunc(prelude, Some("list.fmt"), |this: GCRef<TList>| {
-                TString::from_format(&this.vm(), format_args!("{this}"))
-            }));
-
-        builder.define_method(
-            Symbol![push],
-            TFunction::rustfunc(prelude, Some("list.push"), TList::push));
-
-        builder.define_method(
-            Symbol![get_index],
-            TFunction::rustfunc(prelude, Some("list.get_index"),
-            |this: GCRef<TList>, index: TInteger| this[index]));
-
-        builder.define_method(
-            Symbol![set_index],
-            TFunction::rustfunc(prelude, Some("list.set_index"),
-            |mut this: GCRef<TList>, index: TInteger, value: TValue| { this[index] = value; }));
-
-        builder.define_property(
-            Symbol![length],
-            TProperty::get(
-                prelude,
-                TFunction::rustfunc(prelude, None, |list: GCRef<TList>| unsafe {
-                    let ptr = GCRef::as_ptr(list) as *mut u8;
-                    *(ptr.add(offset_of!(TList, length)) as *mut TInteger)
-                })));
-
-        ttype.base.descriptor = Some(builder.descriptor);
-
-        ttype
-    }
-}
-
 bitflags! {
     #[derive(Debug)]
     pub struct TypeFlags: u8 {
         /// Allows a type to be extended
         const OPEN     = 0b100;
-        /// Makes a type uninstanciatable.
-        /// specifically, it makes `Object.new` refuse to allocate the type
+        /// Makes a type uninstanciatable
+        /// specifically, it makes `Object.new` refuse to create an instance 
         const ABSTRACT = 0b010;
         /// Allows a type's instance to be altered
         const VARIABLE = 0b001;
     }
 }
+
 
 tobject! {
 pub struct TType {
@@ -1807,9 +1834,13 @@ pub struct TType {
     pub basesize: usize,
     pub name: GCRef<TString>,
     pub modname: GCRef<TString>,
-    pub flags: TypeFlags
+    pub flags: TypeFlags,
+    pub ctor: TCtor
 }
 }
+
+pub type TCtor = Option<unsafe fn(*mut TObject, GCRef<TType>)>;
+static_assertions::const_assert!(std::mem::size_of::<TCtor>() == std::mem::size_of::<&()>());
 
 impl TType {
     pub fn is_subclass(self: GCRef<Self>, needle: GCRef<TType>) -> bool {
@@ -1834,6 +1865,19 @@ impl TType {
             }
         })
     }
+
+    unsafe fn dynamic_ctor(this: *mut TObject, ty: GCRef<TType>) {
+        let basety = ty.basety.unwrap_unchecked();
+        basety.ctor.unwrap_unchecked()(this, basety);
+        let offset = basety.basesize;
+        let size = ty.basesize - offset;
+        debug_assert!(size % std::mem::size_of::<TValue>() == 0);
+        let this = std::slice::from_raw_parts_mut(
+            (this as *mut TValue).byte_add(offset),
+            size / std::mem::size_of::<TValue>()
+        );
+        this.fill(TValue::null());
+    }
 }
 
 impl Typed for TType {
@@ -1847,7 +1891,8 @@ impl Typed for TType {
             basesize: std::mem::size_of::<Self>(),
             name: TString::from_slice(vm, "Type"),
             modname: TString::from_slice(vm, "prelude"),
-            flags: TypeFlags::empty()
+            flags: TypeFlags::ABSTRACT,
+            ctor: None
         });
 
         entry.insert(TypeId::of::<Self>(), ttype);
@@ -1883,10 +1928,6 @@ impl Typed for TType {
 
         ttype
         
-    }
-
-    fn initialize(vm: &VM) -> GCRef<TType> {
-        unreachable!()
     }
 }
 
@@ -1960,7 +2001,8 @@ impl WeirdBuilder {
             basesize: base.basesize,
             name,
             modname: module.name,
-            flags: TypeFlags::empty()
+            flags: TypeFlags::OPEN,
+            ctor: Some(TType::dynamic_ctor)
         });
         vm.heap().allocate_atom(WeirdBuilder {
             base: TObject::base(&vm, vm.types().query::<Self>()),
@@ -2016,7 +2058,10 @@ impl WeirdBuilder {
 }
 
 impl Typed for WeirdBuilder {
-    fn initialize(vm: &VM) -> GCRef<TType> {
+    fn initialize_entry(
+            vm: &VM,
+            entry: RawVacantEntryMut<'_, TypeId, GCRef<TType>, BuildHasherDefault<AHasher>, Global>
+        ) -> GCRef<TType> {
         let prelude = vm.modules().prelude();
         let mut builder = TTypeBuilder::new(vm);
 
@@ -2030,8 +2075,11 @@ impl Typed for WeirdBuilder {
             basesize: std::mem::size_of::<Self>(),
             name: TString::from_slice(&vm, "TypeBuilder"),
             modname: TString::from_slice(&vm, "prelude"),
-            flags: TypeFlags::empty()
+            flags: TypeFlags::ABSTRACT,
+            ctor: None
         });
+
+        entry.insert(TypeId::of::<Self>(), ttype);
 
         ttype
     }
@@ -2060,6 +2108,13 @@ pub struct TProperty {
 }
 
 impl TProperty {
+    unsafe fn ctor(this: *mut TObject, ty: GCRef<TType>) {
+        TObject::ctor(this, ty);
+        let this = &mut *(this as *mut TProperty);
+        this.get = None;
+        this.set = None;
+    }
+
     pub fn offset<Slf, P>(module: GCRef<TModule>, accessor: Accessor, offset: usize) -> GCRef<Self>
     where
         Slf: TPolymorphicObject,
@@ -2095,7 +2150,7 @@ impl TProperty {
 
         let get = if accessor.contains(Accessor::GET) {
             Some(TFunction::rustfunc(module, None, move |this: TValue| {
-                let object = this.query_object::<TObject>(&ttype.vm())
+                let object = this.query_tobject()
                     .filter(|obj| obj.ty.is_subclass(ttype))
                     .expect(&format!("expected instance of type {}", ttype.name));
                 unsafe {
@@ -2109,7 +2164,7 @@ impl TProperty {
 
         let set = if accessor.contains(Accessor::SET) {
             Some(TFunction::rustfunc(module, None, move |this: TValue, value: TValue| {
-                let object = this.query_object::<TObject>(&ttype.vm())
+                let object = this.query_tobject()
                     .filter(|obj| obj.ty.is_subclass(ttype))
                     .expect(&format!("expected instance of type {}", ttype.name));
                 unsafe {
@@ -2149,9 +2204,10 @@ impl Typed for TProperty {
             base: TObject::base(vm, vm.types().query::<TType>()),
             basety: Some(vm.types().query::<TObject>()),
             basesize: std::mem::size_of::<Self>(),
-            name: TString::from_slice(vm, "property"),
+            name: TString::from_slice(vm, "Property"),
             modname: TString::from_slice(vm, "prelude"),
-            flags: TypeFlags::empty()
+            flags: TypeFlags::empty(),
+            ctor: Some(TProperty::ctor)
         });
         entry.insert(TypeId::of::<Self>(), ttype);
 
@@ -2169,10 +2225,6 @@ impl Typed for TProperty {
         ttype.base.descriptor = Some(builder.descriptor);
 
         ttype
-    }
-
-    fn initialize(vm: &VM) -> GCRef<TType> {
-        unreachable!()
     }
 }
 
@@ -2210,9 +2262,10 @@ impl Typed for TFunction {
             base: TObject::base(vm, vm.types().query::<TType>()),
             basety: Some(vm.types().query::<TObject>()),
             basesize: std::mem::size_of::<Self>(),
-            name: TString::from_slice(vm, "function"),
+            name: TString::from_slice(vm, "Function"),
             modname: TString::from_slice(vm, "prelude"),
-            flags: TypeFlags::empty()
+            flags: TypeFlags::ABSTRACT,
+            ctor: None
         });
         entry.insert(TypeId::of::<Self>(), ttype);
 
@@ -2226,7 +2279,7 @@ impl Typed for TFunction {
 
         builder.define_method(
             Symbol![fmt],
-            TFunction::rustfunc(prelude, Some("function.fmt"), |this: GCRef<TFunction>| {
+            TFunction::rustfunc(prelude, Some("Function.fmt"), |this: GCRef<TFunction>| {
                 let name = if let Some(name) = this.name {
                     name.as_slice()
                 } else {
@@ -2247,10 +2300,6 @@ impl Typed for TFunction {
         ttype.base.descriptor = Some(builder.descriptor);
 
         ttype
-    }
-
-    fn initialize(vm: &VM) -> GCRef<TType> {
-        unreachable!()
     }
 
     fn visit_override(&self, visitor: &mut Visitor)
@@ -2300,9 +2349,7 @@ impl TFunction {
 
         func
     }
-}
 
-impl TFunction {
     #[inline(always)]
     pub fn call(self: GCRef<TFunction>, arguments: TArgsBuffer) -> TValue {
         match &self.kind {

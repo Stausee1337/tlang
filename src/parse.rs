@@ -127,6 +127,7 @@ pub enum Expression<'ast> {
     BinaryExpr(BinaryExpr<'ast>),
     UnaryExpr(UnaryExpr<'ast>),
     CallExpr(CallExpr<'ast>),
+    NewExpr(NewExpr<'ast>),
     AttributeExpr(AttributeExpr<'ast>),
     SubscriptExpr(SubscriptExpr<'ast>),
     ListExpr(ListExpr<'ast>),
@@ -195,6 +196,12 @@ pub struct UnaryExpr<'ast> {
 pub struct CallExpr<'ast> {
     pub callable: &'ast Expression<'ast>,
     pub args: &'ast [&'ast Expression<'ast>],
+    pub span: Span
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct NewExpr<'ast> {
+    pub expr: &'ast Expression<'ast>,
     pub span: Span
 }
 

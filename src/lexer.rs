@@ -131,6 +131,8 @@ pub enum TokenKind {
     Else,
     #[token("record")]
     Record,
+    #[token("new")]
+    New,
     #[token("return")]
     Return,
     #[token("break")]

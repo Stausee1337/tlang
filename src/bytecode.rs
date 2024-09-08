@@ -927,6 +927,11 @@ define_instructions! {
         end_target: CodeLabel
     },
 
+    MakeTypeInstance {
+        dst: Operand,
+        ty: Operand
+    },
+
     MakeList {
         dst: Operand,
         items: OperandList

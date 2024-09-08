@@ -3,7 +3,7 @@ use hashbrown::hash_map::RawEntryMut;
 
 use crate::lexer::Span;
 use crate::memory::GCRef;
-use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop, Variable, Function, AssignExpr, Literal, Ident, BinaryExpr, UnaryExpr, CallExpr, AttributeExpr, SubscriptExpr, ListExpr, ObjectExpr, Lambda, Module, Statement, LiteralKind, Expression, BinaryOp, UnaryOp, Record, RecordItem};
+use crate::parse::{IfBranch, Break, Return, Continue, Import, ForLoop, WhileLoop, Variable, Function, AssignExpr, Literal, Ident, BinaryExpr, UnaryExpr, CallExpr, AttributeExpr, SubscriptExpr, ListExpr, ObjectExpr, Lambda, Module, Statement, LiteralKind, Expression, BinaryOp, UnaryOp, Record, RecordItem, NewExpr};
 
 use crate::bytecode::{Operand, BytecodeGenerator, CodeLabel, RibKind};
 use crate::symbol::Symbol;
@@ -702,6 +702,16 @@ impl<'ast> GeneratorNode for CallExpr<'ast> {
         let dst = generator.allocate_reg();
         let list = generator.allocate_list(arguments);
         generator.emit_call(dst, callee, list);
+        Ok(Some(dst))
+    }
+}
+
+impl<'ast> GeneratorNode for NewExpr<'ast> {
+    fn generate_bytecode(&self, generator: &mut BytecodeGenerator) -> CodegenResult {
+        let ty = self.expr.generate_bytecode(generator)?.unwrap();
+        let dst = generator.allocate_reg();
+        generator.emit_make_type_instance(dst, ty);
+
         Ok(Some(dst))
     }
 }

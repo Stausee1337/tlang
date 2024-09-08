@@ -470,6 +470,12 @@ impl TRawCode {
                     }
                 }
 
+                OpCode::MakeTypeInstance => {
+                    let vm = frame.vm;
+                    decode!(stream, frame, MakeTypeInstance { &ty, &mut dst });
+                    *dst = TObject::instanciate(VMDowncast::vmdowncast(ty, vm).unwrap()).into();
+                }
+
                 OpCode::MakeList => {
                     let vm = frame.vm;
                     decode!(stream, frame, MakeList { items, &mut dst });

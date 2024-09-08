@@ -76,6 +76,21 @@ record User {
     }
 }
 
-// print(User.firstname.get(print));
-print(Object.new(Object));
+record BaseRequest {
+    var method;
+    var scheme;
+    var path;
+    var query_string;
+}
+
+record Request: BaseRequest {
+    var environ;
+}
+
+var request = new Request;
+request.method = "GET";
+request.scheme = "https";
+request.path = "/";
+request.query_string = "?hl=de";
+request.environ = ["REQUEST_METHOD=GET", "url_scheme=https"];
 
