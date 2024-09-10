@@ -1607,11 +1607,24 @@ impl TList {
     }
 
     pub fn new_with_capacity(vm: &VM, capacity: usize) -> GCRef<Self> {
+        let extra_bytes = capacity * std::mem::size_of::<TValue>();
+        if extra_bytes >= 4096 /* page size */ {
+            const ITEM_SIZE: usize  = std::mem::size_of::<TValue>();
+            unsafe {
+                let layout = Layout::from_size_align_unchecked(
+                    capacity * ITEM_SIZE, std::mem::align_of::<TValue>());
+                return vm.heap().allocate_atom(Self {
+                    length: TInteger::from_int32(0),
+                    capacity: capacity as isize,
+                    data: ListData { ptr: std::alloc::alloc(layout) as *mut _ }
+                });
+            }
+        }
         vm.heap().allocate_var_atom(Self {
             length: TInteger::from_int32(0),
             capacity: -(capacity as isize),
             data: ListData { ptr: std::ptr::null_mut() }
-        }, capacity * std::mem::size_of::<TValue>())
+        }, extra_bytes)
     }
 }
 
@@ -1694,6 +1707,22 @@ impl TList {
         }
     }
 
+    pub fn repeat(self: GCRef<Self>, count: TInteger) -> GCRef<Self> {
+        let length = self.length.as_usize().expect("sensible size");
+        let count = count.as_usize().expect("sensible size");
+
+        let new_length = count * length;
+        let mut new_list = Self::new_with_capacity(&self.vm(), new_length);
+
+        for _ in 0..count {
+            for idx in 0..length {
+                new_list.push(self[idx]);
+            }
+        }
+
+        new_list
+    }
+
     pub(crate) fn initialize_type(vm: &VM) -> GCRef<TType> {
         let mut ttype = vm.heap().allocate_atom(TType {
             base: TObject::base(&vm, vm.types().query::<TType>()),
@@ -1718,6 +1747,10 @@ impl TList {
         builder.define_method(
             Symbol![push],
             TFunction::rustfunc(prelude, Some("list.push"), TList::push));
+
+        builder.define_method(
+            Symbol![repeat],
+            TFunction::rustfunc(prelude, Some("list.repeat"), TList::repeat));
 
         builder.define_method(
             Symbol![get_index],
@@ -2152,7 +2185,7 @@ impl TProperty {
             Some(TFunction::rustfunc(module, None, move |this: TValue| {
                 let object = this.query_tobject()
                     .filter(|obj| obj.ty.is_subclass(ttype))
-                    .expect(&format!("expected instance of type {}", ttype.name));
+                    .unwrap();
                 unsafe {
                     let ptr = GCRef::as_ptr(object) as *mut u8;
                     *(ptr.add(offset) as *mut TValue)
@@ -2166,7 +2199,7 @@ impl TProperty {
             Some(TFunction::rustfunc(module, None, move |this: TValue, value: TValue| {
                 let object = this.query_tobject()
                     .filter(|obj| obj.ty.is_subclass(ttype))
-                    .expect(&format!("expected instance of type {}", ttype.name));
+                    .unwrap();
                 unsafe {
                     let ptr = GCRef::as_ptr(object) as *mut u8;
                     *(ptr.add(offset) as *mut TValue) = value;
@@ -2493,7 +2526,7 @@ where
         current_ty = current.basety.clone();
     }
 
-    panic!("Could not find property {}", vm.symbols().get(name));
+    panic!("Could not find property {} on {:?}", vm.symbols().get(name), value.ttype(vm).map(|ty| ty.name));
 }
 
 pub fn print(module: GCRef<TModule>, args: TVariadicArguments) {

@@ -141,6 +141,7 @@ impl RegisterAllocator {
 
 
 pub struct FunctionDisassembler<'f> {
+    vm: &'f VM,
     function: &'f CGFunction,
     stream: &'f mut dyn Write,
     indentation: usize,
@@ -148,8 +149,9 @@ pub struct FunctionDisassembler<'f> {
 }
 
 impl<'f> FunctionDisassembler<'f> {
-    pub fn dissassemble(function: &'f CGFunction, stream: &'f mut dyn Write) -> FmtResult {
+    pub fn dissassemble(vm: &'f VM, function: &'f CGFunction, stream: &'f mut dyn Write) -> FmtResult {
         let mut disasm = Self {
+            vm,
             function,
             stream,
             indentation: 0,
@@ -190,7 +192,8 @@ impl<'f> FunctionDisassembler<'f> {
     }
 
     fn function_head(&mut self) -> FmtResult {
-        writeln!(self, "function {:?} ({}) {{", self.function.name, self.function.num_params)?;
+        let name = self.function.name.map(|name| self.vm.symbols().get(name));
+        writeln!(self, "function {:?} ({}) {{", name, self.function.num_params)?;
         self.indent();
         
         let mut code_size = 0;
@@ -302,7 +305,6 @@ pub struct CGFunction {
 }
 
 impl CGFunction {
-
     fn module() -> Self {
         Self {
             name: None,
@@ -337,6 +339,10 @@ impl CGFunction {
         }
 
         Ok(this)
+    }
+
+    pub fn name(&self) -> Option<Symbol> {
+        self.name
     }
 
     fn current_block(&self) -> &BasicBlock {
@@ -501,14 +507,15 @@ impl BytecodeGenerator {
         let func = self.function_stack.pop().unwrap();
     
         // struct N;
-        // let mut n = N;
         // impl std::fmt::Write for N {
         //     fn write_str(&mut self, s: &str) -> FmtResult {
         //         print!("{s}");
         //         Ok(())
         //     }
         // }
-        // FunctionDisassembler::dissassemble(&func, &mut n).unwrap();
+        // let vm = self.vm();
+        // FunctionDisassembler::dissassemble(&vm, &func, &mut N).unwrap();
+        // println!();
 
         let func = TFunction::from_codegen(&self.vm(), func, self.module);
 
@@ -639,7 +646,7 @@ impl TFunction {
 
         let mut offset = 0;
         for block in &func.blocks {
-            assert!(block.terminated);
+            assert!(block.terminated, "{name:?} has unterminated block");
 
             tcode.blocks_mut()[block.label.index()] = offset as u32;
             let length = block.data.len();

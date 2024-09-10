@@ -341,6 +341,7 @@ impl TRawCode {
                 }
 
                 OpCode::GetGlobal => {
+                    let vm = frame.vm;
                     let module = frame.module();
                     decode!(stream, frame, GetGlobal { symbol, &mut dst });
                     *dst = module.get_global(symbol).unwrap();
@@ -473,7 +474,11 @@ impl TRawCode {
                 OpCode::MakeTypeInstance => {
                     let vm = frame.vm;
                     decode!(stream, frame, MakeTypeInstance { &ty, &mut dst });
-                    *dst = TObject::instanciate(VMDowncast::vmdowncast(ty, vm).unwrap()).into();
+                    let instance = TObject::instanciate(VMDowncast::vmdowncast(ty, vm).unwrap());
+                    let constructor: TPolymorphicCallable<_, ()> = resolve_by_symbol(
+                        vm, vm.symbols().intern_slice(".ctor"), instance, ResolveFlags::empty());
+                    *dst = instance.into();
+                    constructor(*dst);
                 }
 
                 OpCode::MakeList => {

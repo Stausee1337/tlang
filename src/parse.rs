@@ -11,6 +11,15 @@ pub struct Ident {
     pub span: Span
 }
 
+impl Ident {
+    pub fn sym(symbol: Symbol) -> Self {
+        Self {
+            symbol,
+            span: Span { start: 0, end: 0 }
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct Module<'ast> {
     pub body: &'ast [&'ast Statement<'ast>],

@@ -82,7 +82,10 @@ impl<'ast> GeneratorNode for IfBranch<'ast> {
 
         generator.set_current_block(true_target);
         generator.with_rib(RibKind::If, |generator| generate_body(self.body, generator))?;
-        generator.set_current_block(true_target);
+        let redirection_block = generator.set_current_block(true_target);
+        let redirection_block = if redirection_block != true_target {
+            Some(redirection_block)
+        } else { None };
         let true_terminated = generator.is_terminated();
 
         generator.set_current_block(false_target);
@@ -110,6 +113,11 @@ impl<'ast> GeneratorNode for IfBranch<'ast> {
             generator.set_current_block(end_block);
         }
 
+        if let Some(redirection_block) = redirection_block {
+            let end_block = generator.set_current_block(redirection_block);
+            generate_small_branch(redirection_block, end_block, generator);
+            generator.set_current_block(end_block);
+        }
         Ok(None)
     }
 }
@@ -305,14 +313,12 @@ impl<'ast> GeneratorNode for Record<'ast> {
 
         enum CGDeclaration<'ast> {
             Method(GCRef<TFunction>),
-            OffsetProperty {
-                init: Option<&'ast Expression<'ast>>,
-                accessor: Accessor
-            },
+            OffsetProperty(Accessor),
             Constant(&'ast Expression<'ast>)
         }
 
         let vm = generator.vm();
+        let mut default_inits = Vec::new();
         let mut items: HashMap<GCRef<TString>, CGDeclaration> = HashMap::new();
         for &item in self.body {
             let (symbol, decl) = match item {
@@ -339,10 +345,10 @@ impl<'ast> GeneratorNode for Record<'ast> {
                 }
                 RecordItem::Property(prop) => {
                     let symbol = prop.name.symbol;
-                    (symbol, CGDeclaration::OffsetProperty {
-                        init: prop.init,
-                        accessor: Accessor::GET | Accessor::SET
-                    })
+                    if let Some(init) = prop.init {
+                        default_inits.push((symbol, init));
+                    }
+                    (symbol, CGDeclaration::OffsetProperty(Accessor::GET | Accessor::SET))
                 }
                 RecordItem::Constant(constant) => {
                     let symbol = constant.name.symbol;
@@ -368,6 +374,31 @@ impl<'ast> GeneratorNode for Record<'ast> {
 
         // FIXME: this API is horrible for generating any sort of at-runtime helper.
         // It shouldn't rely on the function or the paramters having names.
+        let ctor = generator.vm().symbols().intern_slice(".ctor");
+        let (mut constructor, _scope) = generator.with_function(
+            Ident::sym(ctor), &[&Ident::sym(Symbol![self])], |generator| {
+                let self_ = generator.get_local_reg(Symbol![self]);
+                for (attribute, init) in default_inits {
+                    let init = init.generate_bytecode(generator)?.unwrap();
+                    generator.emit_set_attribute(self_, attribute, init);
+                }
+                generator.emit_return(Operand::null());
+                Ok(())
+            })?;
+        constructor.flags |= FunctionFlags::METHOD;
+
+        let entry = items
+            .raw_entry_mut()
+            .from_hash(ctor.hash, |key| key.as_slice().eq(".ctor"));
+        match entry {
+            RawEntryMut::Vacant(mut entry) => {
+                entry.insert_with_hasher(
+                    ctor.hash, generator.vm().symbols().get(ctor), CGDeclaration::Method(constructor),
+                    |key| vm.symbols().intern(*key).hash);
+            },
+            _ => unreachable!()
+        }
+    
         let (func, _scope) = generator.with_function(self.name, &[&self.name], |generator| {
             let throw_away = generator.allocate_reg();
             let builder = generator.get_local_reg(self.name.symbol);
@@ -387,7 +418,7 @@ impl<'ast> GeneratorNode for Record<'ast> {
                         let arguments = generator.allocate_list(vec![method_kind, name, method]);
                         generator.emit_method_call(throw_away, builder, Symbol![declare], arguments);
                     }
-                    CGDeclaration::OffsetProperty { accessor, .. } => {
+                    CGDeclaration::OffsetProperty(accessor) => {
                         // builder.declare(kind: 1, name, access)
                         let accessor = generator.make_i32(accessor.bits() as i32);
                         let arguments = generator.allocate_list(vec![property_kind, name, accessor]);
